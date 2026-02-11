@@ -30,9 +30,10 @@ final class SystemPrompt
      */
     public static function withInstructions(string $instructions, self $prompt): self
     {
-        $prompt->instructions = $instructions;
+        $new = clone $prompt;
+        $new->instructions = $instructions;
 
-        return $prompt;
+        return $new;
     }
 
     /**
@@ -42,6 +43,7 @@ final class SystemPrompt
      */
     public static function withTools(array $tools, self $prompt): self
     {
+        $new = clone $prompt;
         $lines = ["## Available Tools\n"];
 
         foreach ($tools as $tool) {
@@ -59,9 +61,9 @@ final class SystemPrompt
             $lines[] = '';
         }
 
-        $prompt->tools = implode("\n", $lines);
+        $new->tools = implode("\n", $lines);
 
-        return $prompt;
+        return $new;
     }
 
     /**
@@ -71,15 +73,16 @@ final class SystemPrompt
      */
     public static function withToolkits(array $toolkits, self $prompt): self
     {
+        $new = clone $prompt;
         $guidelines = [];
 
         foreach ($toolkits as $toolkit) {
             $guidelines[] = $toolkit->guidelines();
         }
 
-        $prompt->guidelines = implode("\n\n", $guidelines);
+        $new->guidelines = implode("\n\n", $guidelines);
 
-        return $prompt;
+        return $new;
     }
 
     /**
