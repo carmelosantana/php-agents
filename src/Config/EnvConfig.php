@@ -20,7 +20,13 @@ final class EnvConfig
 
     public function get(string $key, ?string $default = null): ?string
     {
-        return $this->env[$key] ?? getenv($key) ?: $default;
+        if (isset($this->env[$key])) {
+            return $this->env[$key];
+        }
+
+        $value = getenv($key);
+
+        return $value !== false ? $value : $default;
     }
 
     public function has(string $key): bool
