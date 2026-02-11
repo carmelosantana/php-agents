@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>php-agents — README Summarizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        background: 'hsl(var(--background))',
+                        foreground: 'hsl(var(--foreground))',
+                        primary: 'hsl(var(--primary))',
+                        muted: 'hsl(var(--muted))',
+                        'muted-foreground': 'hsl(var(--muted-foreground))',
+                        border: 'hsl(var(--border))',
+                        card: 'hsl(var(--card))',
+                        'card-foreground': 'hsl(var(--card-foreground))',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        :root {
+            --background: 0 0% 100%;
+            --foreground: 240 10% 3.9%;
+            --primary: 240 5.9% 10%;
+            --muted: 240 4.8% 95.9%;
+            --muted-foreground: 240 3.8% 46.1%;
+            --border: 240 5.9% 90%;
+            --card: 0 0% 100%;
+            --card-foreground: 240 10% 3.9%;
+        }
+        .dark {
+            --background: 240 10% 3.9%;
+            --foreground: 0 0% 98%;
+            --primary: 0 0% 98%;
+            --muted: 240 3.7% 15.9%;
+            --muted-foreground: 240 5% 64.9%;
+            --border: 240 3.7% 15.9%;
+            --card: 240 5.3% 8%;
+            --card-foreground: 0 0% 98%;
+        }
+
+        body { background-color: hsl(var(--background)); color: hsl(var(--foreground)); }
+
+        .summary-content h1 { font-size: 1.5rem; font-weight: 700; margin: 1rem 0 0.5rem; }
+        .summary-content h2 { font-size: 1.25rem; font-weight: 600; margin: 1rem 0 0.5rem; }
+        .summary-content h3 { font-size: 1.1rem; font-weight: 600; margin: 0.75rem 0 0.25rem; }
+        .summary-content p { margin: 0.5rem 0; line-height: 1.7; }
+        .summary-content ul, .summary-content ol { margin: 0.5rem 0; padding-left: 1.5rem; }
+        .summary-content li { margin: 0.25rem 0; line-height: 1.6; }
+        .summary-content ul li { list-style: disc; }
+        .summary-content ol li { list-style: decimal; }
+        .summary-content code {
+            background: hsl(var(--muted));
+            padding: 0.15rem 0.4rem;
+            border-radius: 0.25rem;
+            font-size: 0.875rem;
+        }
+        .summary-content pre {
+            background: hsl(var(--muted));
+            padding: 1rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+            margin: 0.75rem 0;
+        }
+        .summary-content pre code { background: none; padding: 0; }
+        .summary-content strong { font-weight: 600; }
+        .summary-content a { text-decoration: underline; opacity: 0.8; }
+
+        @keyframes pulse-dot {
+            0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+            40% { opacity: 1; transform: scale(1); }
+        }
+        .dot-1 { animation: pulse-dot 1.4s infinite ease-in-out; }
+        .dot-2 { animation: pulse-dot 1.4s infinite ease-in-out 0.2s; }
+        .dot-3 { animation: pulse-dot 1.4s infinite ease-in-out 0.4s; }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center px-4 py-12 transition-colors duration-300">
+
+    <div x-data="summarizer()" class="w-full max-w-2xl space-y-6">
+
+        <!-- Header -->
+        <div class="flex items-center justify-between">
+            <div>
+                <h1 class="text-2xl font-bold tracking-tight">php-agents</h1>
+                <p class="text-sm text-muted-foreground">README Summarizer</p>
+            </div>
+            <button
+                @click="toggleTheme()"
+                class="p-2 rounded-md border border-border hover:bg-muted transition-colors duration-150"
+                title="Toggle theme"
+            >
+                <svg x-show="dark" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m8.66-13.66l-.71.71M4.05 19.95l-.71.71M21 12h-1M4 12H3m16.66 7.66l-.71-.71M4.05 4.05l-.71-.71M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+                <svg x-show="!dark" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                </svg>
+            </button>
+        </div>
+
+        <!-- Card -->
+        <div class="rounded-lg border border-border bg-card p-6 shadow-sm">
+
+            <!-- Loading state -->
+            <template x-if="loading">
+                <div class="flex flex-col items-center justify-center py-12 space-y-4">
+                    <div class="flex space-x-2">
+                        <div class="w-2.5 h-2.5 rounded-full bg-foreground dot-1"></div>
+                        <div class="w-2.5 h-2.5 rounded-full bg-foreground dot-2"></div>
+                        <div class="w-2.5 h-2.5 rounded-full bg-foreground dot-3"></div>
+                    </div>
+                    <p class="text-sm text-muted-foreground">Agent is reading and summarizing README.md&hellip;</p>
+                </div>
+            </template>
+
+            <!-- Error state -->
+            <template x-if="error && !loading">
+                <div class="space-y-4">
+                    <div class="rounded-md bg-red-500/10 border border-red-500/20 p-4">
+                        <p class="text-sm text-red-400" x-text="error"></p>
+                    </div>
+                    <button @click="summarize()" class="px-4 py-2 text-sm font-medium rounded-md bg-foreground text-background hover:opacity-90 transition-opacity duration-150">
+                        Retry
+                    </button>
+                </div>
+            </template>
+
+            <!-- Summary result -->
+            <template x-if="summary && !loading">
+                <div class="space-y-4">
+                    <div class="summary-content text-sm text-card-foreground leading-relaxed" x-html="renderMarkdown(summary)"></div>
+
+                    <div class="flex items-center justify-between pt-4 border-t border-border">
+                        <div class="flex gap-4 text-xs text-muted-foreground">
+                            <span x-show="model">Model: <span x-text="model" class="font-medium"></span></span>
+                            <span x-show="tokens > 0">Tokens: <span x-text="tokens"></span></span>
+                            <span x-show="iterations > 0">Iterations: <span x-text="iterations"></span></span>
+                        </div>
+                        <button @click="summarize()" class="px-4 py-2 text-sm font-medium rounded-md border border-border hover:bg-muted transition-colors duration-150">
+                            Regenerate
+                        </button>
+                    </div>
+                </div>
+            </template>
+
+            <!-- Initial state (before first load) -->
+            <template x-if="!loading && !summary && !error">
+                <div class="flex flex-col items-center justify-center py-12 space-y-4">
+                    <p class="text-sm text-muted-foreground">Click below to summarize the project README.</p>
+                    <button @click="summarize()" class="px-4 py-2 text-sm font-medium rounded-md bg-foreground text-background hover:opacity-90 transition-opacity duration-150">
+                        Summarize README
+                    </button>
+                </div>
+            </template>
+        </div>
+
+        <!-- Footer -->
+        <p class="text-center text-xs text-muted-foreground">
+            Powered by <span class="font-medium">carmelosantana/php-agents</span> &middot; FileAgent + Ollama
+        </p>
+    </div>
+
+    <script>
+        function summarizer() {
+            return {
+                loading: false,
+                summary: null,
+                error: null,
+                model: '',
+                tokens: 0,
+                iterations: 0,
+                dark: true,
+
+                init() {
+                    this.dark = document.documentElement.classList.contains('dark');
+                    this.summarize();
+                },
+
+                toggleTheme() {
+                    this.dark = !this.dark;
+                    document.documentElement.classList.toggle('dark', this.dark);
+                },
+
+                async summarize() {
+                    this.loading = true;
+                    this.error = null;
+                    this.summary = null;
+
+                    try {
+                        const res = await fetch('index.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ model: 'llama3.2' }),
+                        });
+
+                        const data = await res.json();
+
+                        if (data.error) {
+                            this.error = data.error;
+                            return;
+                        }
+
+                        this.summary = data.summary || 'No summary returned.';
+                        this.model = data.model || '';
+                        this.tokens = data.tokens || 0;
+                        this.iterations = data.iterations || 0;
+                    } catch (e) {
+                        this.error = 'Failed to connect to the server. Is it running?';
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+
+                renderMarkdown(text) {
+                    if (!text) return '';
+
+                    return text
+                        // Code blocks
+                        .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+                        // Inline code
+                        .replace(/`([^`]+)`/g, '<code>$1</code>')
+                        // Headers
+                        .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+                        .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+                        .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+                        // Bold and italic
+                        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                        // Links
+                        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+                        // Unordered lists
+                        .replace(/^[*-] (.+)$/gm, '<li>$1</li>')
+                        // Wrap consecutive <li> in <ul>
+                        .replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>')
+                        // Paragraphs (double newline)
+                        .replace(/\n\n/g, '</p><p>')
+                        // Single newlines → <br> within paragraphs
+                        .replace(/\n/g, '<br>')
+                        // Wrap in paragraph
+                        .replace(/^(?!<[huploa])(.+)/gm, '<p>$1</p>');
+                },
+            };
+        }
+    </script>
+</body>
+</html>
