@@ -272,9 +272,15 @@ final class FilesystemToolkit implements ToolkitInterface
     private function resolvePath(string $relativePath): string
     {
         $path = "{$this->rootPath}/{$relativePath}";
+        $realRoot = realpath($this->rootPath);
+
+        if ($realRoot === false) {
+            return $path;
+        }
+
         $realPath = realpath($path);
 
-        if ($realPath !== false && !str_starts_with($realPath, realpath($this->rootPath) ?: '')) {
+        if ($realPath !== false && !str_starts_with($realPath, $realRoot)) {
             return $this->rootPath;
         }
 
