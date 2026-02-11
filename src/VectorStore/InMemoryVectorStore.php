@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\VectorStore;
 
 use CarmeloSantana\PHPAgents\Contract\VectorStoreInterface;
+use CarmeloSantana\PHPAgents\Exception\DocumentException;
 use CarmeloSantana\PHPAgents\Memory\Document;
 
 final class InMemoryVectorStore implements VectorStoreInterface
@@ -15,7 +16,7 @@ final class InMemoryVectorStore implements VectorStoreInterface
     public function addDocument(Document $document): void
     {
         if (!$document->hasEmbedding()) {
-            throw new \InvalidArgumentException('Document must have embedding set');
+            throw DocumentException::missingEmbedding();
         }
 
         $this->documents[] = $document;
