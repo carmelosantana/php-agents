@@ -23,6 +23,18 @@ final class Document
     /**
      * @param float[] $embedding
      */
+    public function withEmbedding(array $embedding): self
+    {
+        $clone = clone $this;
+        $clone->embedding = $embedding;
+
+        return $clone;
+    }
+
+    /**
+     * @param float[] $embedding
+     * @deprecated Use withEmbedding() for immutability
+     */
     public function setEmbedding(array $embedding): void
     {
         $this->embedding = $embedding;
