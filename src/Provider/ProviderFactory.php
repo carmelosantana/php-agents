@@ -22,13 +22,13 @@ final class ProviderFactory
         [$providerName, $model] = self::parseModelString($modelString);
 
         $providerConfig = $config?->getProviderConfig($providerName) ?? [];
-        $baseUrl = $providerConfig['baseUrl'] ?? self::defaultBaseUrl($providerName);
+        $baseUrl = self::resolveBaseUrl($providerName, $providerConfig);
         $apiKey = $providerConfig['apiKey'] ?? '';
 
         return match ($providerName) {
             'ollama' => new OllamaProvider(
                 model: $model,
-                baseUrl: is_string($baseUrl) ? $baseUrl : 'http://localhost:11434/v1',
+                baseUrl: $baseUrl,
             ),
             'anthropic' => new AnthropicProvider(
                 model: $model,
@@ -36,7 +36,7 @@ final class ProviderFactory
             ),
             default => new OpenAICompatibleProvider(
                 model: $model,
-                baseUrl: is_string($baseUrl) ? $baseUrl : '',
+                baseUrl: $baseUrl,
                 apiKey: is_string($apiKey) ? $apiKey : '',
             ),
         };
@@ -59,6 +59,27 @@ final class ProviderFactory
             substr($modelString, 0, $slash),
             substr($modelString, $slash + 1),
         ];
+    }
+
+    /**
+     * Resolve base URL with environment variable overrides.
+     *
+     * Supports OLLAMA_HOST env var for Docker/container environments.
+     *
+     * @param array<string, mixed> $providerConfig
+     */
+    private static function resolveBaseUrl(string $provider, array $providerConfig): string
+    {
+        if ($provider === 'ollama') {
+            $envHost = getenv('OLLAMA_HOST');
+            if ($envHost !== false && $envHost !== '') {
+                return rtrim($envHost, '/') . '/v1';
+            }
+        }
+
+        $baseUrl = $providerConfig['baseUrl'] ?? null;
+
+        return is_string($baseUrl) ? $baseUrl : self::defaultBaseUrl($provider);
     }
 
     private static function defaultBaseUrl(string $provider): string
