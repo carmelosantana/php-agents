@@ -6,6 +6,7 @@ namespace CarmeloSantana\PHPAgents\Toolkit;
 
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolkitInterface;
+use CarmeloSantana\PHPAgents\Enum\ToolResultStatus;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use CarmeloSantana\PHPAgents\Tool\Parameter\NumberParameter;
@@ -130,8 +131,8 @@ final class ShellToolkit implements ToolkitInterface
 
                 return new ToolResult(
                     status: $exitCode === 0
-                        ? \CarmeloSantana\PHPAgents\Enum\ToolResultStatus::Success
-                        : \CarmeloSantana\PHPAgents\Enum\ToolResultStatus::Error,
+                        ? ToolResultStatus::Success
+                        : ToolResultStatus::Error,
                     content: json_encode($result, JSON_PRETTY_PRINT) ?: '',
                 );
             },
