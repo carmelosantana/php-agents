@@ -50,7 +50,7 @@ final class Tool implements ToolInterface
                 return $result;
             }
 
-            return ToolResult::success(is_string($result) ? $result : json_encode($result) ?: '');
+            return ToolResult::success(is_string($result) ? $result : (json_encode($result) ?: ''));
         } catch (\Throwable $e) {
             return ToolResult::error($e->getMessage());
         }
