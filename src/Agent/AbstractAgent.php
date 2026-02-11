@@ -11,6 +11,8 @@ use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolkitInterface;
 use CarmeloSantana\PHPAgents\Enum\FinishReason;
 use CarmeloSantana\PHPAgents\Enum\ModelCapability;
+use CarmeloSantana\PHPAgents\Exception\ProviderException;
+use CarmeloSantana\PHPAgents\Exception\ToolNotFoundException;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\Conversation;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
@@ -84,10 +86,21 @@ abstract class AbstractAgent implements AgentInterface
         for ($i = 0; $i < $this->maxIterations(); $i++) {
             $this->notify('agent.iteration', $i + 1);
 
-            $response = $this->provider->chat(
-                $conversation->messages(),
-                $allTools,
-            );
+            try {
+                $response = $this->provider->chat(
+                    $conversation->messages(),
+                    $allTools,
+                );
+            } catch (\Throwable $e) {
+                $this->notify('agent.error', $e->getMessage());
+
+                return new Output(
+                    content: 'Provider error: ' . $e->getMessage(),
+                    toolResults: $allToolResults,
+                    usage: $totalUsage,
+                    iterations: $i + 1,
+                );
+            }
 
             if ($response->usage !== null) {
                 $totalUsage = new Usage(
@@ -117,9 +130,14 @@ abstract class AbstractAgent implements AgentInterface
                 foreach ($response->toolCalls as $toolCall) {
                     $this->notify('agent.tool_call', $toolCall);
 
-                    $tool = $this->findTool($toolCall->name, $allTools);
-                    $result = $tool->execute($toolCall->arguments);
-                    $result = $result->withCallId($toolCall->id);
+                    try {
+                        $tool = $this->findTool($toolCall->name, $allTools);
+                        $result = $tool->execute($toolCall->arguments);
+                        $result = $result->withCallId($toolCall->id);
+                    } catch (\Throwable $e) {
+                        $this->notify('agent.tool_error', $e->getMessage());
+                        $result = ToolResult::error($e->getMessage())->withCallId($toolCall->id);
+                    }
 
                     $allToolResults[] = $result;
                     $conversation->add(new ToolResultMessage($result));
@@ -195,7 +213,7 @@ abstract class AbstractAgent implements AgentInterface
             }
         }
 
-        throw new \RuntimeException("Unknown tool: {$name}");
+        throw ToolNotFoundException::forName($name);
     }
 
     public function attach(SplObserver $observer): void
@@ -214,13 +232,22 @@ abstract class AbstractAgent implements AgentInterface
     public function notify(string $event = '', mixed $data = null): void
     {
         foreach ($this->observers as $observer) {
-            // Store event data for retrieval via dedicated methods
             $this->lastEvent = $event;
             $this->lastEventData = $data;
             $observer->update($this);
         }
     }
 
-    public string $lastEvent = '';
-    public mixed $lastEventData = null;
+    public function lastEvent(): string
+    {
+        return $this->lastEvent;
+    }
+
+    public function lastEventData(): mixed
+    {
+        return $this->lastEventData;
+    }
+
+    private string $lastEvent = '';
+    private mixed $lastEventData = null;
 }
