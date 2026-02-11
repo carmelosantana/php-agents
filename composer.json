@@ -1,0 +1,58 @@
+{
+    "name": "carmelosantana/php-agents",
+    "description": "PHP 8.5 agent framework — interfaces, tools, and providers for building AI agents",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Carmelo Santana"
+        }
+    ],
+    "keywords": ["php-agents", "ai-agent", "llm", "tools", "function-calling"],
+    "require": {
+        "php": "^8.4",
+        "symfony/http-client": "^7.0",
+        "psr/log": "^3.0"
+    },
+    "suggest": {
+        "yethee/tiktoken-php": "Accurate token counting for OpenAI models (cl100k_base, o200k_base)",
+        "hkulekci/qdrant": "Vector similarity search for persistent agent memory"
+    },
+    "require-dev": {
+        "pestphp/pest": "^3.0",
+        "phpstan/phpstan": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "CarmeloSantana\\PHPAgents\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "preferred-install": "dist",
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "scripts": {
+        "test": "pest",
+        "analyse": "phpstan analyse"
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "extra": {
+        "php-agents": {
+            "agents": [
+                "CarmeloSantana\\PHPAgents\\Agent\\FileAgent",
+                "CarmeloSantana\\PHPAgents\\Agent\\WebAgent",
+                "CarmeloSantana\\PHPAgents\\Agent\\CodeAgent"
+            ]
+        }
+    }
+}
