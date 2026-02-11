@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Embedding;
 
 use CarmeloSantana\PHPAgents\Contract\EmbeddingProviderInterface;
+use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Memory\Document;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -23,16 +24,20 @@ final class OllamaEmbeddingProvider implements EmbeddingProviderInterface
 
     public function embedText(string $text): array
     {
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/api/embeddings", [
-            'json' => [
-                'model' => $this->modelName,
-                'prompt' => $text,
-            ],
-        ]);
+        try {
+            $response = $this->httpClient->request('POST', "{$this->baseUrl}/api/embeddings", [
+                'json' => [
+                    'model' => $this->modelName,
+                    'prompt' => $text,
+                ],
+            ]);
 
-        $data = $response->toArray();
+            $data = $response->toArray();
 
-        return $data['embedding'] ?? [];
+            return $data['embedding'] ?? [];
+        } catch (\Throwable $e) {
+            throw ProviderException::embeddingFailed($e->getMessage(), $e);
+        }
     }
 
     public function embedDocument(Document $document): Document
