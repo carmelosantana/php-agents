@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Config;
 
 use CarmeloSantana\PHPAgents\Contract\ConfigInterface;
+use CarmeloSantana\PHPAgents\Exception\ConfigNotFoundException;
 
 final class OpenClawConfig implements ConfigInterface
 {
@@ -20,12 +21,12 @@ final class OpenClawConfig implements ConfigInterface
     public static function fromFile(string $path): self
     {
         if (!file_exists($path)) {
-            throw new \RuntimeException("Config file not found: {$path}");
+            throw ConfigNotFoundException::forPath($path);
         }
 
         $json = file_get_contents($path);
         if ($json === false) {
-            throw new \RuntimeException("Failed to read config file: {$path}");
+            throw ConfigNotFoundException::unreadable($path);
         }
 
         $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
