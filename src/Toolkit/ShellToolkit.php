@@ -15,13 +15,30 @@ use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
 final class ShellToolkit implements ToolkitInterface
 {
     /**
+     * Regex patterns that indicate dangerous shell constructs.
+     * These are checked in addition to the configurable denylist.
+     *
+     * @var string[]
+     */
+    private const DENIED_PATTERNS = [
+        '/\brm\s+(-[a-z]*r[a-z]*\s+-[a-z]*f|-[a-z]*f[a-z]*\s+-[a-z]*r)\b/i',  // rm -rf / rm -fr variants
+        '/\brm\s+-[a-z]*rf\b/i',                                                  // rm -rf combined
+        '/\|\s*(bash|sh|zsh|dash)\b/i',                                            // Pipe to shell
+        '/\bcurl\b.*\|\s*(bash|sh|zsh)\b/i',                                      // curl | bash
+        '/\bwget\b.*\|\s*(bash|sh|zsh)\b/i',                                      // wget | bash
+        '/\bphp\s+-r\b/i',                                                         // php -r inline execution
+        '/\bmkfifo\b/i',                                                            // Named pipe creation
+        '/\b(nc|ncat|netcat)\s/i',                                                  // Network tools
+    ];
+
+    /**
      * @param string[] $allowedCommands
      * @param string[] $deniedCommands
      */
     public function __construct(
         private readonly string $workDir = '.',
         private readonly array $allowedCommands = [],
-        private readonly array $deniedCommands = ['rm -rf /', 'sudo', 'chmod 777'],
+        private readonly array $deniedCommands = ['sudo', 'chmod 777'],
         private readonly int $timeout = 30,
     ) {}
 
@@ -67,9 +84,17 @@ final class ShellToolkit implements ToolkitInterface
                     return ToolResult::error("Command not allowed: {$command}");
                 }
 
+                // Check configurable denylist (substring match)
                 foreach ($this->deniedCommands as $denied) {
                     if (str_contains($command, $denied)) {
                         return ToolResult::error("Denied command pattern detected: {$denied}");
+                    }
+                }
+
+                // Check built-in regex deny patterns
+                foreach (self::DENIED_PATTERNS as $pattern) {
+                    if (preg_match($pattern, $command)) {
+                        return ToolResult::error("Denied: command matches a blocked security pattern.");
                     }
                 }
 
