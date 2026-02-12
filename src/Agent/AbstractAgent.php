@@ -7,6 +7,7 @@ namespace CarmeloSantana\PHPAgents\Agent;
 use CarmeloSantana\PHPAgents\Contract\AgentInterface;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
+use CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolkitInterface;
 use CarmeloSantana\PHPAgents\Enum\FinishReason;
@@ -34,6 +35,7 @@ abstract class AbstractAgent implements AgentInterface
     public function __construct(
         private readonly ProviderInterface $provider,
         private readonly int $maxIter = 25,
+        private readonly ?ToolExecutionPolicyInterface $executionPolicy = null,
     ) {}
 
     abstract public function instructions(): string;
@@ -129,6 +131,24 @@ abstract class AbstractAgent implements AgentInterface
 
                 foreach ($response->toolCalls as $toolCall) {
                     $this->notify('agent.tool_call', $toolCall);
+
+                    // Check execution policy before running the tool
+                    if ($this->executionPolicy !== null) {
+                        $policyResult = $this->executionPolicy->shouldExecute(
+                            $toolCall->name,
+                            $toolCall->arguments,
+                        );
+
+                        if ($policyResult !== true) {
+                            $result = ToolResult::error(
+                                "Denied by policy: {$policyResult}",
+                            )->withCallId($toolCall->id);
+                            $allToolResults[] = $result;
+                            $conversation->add(new ToolResultMessage($result));
+                            $this->notify('agent.tool_result', $result);
+                            continue;
+                        }
+                    }
 
                     try {
                         $tool = $this->findTool($toolCall->name, $allTools);
