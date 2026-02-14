@@ -153,7 +153,7 @@ final class AnthropicProvider extends AbstractProvider
         foreach ($messages as $message) {
             if ($message->role() === Role::System) {
                 $content = $message->content();
-                $systemPrompt = is_string($content) ? $content : json_encode($content) ?: '';
+                $systemPrompt = (is_string($content) ? $content : (json_encode($content) ?: ''));
                 continue;
             }
 
