@@ -186,46 +186,7 @@ Working examples live in the [`examples/`](examples/) directory:
 | Example | Description | Run |
 |---------|-------------|-----|
 | [CLI Chat](examples/cli-chat.php) | Interactive terminal conversation with an LLM | `php examples/cli-chat.php` |
-| [Web Summarizer](examples/web-summarizer/) | Web UI that auto-summarizes this README using a FileAgent | `php -S localhost:8080 -t examples/web-summarizer/` |
-
----
-
-## Documentation
-
-See [QUICKSTART.md](QUICKSTART.md) for comprehensive documentation including:
-
-- All provider configurations (Ollama, OpenAI, Anthropic, OpenRouter)
-- `ProviderFactory` for automatic provider routing
-- Observer pattern for agent event monitoring
-- `openclaw.json` configuration reference
-- Memory toolkit and vector store usage
-- Publishing your own agents as Composer packages
-
----
-
-## Project Structure
-
-```
-php-agents/
-├── src/
-│   ├── Agent/          — AbstractAgent, FileAgent, WebAgent, CodeAgent
-│   ├── Config/         — OpenClawConfig, ModelDefinition
-│   ├── Context/        — ContextWindow, token counting
-│   ├── Contract/       — All interfaces
-│   ├── Embedding/      — Embedding providers
-│   ├── Enum/           — Role, FinishReason, ModelCapability
-│   ├── Memory/         — FileMemory, MemoryEntry
-│   ├── Message/        — System/User/Assistant messages, Conversation
-│   ├── Prompt/         — SystemPrompt builder
-│   ├── Provider/       — Provider implementations
-│   ├── Tool/           — Tool, ToolResult, Parameters
-│   ├── Toolkit/        — Filesystem, Web, Shell, Memory toolkits
-│   └── VectorStore/    — In-memory vector search
-├── examples/           — Working usage examples
-└── tests/              — Pest test suite
-```
-
----
+| [README Summarizer](examples/web-summarizer/) | Web UI that auto-summarizes this README using a FileAgent | `php -S localhost:8080 -t examples/web-summarizer/` |
 
 ## License
 
