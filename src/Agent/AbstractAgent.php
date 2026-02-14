@@ -70,7 +70,7 @@ abstract class AbstractAgent implements AgentInterface
         return $this;
     }
 
-    public function run(MessageInterface $input): Output
+    public function run(MessageInterface $input, ?Conversation $history = null): Output
     {
         $this->notify('agent.start', $input);
 
@@ -79,6 +79,17 @@ abstract class AbstractAgent implements AgentInterface
 
         $conversation = new Conversation();
         $conversation->add(new SystemMessage($systemPrompt));
+
+        // Inject prior conversation history (skip system messages — we use our own)
+        if ($history !== null) {
+            foreach ($history->messages() as $msg) {
+                if ($msg->role() === \CarmeloSantana\PHPAgents\Enum\Role::System) {
+                    continue;
+                }
+                $conversation->add($msg);
+            }
+        }
+
         $conversation->add($input);
 
         $allToolResults = [];
@@ -101,6 +112,7 @@ abstract class AbstractAgent implements AgentInterface
                     toolResults: $allToolResults,
                     usage: $totalUsage,
                     iterations: $i + 1,
+                    conversation: $conversation,
                 );
             }
 
@@ -122,6 +134,7 @@ abstract class AbstractAgent implements AgentInterface
                         usage: $totalUsage,
                         model: $response->model,
                         iterations: $i + 1,
+                        conversation: $conversation,
                     );
                 }
             }
@@ -188,6 +201,7 @@ abstract class AbstractAgent implements AgentInterface
             toolResults: $allToolResults,
             usage: $totalUsage,
             iterations: $this->maxIterations(),
+            conversation: $conversation,
         );
     }
 
