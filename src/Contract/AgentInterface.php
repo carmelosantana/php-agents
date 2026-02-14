@@ -6,6 +6,7 @@ namespace CarmeloSantana\PHPAgents\Contract;
 
 use CarmeloSantana\PHPAgents\Agent\Output;
 use CarmeloSantana\PHPAgents\Enum\ModelCapability;
+use CarmeloSantana\PHPAgents\Message\Conversation;
 use SplSubject;
 
 /**
@@ -32,8 +33,12 @@ interface AgentInterface extends SplSubject
 
     /**
      * Execute the agent with the given input.
+     *
+     * Prior conversation history can be injected via $history to enable
+     * multi-turn conversations. System messages in $history are skipped
+     * (the agent builds its own system prompt).
      */
-    public function run(MessageInterface $input): Output;
+    public function run(MessageInterface $input, ?Conversation $history = null): Output;
 
     /**
      * Maximum iterations before forced termination.
