@@ -4,8 +4,6 @@ PHP 8.4+ framework for building AI agents with tool-use loops, provider abstract
 
 Build agents that can read files, browse the web, execute code, and use custom tools — powered by any OpenAI-compatible API, Anthropic, or local models via Ollama.
 
----
-
 ## Features
 
 - **Agentic tool-use loop** — automatic iteration: the LLM calls tools, processes results, and decides when it's done
@@ -16,8 +14,6 @@ Build agents that can read files, browse the web, execute code, and use custom t
 - **OpenClaw config** — centralized model routing with aliases, fallbacks, and per-provider settings
 - **Zero framework coupling** — depends only on `symfony/http-client` and `psr/log`
 
----
-
 ## Requirements
 
 - PHP 8.4 or later
@@ -25,15 +21,11 @@ Build agents that can read files, browse the web, execute code, and use custom t
 - Composer 2.x
 - [Ollama](https://ollama.ai) (recommended for local inference)
 
----
-
 ## Installation
 
 ```bash
 composer require carmelosantana/php-agents
 ```
-
----
 
 ## Quick Start
 
@@ -65,8 +57,6 @@ echo $output->content . "\n";
 
 > Make sure Ollama is running: `ollama serve` and a model is pulled: `ollama pull llama3.2`
 
----
-
 ## Bundled Agents
 
 | Agent | Description | Toolkits |
@@ -74,8 +64,6 @@ echo $output->content . "\n";
 | `FileAgent` | Read, write, search, and manage files within a sandboxed root path | `FilesystemToolkit` |
 | `WebAgent` | Make HTTP requests and optionally search the web | `WebToolkit` |
 | `CodeAgent` | Filesystem access + shell command execution with an allowlist | `FilesystemToolkit` + `ShellToolkit` |
-
----
 
 ## Providers
 
@@ -100,8 +88,6 @@ $provider = new AnthropicProvider(
     apiKey: getenv('ANTHROPIC_API_KEY'),
 );
 ```
-
----
 
 ## Creating Custom Agents
 
@@ -132,8 +118,6 @@ final class DatabaseAgent extends AbstractAgent
 ```
 
 Register toolkits in the constructor with `$this->addToolkit()` to give your agent capabilities.
-
----
 
 ## Creating Custom Tools
 
@@ -176,8 +160,6 @@ final class MyToolkit implements ToolkitInterface
     }
 }
 ```
-
----
 
 ## Examples
 
