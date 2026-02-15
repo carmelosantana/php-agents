@@ -23,6 +23,7 @@ use CarmeloSantana\PHPAgents\Provider\Usage;
 use CarmeloSantana\PHPAgents\Tool\DoneTool;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use SplObserver;
+use Symfony\Contracts\HttpClient\Exception\ClientExceptionInterface;
 
 abstract class AbstractAgent implements AgentInterface
 {
@@ -105,10 +106,32 @@ abstract class AbstractAgent implements AgentInterface
                     $allTools,
                 );
             } catch (\Throwable $e) {
-                $this->notify('agent.error', $e->getMessage());
+                $errorMessage = $e->getMessage();
+
+                // Extract API response body for HTTP client errors (4xx/5xx)
+                // Symfony's ClientException only includes the status line, not the
+                // API error body, for non-RFC-7807 APIs like Anthropic and OpenAI.
+                if ($e instanceof ClientExceptionInterface) {
+                    try {
+                        $body = $e->getResponse()->getContent(false);
+                        $decoded = json_decode($body, true);
+
+                        // Anthropic: {"type":"error","error":{"message":"..."}}
+                        // OpenAI:    {"error":{"message":"..."}}
+                        $apiMessage = $decoded['error']['message']
+                            ?? $decoded['message']
+                            ?? $body;
+
+                        $errorMessage .= "\n\nAPI response: " . $apiMessage;
+                    } catch (\Throwable) {
+                        // If we can't read the body, fall through with original message
+                    }
+                }
+
+                $this->notify('agent.error', $errorMessage);
 
                 return new Output(
-                    content: 'Provider error: ' . $e->getMessage(),
+                    content: 'Provider error: ' . $errorMessage,
                     toolResults: $allToolResults,
                     usage: $totalUsage,
                     iterations: $i + 1,

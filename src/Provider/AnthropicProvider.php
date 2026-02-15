@@ -18,12 +18,13 @@ final class AnthropicProvider extends AbstractProvider
 
     public function __construct(
         string $model = 'claude-sonnet-4-20250514',
+        string $baseUrl = 'https://api.anthropic.com/v1',
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
     ) {
         parent::__construct(
             model: $model,
-            baseUrl: 'https://api.anthropic.com/v1',
+            baseUrl: $baseUrl,
             apiKey: $apiKey,
             httpClient: $httpClient,
         );
@@ -190,12 +191,20 @@ final class AnthropicProvider extends AbstractProvider
 
         // Tool result messages → user message with tool_result content block
         if ($message->role() === Role::Tool) {
+            $toolCallId = $message->toolCallId();
+
+            // Anthropic requires a non-null tool_use_id. Generate a fallback
+            // for replayed conversations where the ID was not persisted.
+            if ($toolCallId === null || $toolCallId === '') {
+                $toolCallId = 'toolu_' . bin2hex(random_bytes(12));
+            }
+
             return [
                 'role' => 'user',
                 'content' => [
                     [
                         'type' => 'tool_result',
-                        'tool_use_id' => $message->toolCallId(),
+                        'tool_use_id' => $toolCallId,
                         'content' => $message->content(),
                     ],
                 ],
