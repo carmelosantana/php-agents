@@ -18,7 +18,6 @@ final class Tool implements ToolInterface
         private readonly string $description,
         private readonly array $parameters,
         private readonly Closure $callback,
-        private readonly int $maxTries = 3,
     ) {}
 
     public function name(): string
@@ -34,11 +33,6 @@ final class Tool implements ToolInterface
     public function parameters(): array
     {
         return $this->parameters;
-    }
-
-    public function maxTries(): int
-    {
-        return $this->maxTries;
     }
 
     public function execute(array $input): ToolResult
@@ -69,16 +63,21 @@ final class Tool implements ToolInterface
             }
         }
 
+        $schema = [
+            'type' => 'object',
+            'properties' => empty($properties) ? new \stdClass() : $properties,
+        ];
+
+        if (!empty($required)) {
+            $schema['required'] = $required;
+        }
+
         return [
             'type' => 'function',
             'function' => [
                 'name' => $this->name,
                 'description' => $this->description,
-                'parameters' => [
-                    'type' => 'object',
-                    'properties' => $properties,
-                    'required' => $required,
-                ],
+                'parameters' => $schema,
             ],
         ];
     }
