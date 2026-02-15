@@ -148,7 +148,7 @@ final class AnthropicProvider extends AbstractProvider
     private function extractSystemAndMessages(array $messages): array
     {
         $systemPrompt = '';
-        $formattedMessages = [];
+        $formatted = [];
 
         foreach ($messages as $message) {
             if ($message->role() === Role::System) {
@@ -157,10 +157,23 @@ final class AnthropicProvider extends AbstractProvider
                 continue;
             }
 
-            $formattedMessages[] = $this->formatAnthropicMessage($message);
+            $formatted[] = $this->formatAnthropicMessage($message);
         }
 
-        return [$systemPrompt, $formattedMessages];
+        // Merge consecutive same-role messages (required by Anthropic).
+        // Consecutive tool_result user messages must be combined into a single
+        // user message with multiple content blocks.
+        $merged = [];
+        foreach ($formatted as $msg) {
+            $last = end($merged);
+            if ($last !== false && $last['role'] === $msg['role'] && is_array($last['content']) && is_array($msg['content'])) {
+                $merged[array_key_last($merged)]['content'] = array_merge($last['content'], $msg['content']);
+            } else {
+                $merged[] = $msg;
+            }
+        }
+
+        return [$systemPrompt, $merged];
     }
 
     /**
@@ -175,6 +188,7 @@ final class AnthropicProvider extends AbstractProvider
             default => 'user',
         };
 
+        // Tool result messages → user message with tool_result content block
         if ($message->role() === Role::Tool) {
             return [
                 'role' => 'user',
@@ -185,6 +199,28 @@ final class AnthropicProvider extends AbstractProvider
                         'content' => $message->content(),
                     ],
                 ],
+            ];
+        }
+
+        // Assistant messages with tool calls → content blocks with tool_use
+        if ($message->role() === Role::Assistant && !empty($message->toolCalls())) {
+            $content = [];
+            $text = $message->content();
+            if (is_string($text) && $text !== '') {
+                $content[] = ['type' => 'text', 'text' => $text];
+            }
+            foreach ($message->toolCalls() as $toolCall) {
+                $content[] = [
+                    'type' => 'tool_use',
+                    'id' => $toolCall->id,
+                    'name' => $toolCall->name,
+                    'input' => !empty($toolCall->arguments) ? $toolCall->arguments : (object) [],
+                ];
+            }
+
+            return [
+                'role' => 'assistant',
+                'content' => $content,
             ];
         }
 
