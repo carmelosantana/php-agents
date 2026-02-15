@@ -82,7 +82,7 @@ test('toFunctionSchema generates correct structure', function () {
     expect($schema['function']['parameters']['required'])->toBe(['query']);
 });
 
-test('tool default maxTries is 3', function () {
+test('toFunctionSchema omits required when no required parameters', function () {
     $tool = new Tool(
         name: 'test',
         description: 'test',
@@ -90,5 +90,6 @@ test('tool default maxTries is 3', function () {
         callback: fn(array $input) => '',
     );
 
-    expect($tool->maxTries())->toBe(3);
+    $schema = $tool->toFunctionSchema();
+    expect($schema['function']['parameters'])->not->toHaveKey('required');
 });

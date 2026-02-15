@@ -18,12 +18,13 @@ final class AnthropicProvider extends AbstractProvider
 
     public function __construct(
         string $model = 'claude-sonnet-4-20250514',
+        string $baseUrl = 'https://api.anthropic.com/v1',
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
     ) {
         parent::__construct(
             model: $model,
-            baseUrl: 'https://api.anthropic.com/v1',
+            baseUrl: $baseUrl,
             apiKey: $apiKey,
             httpClient: $httpClient,
         );
@@ -148,7 +149,7 @@ final class AnthropicProvider extends AbstractProvider
     private function extractSystemAndMessages(array $messages): array
     {
         $systemPrompt = '';
-        $formattedMessages = [];
+        $formatted = [];
 
         foreach ($messages as $message) {
             if ($message->role() === Role::System) {
@@ -157,10 +158,23 @@ final class AnthropicProvider extends AbstractProvider
                 continue;
             }
 
-            $formattedMessages[] = $this->formatAnthropicMessage($message);
+            $formatted[] = $this->formatAnthropicMessage($message);
         }
 
-        return [$systemPrompt, $formattedMessages];
+        // Merge consecutive same-role messages (required by Anthropic).
+        // Consecutive tool_result user messages must be combined into a single
+        // user message with multiple content blocks.
+        $merged = [];
+        foreach ($formatted as $msg) {
+            $last = end($merged);
+            if ($last !== false && $last['role'] === $msg['role'] && is_array($last['content']) && is_array($msg['content'])) {
+                $merged[array_key_last($merged)]['content'] = array_merge($last['content'], $msg['content']);
+            } else {
+                $merged[] = $msg;
+            }
+        }
+
+        return [$systemPrompt, $merged];
     }
 
     /**
@@ -175,16 +189,47 @@ final class AnthropicProvider extends AbstractProvider
             default => 'user',
         };
 
+        // Tool result messages → user message with tool_result content block
         if ($message->role() === Role::Tool) {
+            $toolCallId = $message->toolCallId();
+
+            // Anthropic requires a non-null tool_use_id. Generate a fallback
+            // for replayed conversations where the ID was not persisted.
+            if ($toolCallId === null || $toolCallId === '') {
+                $toolCallId = 'toolu_' . bin2hex(random_bytes(12));
+            }
+
             return [
                 'role' => 'user',
                 'content' => [
                     [
                         'type' => 'tool_result',
-                        'tool_use_id' => $message->toolCallId(),
+                        'tool_use_id' => $toolCallId,
                         'content' => $message->content(),
                     ],
                 ],
+            ];
+        }
+
+        // Assistant messages with tool calls → content blocks with tool_use
+        if ($message->role() === Role::Assistant && !empty($message->toolCalls())) {
+            $content = [];
+            $text = $message->content();
+            if (is_string($text) && $text !== '') {
+                $content[] = ['type' => 'text', 'text' => $text];
+            }
+            foreach ($message->toolCalls() as $toolCall) {
+                $content[] = [
+                    'type' => 'tool_use',
+                    'id' => $toolCall->id,
+                    'name' => $toolCall->name,
+                    'input' => !empty($toolCall->arguments) ? $toolCall->arguments : (object) [],
+                ];
+            }
+
+            return [
+                'role' => 'assistant',
+                'content' => $content,
             ];
         }
 

@@ -10,11 +10,40 @@ use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 final class ProviderFactory
 {
     /**
+     * Conventional environment variable names for provider API keys.
+     *
+     * Checked via getenv() before falling back to openclaw.json config values.
+     * Coqui's CredentialResolver calls putenv() at boot, so workspace .env
+     * entries are automatically available here.
+     */
+    private const ENV_KEY_MAP = [
+        'openai' => 'OPENAI_API_KEY',
+        'anthropic' => 'ANTHROPIC_API_KEY',
+        'openrouter' => 'OPENROUTER_API_KEY',
+    ];
+
+    public function __construct(
+        private readonly ?ConfigInterface $config = null,
+    ) {}
+
+    /**
+     * Create a provider from a model string using injected config.
+     *
+     * Preferred over the static method when you have a factory instance,
+     * since the config is already bound and doesn't need to be passed each time.
+     */
+    public function create(string $modelString): ProviderInterface
+    {
+        return self::fromModelString($modelString, $this->config);
+    }
+
+    /**
      * Create a provider from an OpenClaw-style model string.
      *
      * @param string $modelString e.g., "ollama/llama3.2:latest"
      * @param ConfigInterface|null $config OpenClaw config for baseUrl/apiKey lookups
      */
+
     public static function fromModelString(
         string $modelString,
         ?ConfigInterface $config = null,
@@ -23,7 +52,7 @@ final class ProviderFactory
 
         $providerConfig = $config?->getProviderConfig($providerName) ?? [];
         $baseUrl = self::resolveBaseUrl($providerName, $providerConfig);
-        $apiKey = $providerConfig['apiKey'] ?? '';
+        $apiKey = self::resolveApiKey($providerName, $providerConfig);
 
         return match ($providerName) {
             'ollama' => new OllamaProvider(
@@ -32,12 +61,13 @@ final class ProviderFactory
             ),
             'anthropic' => new AnthropicProvider(
                 model: $model,
-                apiKey: is_string($apiKey) ? $apiKey : '',
+                baseUrl: $baseUrl,
+                apiKey: $apiKey,
             ),
             default => new OpenAICompatibleProvider(
                 model: $model,
                 baseUrl: $baseUrl,
-                apiKey: is_string($apiKey) ? $apiKey : '',
+                apiKey: $apiKey,
             ),
         };
     }
@@ -91,5 +121,29 @@ final class ProviderFactory
             'openrouter' => 'https://openrouter.ai/api/v1',
             default => '',
         };
+    }
+
+    /**
+     * Resolve API key with environment variable override.
+     *
+     * Priority: getenv(PROVIDER_API_KEY) > config apiKey > empty string.
+     * This allows .env files to override hardcoded config values, and
+     * enables Coqui's CredentialTool to manage provider keys at runtime.
+     *
+     * @param array<string, mixed> $providerConfig
+     */
+    private static function resolveApiKey(string $provider, array $providerConfig): string
+    {
+        // Check environment variable first (highest priority)
+        $envVar = self::ENV_KEY_MAP[$provider] ?? strtoupper($provider) . '_API_KEY';
+        $envValue = getenv($envVar);
+        if ($envValue !== false && $envValue !== '') {
+            return $envValue;
+        }
+
+        // Fall back to config value
+        $configKey = $providerConfig['apiKey'] ?? '';
+
+        return is_string($configKey) ? $configKey : '';
     }
 }
