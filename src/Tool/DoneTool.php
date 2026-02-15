@@ -19,9 +19,9 @@ final class DoneTool implements ToolInterface
 
     public function description(): string
     {
-        return 'Call this tool when you have completed the task. '
-            . 'Pass your final response in the "response" parameter. '
-            . 'You MUST call this tool to finish — do not end without it.';
+        return 'Present your final response to the user after using tools. '
+            . 'Pass your completed answer in the "response" parameter. '
+            . 'Only needed after tool use — for simple conversation, respond with text directly.';
     }
 
     public function parameters(): array
