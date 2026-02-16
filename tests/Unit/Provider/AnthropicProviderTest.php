@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use CarmeloSantana\PHPAgents\Enum\FinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
+use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
@@ -190,4 +191,60 @@ test('models returns list of known Anthropic models', function () {
     expect($models)->toBeArray()
         ->and($models)->not->toBeEmpty()
         ->and($models[0]->provider)->toBe('anthropic');
+});
+
+test('chat merges consecutive same-role messages with mixed content types', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockAnthropicResponse();
+    });
+
+    $provider = new AnthropicProvider(
+        model: 'claude-sonnet-4-20250514',
+        apiKey: 'test-key',
+        httpClient: $mockClient,
+    );
+
+    // Two consecutive user messages — one string content, one structured.
+    // This simulates what happens after conversation pruning drops turns.
+    $provider->chat([
+        new SystemMessage('system'),
+        new UserMessage('first question'),
+        new UserMessage('second question'),
+    ]);
+
+    expect($requestPayload)->not->toBeNull();
+    // Should be merged into a single user message
+    expect($requestPayload['messages'])->toHaveCount(1);
+    expect($requestPayload['messages'][0]['role'])->toBe('user');
+});
+
+test('chat merges consecutive assistant text messages', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockAnthropicResponse();
+    });
+
+    $provider = new AnthropicProvider(
+        model: 'claude-sonnet-4-20250514',
+        apiKey: 'test-key',
+        httpClient: $mockClient,
+    );
+
+    // User question then two consecutive assistant messages
+    $provider->chat([
+        new UserMessage('question'),
+        new AssistantMessage('part one'),
+        new AssistantMessage('part two'),
+        new UserMessage('follow up'),
+    ]);
+
+    expect($requestPayload)->not->toBeNull();
+    // Should be: user, merged-assistant, user = 3 messages
+    expect($requestPayload['messages'])->toHaveCount(3);
+    expect($requestPayload['messages'][0]['role'])->toBe('user');
+    expect($requestPayload['messages'][1]['role'])->toBe('assistant');
+    expect($requestPayload['messages'][2]['role'])->toBe('user');
 });

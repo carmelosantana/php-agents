@@ -231,6 +231,78 @@ final class Conversation
     }
 
     /**
+     * Merge consecutive messages with the same role into single messages.
+     *
+     * After pruning operations (dropOldestTurns, repairToolPairing), the
+     * conversation may contain consecutive same-role messages. Some providers
+     * (notably Anthropic) reject these. This method merges them by concatenating
+     * text content with newlines.
+     *
+     * Tool messages are never merged — each tool result must correspond to
+     * exactly one tool_use_id. Assistant messages with tool calls are also
+     * kept separate to preserve their tool_call structure.
+     *
+     * Returns a new Conversation.
+     */
+    public function mergeConsecutiveRoles(): self
+    {
+        $result = new self();
+        $lastMsg = null;
+
+        foreach ($this->messages as $msg) {
+            // Never merge tool result messages — they have unique tool_call_ids
+            if ($msg->role() === Role::Tool) {
+                $result->add($msg);
+                $lastMsg = $msg;
+                continue;
+            }
+
+            // Never merge assistant messages with tool calls — structure matters
+            if ($msg->role() === Role::Assistant && !empty($msg->toolCalls())) {
+                $result->add($msg);
+                $lastMsg = $msg;
+                continue;
+            }
+
+            // Merge consecutive same-role text-only messages
+            if (
+                $lastMsg !== null
+                && $lastMsg->role() === $msg->role()
+                && empty($lastMsg->toolCalls())
+            ) {
+                // Remove the last message and replace with merged content
+                $messages = $result->messages();
+                $lastContent = is_string($lastMsg->content()) ? $lastMsg->content() : (json_encode($lastMsg->content()) ?: '');
+                $newContent = is_string($msg->content()) ? $msg->content() : (json_encode($msg->content()) ?: '');
+                $mergedContent = $lastContent . "\n\n" . $newContent;
+
+                // Rebuild the conversation without the last message
+                $result = new self();
+                for ($i = 0; $i < count($messages) - 1; $i++) {
+                    $result->add($messages[$i]);
+                }
+
+                // Add merged message based on role.
+                // At this point $msg is User, Assistant (text-only), or System
+                // since Tool and Assistant-with-tool-calls are handled above.
+                $merged = match ($msg->role()) {
+                    Role::User => new UserMessage($mergedContent),
+                    Role::Assistant => new AssistantMessage($mergedContent),
+                    default => new SystemMessage($mergedContent),
+                };
+                $result->add($merged);
+                $lastMsg = $merged;
+                continue;
+            }
+
+            $result->add($msg);
+            $lastMsg = $msg;
+        }
+
+        return $result;
+    }
+
+    /**
      * Progressively prune the conversation to fit within a token budget.
      *
      * Strategy (inspired by OpenClaw):
@@ -268,6 +340,9 @@ final class Conversation
 
         // Step 4: Repair any orphaned tool results from dropped turns
         $result = $result->repairToolPairing();
+
+        // Step 5: Merge consecutive same-role messages that may result from pruning
+        $result = $result->mergeConsecutiveRoles();
 
         return $result;
     }

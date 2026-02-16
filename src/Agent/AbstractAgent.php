@@ -10,9 +10,9 @@ use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolkitInterface;
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
 use CarmeloSantana\PHPAgents\Enum\ModelCapability;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
+use CarmeloSantana\PHPAgents\Exception\TerminationException;
 use CarmeloSantana\PHPAgents\Exception\ToolNotFoundException;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\Conversation;
@@ -95,7 +95,6 @@ abstract class AbstractAgent implements AgentInterface
 
         $allToolResults = [];
         $totalUsage = new Usage();
-        $lastContent = '';
 
         for ($i = 0; $i < $this->maxIterations(); $i++) {
             $this->notify('agent.iteration', $i + 1);
@@ -190,6 +189,20 @@ abstract class AbstractAgent implements AgentInterface
                         $tool = $this->findTool($toolCall->name, $allTools);
                         $result = $tool->execute($toolCall->arguments);
                         $result = $result->withCallId($toolCall->id);
+                    } catch (TerminationException $e) {
+                        // Tool requested immediate loop termination (e.g. restart)
+                        $result = ToolResult::success($e->getMessage())->withCallId($toolCall->id);
+                        $allToolResults[] = $result;
+                        $conversation->add(new ToolResultMessage($result));
+                        $this->notify('agent.tool_result', $result);
+
+                        return new Output(
+                            content: $e->getMessage(),
+                            toolResults: $allToolResults,
+                            usage: $totalUsage,
+                            iterations: $i + 1,
+                            conversation: $conversation,
+                        );
                     } catch (\Throwable $e) {
                         $this->notify('agent.tool_error', $e->getMessage());
                         $result = ToolResult::error($e->getMessage())->withCallId($toolCall->id);
@@ -203,18 +216,24 @@ abstract class AbstractAgent implements AgentInterface
                 continue;
             }
 
-            if ($response->content === $lastContent && $response->content !== '') {
-                $conversation->add(new AssistantMessage(
-                    'Warning: You are repeating yourself. Please make progress or call the done tool.',
-                ));
+            // Text-only response (no tool calls) — this IS the response.
+            // The done tool is only needed after tool use to present results.
+            if ($response->content !== '') {
+                $conversation->add(new AssistantMessage($response->content));
+                $this->notify('agent.done', ['response' => $response->content]);
+
+                return new Output(
+                    content: $response->content,
+                    toolResults: $allToolResults,
+                    usage: $totalUsage,
+                    model: $response->model,
+                    iterations: $i + 1,
+                    conversation: $conversation,
+                );
             }
 
-            $lastContent = $response->content;
+            // Empty response with no tool calls — let it retry
             $conversation->add(new AssistantMessage($response->content));
-
-            if ($response->finishReason === FinishReason::Stop && $response->content !== '') {
-                continue;
-            }
         }
 
         $this->notify('agent.error', 'Max iterations reached');
@@ -239,7 +258,7 @@ abstract class AbstractAgent implements AgentInterface
             $tools = [...$tools, ...$toolkit->tools()];
         }
 
-        $tools[] = new DoneTool();
+        $tools[] = DoneTool::create();
 
         return $tools;
     }
