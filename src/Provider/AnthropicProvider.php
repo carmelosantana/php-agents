@@ -163,12 +163,15 @@ final class AnthropicProvider extends AbstractProvider
 
         // Merge consecutive same-role messages (required by Anthropic).
         // Consecutive tool_result user messages must be combined into a single
-        // user message with multiple content blocks.
+        // user message with multiple content blocks. Handle mixed content types
+        // (string + array) by normalizing strings to text content blocks.
         $merged = [];
         foreach ($formatted as $msg) {
             $last = end($merged);
-            if ($last !== false && $last['role'] === $msg['role'] && is_array($last['content']) && is_array($msg['content'])) {
-                $merged[array_key_last($merged)]['content'] = array_merge($last['content'], $msg['content']);
+            if ($last !== false && $last['role'] === $msg['role']) {
+                $lastContent = $this->normalizeContent($last['content']);
+                $msgContent = $this->normalizeContent($msg['content']);
+                $merged[array_key_last($merged)]['content'] = array_merge($lastContent, $msgContent);
             } else {
                 $merged[] = $msg;
             }
@@ -301,5 +304,23 @@ final class AnthropicProvider extends AbstractProvider
             toolCalls: [],
             model: $this->model,
         );
+    }
+
+    /**
+     * Normalize message content to an array of content blocks.
+     *
+     * Anthropic requires content blocks when merging consecutive same-role
+     * messages. Plain string content is converted to a text block.
+     *
+     * @param string|array<array<string, mixed>> $content
+     * @return array<array<string, mixed>>
+     */
+    private function normalizeContent(string|array $content): array
+    {
+        if (is_string($content)) {
+            return $content !== '' ? [['type' => 'text', 'text' => $content]] : [];
+        }
+
+        return $content;
     }
 }

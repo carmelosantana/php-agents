@@ -258,7 +258,7 @@ abstract class AbstractAgent implements AgentInterface
             $tools = [...$tools, ...$toolkit->tools()];
         }
 
-        $tools[] = new DoneTool();
+        $tools[] = DoneTool::create();
 
         return $tools;
     }

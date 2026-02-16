@@ -294,3 +294,136 @@ test('estimateTokens accounts for tool call schemas', function () {
 
     expect($withTools->estimateTokens())->toBeGreaterThan($withoutTools->estimateTokens());
 });
+
+// --- mergeConsecutiveRoles ---
+
+test('mergeConsecutiveRoles merges consecutive user messages', function () {
+    $conversation = new Conversation();
+    $conversation->add(new SystemMessage('system'));
+    $conversation->add(new UserMessage('hello'));
+    $conversation->add(new UserMessage('world'));
+
+    $merged = $conversation->mergeConsecutiveRoles();
+
+    expect($merged->count())->toBe(2);
+    $msgs = $merged->messages();
+    expect($msgs[0]->role())->toBe(Role::System);
+    expect($msgs[1]->role())->toBe(Role::User);
+    expect($msgs[1]->content())->toContain('hello');
+    expect($msgs[1]->content())->toContain('world');
+});
+
+test('mergeConsecutiveRoles merges consecutive assistant text messages', function () {
+    $conversation = new Conversation();
+    $conversation->add(new UserMessage('question'));
+    $conversation->add(new AssistantMessage('part one'));
+    $conversation->add(new AssistantMessage('part two'));
+
+    $merged = $conversation->mergeConsecutiveRoles();
+
+    expect($merged->count())->toBe(2);
+    $msgs = $merged->messages();
+    expect($msgs[1]->role())->toBe(Role::Assistant);
+    expect($msgs[1]->content())->toContain('part one');
+    expect($msgs[1]->content())->toContain('part two');
+});
+
+test('mergeConsecutiveRoles does not merge tool result messages', function () {
+    $conversation = new Conversation();
+    $conversation->add(new UserMessage('hello'));
+    $conversation->add(new AssistantMessage('', [
+        new ToolCall('c1', 'tool_a', ['x' => '1']),
+        new ToolCall('c2', 'tool_b', ['y' => '2']),
+    ]));
+    $conversation->add(new ToolResultMessage(
+        (new ToolResult(ToolResultStatus::Success, 'result a'))->withCallId('c1'),
+    ));
+    $conversation->add(new ToolResultMessage(
+        (new ToolResult(ToolResultStatus::Success, 'result b'))->withCallId('c2'),
+    ));
+
+    $merged = $conversation->mergeConsecutiveRoles();
+
+    // Tool results must remain separate even though they have the same "user" role in Anthropic
+    expect($merged->count())->toBe(4);
+});
+
+test('mergeConsecutiveRoles does not merge assistant messages with tool calls', function () {
+    $conversation = new Conversation();
+    $conversation->add(new UserMessage('hello'));
+    $conversation->add(new AssistantMessage('thinking', [
+        new ToolCall('c1', 'tool_a', []),
+    ]));
+    $conversation->add(new AssistantMessage('more thinking'));
+
+    $merged = $conversation->mergeConsecutiveRoles();
+
+    // The first assistant has tool calls — should not be merged
+    expect($merged->count())->toBe(3);
+});
+
+test('mergeConsecutiveRoles returns new instance', function () {
+    $conversation = new Conversation();
+    $conversation->add(new UserMessage('hello'));
+    $conversation->add(new UserMessage('world'));
+
+    $merged = $conversation->mergeConsecutiveRoles();
+
+    expect($merged)->not->toBe($conversation);
+    expect($conversation->count())->toBe(2);
+    expect($merged->count())->toBe(1);
+});
+
+test('mergeConsecutiveRoles handles three consecutive same-role messages', function () {
+    $conversation = new Conversation();
+    $conversation->add(new UserMessage('one'));
+    $conversation->add(new UserMessage('two'));
+    $conversation->add(new UserMessage('three'));
+
+    $merged = $conversation->mergeConsecutiveRoles();
+
+    expect($merged->count())->toBe(1);
+    expect($merged->messages()[0]->content())->toContain('one');
+    expect($merged->messages()[0]->content())->toContain('two');
+    expect($merged->messages()[0]->content())->toContain('three');
+});
+
+test('fitWithinBudget merges consecutive roles after pruning', function () {
+    // Create a conversation that will need pruning, resulting in consecutive messages
+    $conversation = new Conversation();
+    $conversation->add(new SystemMessage('system'));
+
+    // Turn 1: user + assistant with tool call + tool result + assistant
+    $conversation->add(new UserMessage('first question'));
+    $conversation->add(new AssistantMessage('let me check', [
+        new ToolCall('c1', 'search', ['q' => 'test']),
+    ]));
+    $conversation->add(new ToolResultMessage(
+        (new ToolResult(ToolResultStatus::Success, 'result'))->withCallId('c1'),
+    ));
+    $conversation->add(new AssistantMessage('here is the answer'));
+
+    // Turn 2: simple exchange
+    $conversation->add(new UserMessage('second question'));
+    $conversation->add(new AssistantMessage('second answer'));
+
+    // After fitWithinBudget, there should be no consecutive same-role messages
+    $pruned = $conversation->fitWithinBudget(1_000_000);
+
+    $msgs = $pruned->messages();
+    for ($i = 1; $i < count($msgs); $i++) {
+        $prev = $msgs[$i - 1];
+        $curr = $msgs[$i];
+
+        // Allow consecutive tool results (they get merged by the provider)
+        if ($prev->role() === Role::Tool && $curr->role() === Role::Tool) {
+            continue;
+        }
+        // No other consecutive same-role pairs should remain (except tool)
+        if ($prev->role() !== Role::Tool && $curr->role() !== Role::Tool) {
+            expect($curr->role())->not->toBe($prev->role(),
+                "Found consecutive same-role messages at index {$i}: " . $curr->role()->value,
+            );
+        }
+    }
+});
