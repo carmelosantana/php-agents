@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Agent;
 
 use CarmeloSantana\PHPAgents\Contract\AgentInterface;
+use CarmeloSantana\PHPAgents\Contract\CancellationTokenInterface;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
+use CarmeloSantana\PHPAgents\Contract\PendingInputProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
@@ -37,6 +39,8 @@ abstract class AbstractAgent implements AgentInterface
         private readonly ProviderInterface $provider,
         private readonly int $maxIter = 25,
         private readonly ?ToolExecutionPolicyInterface $executionPolicy = null,
+        private readonly ?CancellationTokenInterface $cancellationToken = null,
+        private readonly ?PendingInputProviderInterface $pendingInputProvider = null,
     ) {}
 
     abstract public function instructions(): string;
@@ -97,6 +101,26 @@ abstract class AbstractAgent implements AgentInterface
         $totalUsage = new Usage();
 
         for ($i = 0; $i < $this->maxIterations(); $i++) {
+            // Check cooperative cancellation before each iteration
+            if ($this->cancellationToken?->isCancelled()) {
+                $this->notify('agent.error', 'Task cancelled');
+
+                return new Output(
+                    content: 'Task was cancelled.',
+                    toolResults: $allToolResults,
+                    usage: $totalUsage,
+                    iterations: $i + 1,
+                    conversation: $conversation,
+                );
+            }
+
+            // Inject any pending external input into the conversation
+            if ($this->pendingInputProvider !== null) {
+                foreach ($this->pendingInputProvider->consumePendingInputs() as $pendingInput) {
+                    $conversation->add($pendingInput);
+                }
+            }
+
             $this->notify('agent.iteration', $i + 1);
 
             try {
