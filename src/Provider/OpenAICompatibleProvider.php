@@ -61,13 +61,91 @@ class OpenAICompatibleProvider extends AbstractProvider
             'json' => $payload,
         ]);
 
+        // Accumulate tool call deltas across chunks. OpenAI streams tool calls
+        // as incremental fragments: the first chunk carries the tool ID and
+        // function name, subsequent chunks carry argument JSON fragments.
+        /** @var array<int, array{id: string, name: string, arguments: string}> $pendingToolCalls */
+        $pendingToolCalls = [];
+
         foreach ($this->httpClient->stream($response) as $chunk) {
             $data = $chunk->getContent();
             foreach (explode("\n", $data) as $line) {
                 if (str_starts_with($line, 'data: ') && $line !== 'data: [DONE]') {
                     $json = json_decode(substr($line, 6), true);
-                    if ($json !== null) {
-                        yield $this->parseStreamChunk($json);
+                    if ($json === null) {
+                        continue;
+                    }
+
+                    $choice = $json['choices'][0] ?? [];
+                    $delta = $choice['delta'] ?? [];
+                    $finishReason = $choice['finish_reason'] ?? null;
+
+                    // Accumulate tool call deltas
+                    foreach ($delta['tool_calls'] ?? [] as $tc) {
+                        $index = $tc['index'] ?? 0;
+
+                        if (isset($tc['id'])) {
+                            // First chunk for this tool call — initialize
+                            $pendingToolCalls[$index] = [
+                                'id' => $tc['id'],
+                                'name' => $tc['function']['name'] ?? '',
+                                'arguments' => $tc['function']['arguments'] ?? '',
+                            ];
+                        } elseif (isset($pendingToolCalls[$index])) {
+                            // Subsequent chunk — append argument fragment
+                            $pendingToolCalls[$index]['arguments'] .= $tc['function']['arguments'] ?? '';
+                        }
+                    }
+
+                    // When the stream signals tool_calls finish, yield a
+                    // Response with the fully-assembled ToolCall objects.
+                    if ($finishReason === 'tool_calls' && !empty($pendingToolCalls)) {
+                        $toolCalls = [];
+                        foreach ($pendingToolCalls as $tc) {
+                            $toolCalls[] = new ToolCall(
+                                id: $tc['id'],
+                                name: $tc['name'],
+                                arguments: json_decode($tc['arguments'], true) ?? [],
+                            );
+                        }
+
+                        yield new Response(
+                            content: $delta['content'] ?? '',
+                            finishReason: FinishReason::ToolUse,
+                            toolCalls: $toolCalls,
+                            model: $json['model'] ?? $this->model,
+                        );
+
+                        $pendingToolCalls = [];
+                        continue;
+                    }
+
+                    // Regular text delta — yield immediately
+                    if (isset($delta['content']) && $delta['content'] !== '') {
+                        yield new Response(
+                            content: $delta['content'],
+                            finishReason: $this->mapFinishReason($finishReason),
+                            toolCalls: [],
+                            model: $json['model'] ?? $this->model,
+                        );
+                    } elseif ($finishReason === 'stop') {
+                        // Final chunk with usage data
+                        $usage = null;
+                        if (isset($json['usage'])) {
+                            $usage = new Usage(
+                                promptTokens: $json['usage']['prompt_tokens'] ?? 0,
+                                completionTokens: $json['usage']['completion_tokens'] ?? 0,
+                                totalTokens: $json['usage']['total_tokens'] ?? 0,
+                            );
+                        }
+
+                        yield new Response(
+                            content: '',
+                            finishReason: FinishReason::Stop,
+                            toolCalls: [],
+                            model: $json['model'] ?? $this->model,
+                            usage: $usage,
+                        );
                     }
                 }
             }
@@ -166,22 +244,6 @@ class OpenAICompatibleProvider extends AbstractProvider
             toolCalls: $toolCalls,
             model: $data['model'] ?? $this->model,
             usage: $usage,
-        );
-    }
-
-    /**
-     * @param array<string, mixed> $data
-     */
-    protected function parseStreamChunk(array $data): Response
-    {
-        $choice = $data['choices'][0] ?? [];
-        $delta = $choice['delta'] ?? [];
-
-        return new Response(
-            content: $delta['content'] ?? '',
-            finishReason: $this->mapFinishReason($choice['finish_reason'] ?? null),
-            toolCalls: [],
-            model: $data['model'] ?? $this->model,
         );
     }
 

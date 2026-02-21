@@ -48,7 +48,9 @@ final class FileMemory implements MemoryInterface
 
     public function delete(string $id): void
     {
-        $pattern = '/\n\n### \[[^\]]+\] [^\(]+ \(id: ' . preg_quote($id, '/') . '\)\n\n[^#]*/';
+        // Match the exact entry block from its header to the next header or end of content.
+        // The negative lookahead ensures we don't consume into the next entry.
+        $pattern = '/\n\n### \[[^\]]+\] [^\(]+ \(id: ' . preg_quote($id, '/') . '\)\n\n(?:(?!\n### \[).)*+/s';
         $this->content = preg_replace($pattern, '', $this->content) ?? $this->content;
         $this->persist();
     }
@@ -112,6 +114,21 @@ final class FileMemory implements MemoryInterface
             mkdir($dir, 0755, true);
         }
 
-        file_put_contents($this->filePath, $this->content);
+        // Use exclusive locking to prevent concurrent write corruption
+        $handle = fopen($this->filePath, 'c');
+        if ($handle === false) {
+            return;
+        }
+
+        try {
+            if (flock($handle, LOCK_EX)) {
+                ftruncate($handle, 0);
+                fwrite($handle, $this->content);
+                fflush($handle);
+                flock($handle, LOCK_UN);
+            }
+        } finally {
+            fclose($handle);
+        }
     }
 }

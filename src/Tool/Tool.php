@@ -37,6 +37,20 @@ final class Tool implements ToolInterface
 
     public function execute(array $input): ToolResult
     {
+        // Validate required parameters before executing
+        $missing = [];
+        foreach ($this->parameters as $param) {
+            if ($param->required && !array_key_exists($param->name, $input)) {
+                $missing[] = $param->name;
+            }
+        }
+
+        if (!empty($missing)) {
+            return ToolResult::error(
+                'Missing required parameters: ' . implode(', ', $missing),
+            );
+        }
+
         try {
             $result = ($this->callback)($input);
 

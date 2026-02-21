@@ -6,6 +6,7 @@ namespace CarmeloSantana\PHPAgents\Agent;
 
 use CarmeloSantana\PHPAgents\Contract\AgentInterface;
 use CarmeloSantana\PHPAgents\Contract\CancellationTokenInterface;
+use CarmeloSantana\PHPAgents\Contract\ContextWindowInterface;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\PendingInputProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
@@ -41,6 +42,7 @@ abstract class AbstractAgent implements AgentInterface
         private readonly ?ToolExecutionPolicyInterface $executionPolicy = null,
         private readonly ?CancellationTokenInterface $cancellationToken = null,
         private readonly ?PendingInputProviderInterface $pendingInputProvider = null,
+        private readonly ?ContextWindowInterface $contextWindow = null,
     ) {}
 
     abstract public function instructions(): string;
@@ -101,6 +103,16 @@ abstract class AbstractAgent implements AgentInterface
         $totalUsage = new Usage();
 
         for ($i = 0; $i < $this->maxIterations(); $i++) {
+            // Apply context window pruning when a budget is configured.
+            // This prevents unbounded conversation growth that would cause
+            // provider context-length errors.
+            if ($this->contextWindow !== null) {
+                $budget = $this->contextWindow->availableTokens();
+                if ($budget > 0) {
+                    $conversation = $conversation->fitWithinBudget($budget);
+                }
+            }
+
             // Check cooperative cancellation before each iteration
             if ($this->cancellationToken?->isCancelled()) {
                 $this->notify('agent.error', 'Task cancelled');
@@ -168,6 +180,9 @@ abstract class AbstractAgent implements AgentInterface
                     completionTokens: $totalUsage->completionTokens + $response->usage->completionTokens,
                     totalTokens: $totalUsage->totalTokens + $response->usage->totalTokens,
                 );
+
+                // Report actual usage to context window for accurate tracking
+                $this->contextWindow?->report($response->usage);
             }
 
             foreach ($response->toolCalls as $toolCall) {
@@ -189,6 +204,14 @@ abstract class AbstractAgent implements AgentInterface
                 $conversation->add(new AssistantMessage($response->content, $response->toolCalls));
 
                 foreach ($response->toolCalls as $toolCall) {
+                    // Check cancellation between individual tool calls so the
+                    // caller can interrupt mid-iteration without waiting for
+                    // all queued tools to finish. The outer loop re-checks
+                    // isCancelled() and returns a graceful Output.
+                    if ($this->cancellationToken?->isCancelled()) {
+                        break;
+                    }
+
                     $this->notify('agent.tool_call', $toolCall);
 
                     // Check execution policy before running the tool

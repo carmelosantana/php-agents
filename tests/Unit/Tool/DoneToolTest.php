@@ -34,10 +34,10 @@ test('DoneTool::create execute returns success with response content', function 
     expect($result->content)->toBe('Hello world');
 });
 
-test('DoneTool::create execute handles missing response gracefully', function () {
+test('DoneTool::create execute handles missing response with error', function () {
     $tool = DoneTool::create();
     $result = $tool->execute([]);
 
-    expect($result->status->value)->toBe('success');
-    expect($result->content)->toBe('');
+    expect($result->status->value)->toBe('error');
+    expect($result->content)->toContain('Missing required parameters');
 });

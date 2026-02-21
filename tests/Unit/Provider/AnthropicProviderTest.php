@@ -179,9 +179,10 @@ test('isAvailable returns false with empty API key', function () {
     expect($provider->isAvailable())->toBeFalse();
 });
 
-test('isAvailable returns true with valid API key', function () {
-    $provider = new AnthropicProvider(apiKey: 'sk-ant-test');
-    expect($provider->isAvailable())->toBeTrue();
+test('isAvailable returns false with invalid API key (no real API)', function () {
+    $provider = new AnthropicProvider(apiKey: 'sk-ant-test-invalid');
+    // isAvailable() now makes a real HTTP request, so a fake key returns false
+    expect($provider->isAvailable())->toBeFalse();
 });
 
 test('models returns list of known Anthropic models', function () {

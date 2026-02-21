@@ -21,6 +21,7 @@ final class WebToolkit implements ToolkitInterface
         private readonly ?string $searchEndpoint = null,
         private readonly ?string $searchApiKey = null,
         ?HttpClientInterface $httpClient = null,
+        private readonly bool $allowPrivateNetworks = false,
     ) {
         $this->httpClient = $httpClient ?? HttpClient::create(['timeout' => 30]);
     }
@@ -67,6 +68,11 @@ final class WebToolkit implements ToolkitInterface
 
                 if ($url === '') {
                     return ToolResult::error('URL is required');
+                }
+
+                // SSRF protection: block requests to private/internal networks
+                if (!$this->allowPrivateNetworks && $this->isBlockedUrl($url)) {
+                    return ToolResult::error('Request blocked: URL resolves to a private or internal network address.');
                 }
 
                 try {
@@ -135,5 +141,58 @@ final class WebToolkit implements ToolkitInterface
                 }
             },
         );
+    }
+
+    /**
+     * Check if a URL resolves to a blocked (private/internal) network address.
+     */
+    private function isBlockedUrl(string $url): bool
+    {
+        $host = parse_url($url, PHP_URL_HOST);
+        if ($host === null || $host === false || $host === '') {
+            return true; // Malformed URL
+        }
+
+        // Strip brackets from IPv6 addresses
+        $host = trim($host, '[]');
+
+        // Block common metadata hostnames
+        $blockedHosts = ['metadata.google.internal', 'metadata', 'instance-data'];
+        if (in_array(strtolower($host), $blockedHosts, true)) {
+            return true;
+        }
+
+        // Resolve hostname to IP addresses
+        $ips = gethostbynamel($host);
+        if ($ips === false) {
+            // Could also be an IPv6 address or unresolvable host
+            // Check if it's a raw IP address
+            if (filter_var($host, FILTER_VALIDATE_IP)) {
+                $ips = [$host];
+            } else {
+                return true; // Unresolvable
+            }
+        }
+
+        foreach ($ips as $ip) {
+            if ($this->isPrivateIp($ip)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if an IP address falls within any blocked CIDR range.
+     */
+    private function isPrivateIp(string $ip): bool
+    {
+        // Quick check using PHP's built-in filter
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
+            return true;
+        }
+
+        return false;
     }
 }
