@@ -84,6 +84,12 @@ final class ShellToolkit implements ToolkitInterface
                     return ToolResult::error("Command not allowed: {$command}");
                 }
 
+                // When an allowlist is active, also check for shell injection
+                // patterns that could bypass the allowlist.
+                if (!empty($this->allowedCommands) && $this->hasShellInjection($command)) {
+                    return ToolResult::error('Denied: command contains shell metacharacters that could bypass the allowlist.');
+                }
+
                 // Check configurable denylist (substring match)
                 foreach ($this->deniedCommands as $denied) {
                     if (str_contains($command, $denied)) {
@@ -170,10 +176,52 @@ final class ShellToolkit implements ToolkitInterface
             return true;
         }
 
-        $firstWord = explode(' ', trim($command))[0];
+        // Parse the actual executable from the command, stripping any
+        // environment variable assignments (KEY=value) and handling
+        // common shell constructs.
+        $trimmed = trim($command);
+        $words = preg_split('/\s+/', $trimmed) ?: [$trimmed];
 
+        // Skip leading env var assignments (e.g., FOO=bar command)
+        $firstWord = '';
+        foreach ($words as $word) {
+            if (str_contains($word, '=') && !str_starts_with($word, '-')) {
+                continue;
+            }
+            $firstWord = $word;
+            break;
+        }
+
+        if ($firstWord === '') {
+            return false;
+        }
+
+        // Check against allowlist
         foreach ($this->allowedCommands as $allowed) {
-            if ($firstWord === $allowed || str_starts_with($command, $allowed)) {
+            if ($firstWord === $allowed) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check for shell metacharacters that could be used to chain
+     * or redirect command execution beyond the allowlist.
+     */
+    private function hasShellInjection(string $command): bool
+    {
+        // Detect command chaining that could bypass the allowlist
+        $patterns = [
+            '/[;&|]/',                    // Command separators and pipes
+            '/\$\(/',                     // Command substitution
+            '/`/',                        // Backtick substitution
+            '/\b(eval|source|\.)\s/',    // eval/source execution
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $command)) {
                 return true;
             }
         }

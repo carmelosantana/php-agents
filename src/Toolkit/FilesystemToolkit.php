@@ -271,7 +271,23 @@ final class FilesystemToolkit implements ToolkitInterface
 
     private function resolvePath(string $relativePath): string
     {
-        $path = "{$this->rootPath}/{$relativePath}";
+        // Canonicalize relative path segments manually to prevent traversal
+        // when realpath() fails (file doesn't exist yet).
+        $segments = explode('/', str_replace('\\', '/', $relativePath));
+        $resolved = [];
+        foreach ($segments as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+            if ($segment === '..') {
+                array_pop($resolved);
+            } else {
+                $resolved[] = $segment;
+            }
+        }
+        $canonicalized = implode('/', $resolved);
+
+        $path = "{$this->rootPath}/{$canonicalized}";
         $realRoot = realpath($this->rootPath);
 
         if ($realRoot === false) {
@@ -280,10 +296,24 @@ final class FilesystemToolkit implements ToolkitInterface
 
         $realPath = realpath($path);
 
-        if ($realPath !== false && !str_starts_with($realPath, $realRoot)) {
+        if ($realPath !== false) {
+            // Existing path — verify it's within the root
+            if (!str_starts_with($realPath, $realRoot)) {
+                return $this->rootPath;
+            }
+
+            return $realPath;
+        }
+
+        // Path doesn't exist yet (new file). Verify the canonicalized version
+        // still resides within the root by checking the deepest existing
+        // ancestor directory.
+        $parentPath = dirname($path);
+        $realParent = realpath($parentPath);
+        if ($realParent !== false && !str_starts_with($realParent, $realRoot)) {
             return $this->rootPath;
         }
 
-        return $realPath ?: $path;
+        return $path;
     }
 }
