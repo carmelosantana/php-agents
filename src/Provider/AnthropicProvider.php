@@ -373,10 +373,11 @@ final class AnthropicProvider extends AbstractProvider
         $merged = [];
         foreach ($formatted as $msg) {
             $last = end($merged);
-            if ($last !== false && $last['role'] === $msg['role']) {
+            $lastKey = array_key_last($merged);
+            if ($last !== false && $lastKey !== null && $last['role'] === $msg['role']) {
                 $lastContent = $this->normalizeContent($last['content']);
                 $msgContent = $this->normalizeContent($msg['content']);
-                $merged[array_key_last($merged)]['content'] = array_merge($lastContent, $msgContent);
+                $merged[$lastKey]['content'] = array_merge($lastContent, $msgContent);
             } else {
                 $merged[] = $msg;
             }
