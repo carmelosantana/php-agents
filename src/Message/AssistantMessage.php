@@ -51,7 +51,7 @@ final readonly class AssistantMessage implements MessageInterface
                 'type' => 'function',
                 'function' => [
                     'name' => $tc->name,
-                    'arguments' => json_encode($tc->arguments),
+                    'arguments' => json_encode($tc->arguments ?: new \stdClass()),
                 ],
             ], $this->toolCalls);
         }

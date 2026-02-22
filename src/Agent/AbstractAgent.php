@@ -295,19 +295,32 @@ abstract class AbstractAgent implements AgentInterface
     }
 
     /**
+     * Collect all tools with name-based deduplication (last-registered wins).
+     *
+     * Order: standalone tools → toolkit tools → DoneTool.
+     * If multiple tools share the same name, the later registration
+     * silently overrides the earlier one. This allows workspace-installed
+     * toolkit packages to replace core tools.
+     *
      * @return ToolInterface[]
      */
     private function allTools(): array
     {
-        $tools = [...$this->tools()];
+        $indexed = [];
 
-        foreach ($this->toolkits as $toolkit) {
-            $tools = [...$tools, ...$toolkit->tools()];
+        foreach ($this->tools() as $tool) {
+            $indexed[$tool->name()] = $tool;
         }
 
-        $tools[] = DoneTool::create();
+        foreach ($this->toolkits as $toolkit) {
+            foreach ($toolkit->tools() as $tool) {
+                $indexed[$tool->name()] = $tool;
+            }
+        }
 
-        return $tools;
+        $indexed[DoneTool::NAME] = DoneTool::create();
+
+        return array_values($indexed);
     }
 
     /**
