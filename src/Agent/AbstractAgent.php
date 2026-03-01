@@ -32,6 +32,12 @@ use Symfony\Contracts\HttpClient\Exception\ClientExceptionInterface;
 
 abstract class AbstractAgent implements AgentInterface
 {
+    /**
+     * Default maximum iterations when no role-specific or global override is configured.
+     * Use 0 to indicate unlimited iterations (maps to PHP_INT_MAX internally).
+     */
+    public const int DEFAULT_MAX_ITERATIONS = 25;
+
     /** @var SplObserver[] */
     private array $observers = [];
 
@@ -40,7 +46,7 @@ abstract class AbstractAgent implements AgentInterface
 
     public function __construct(
         private readonly ProviderInterface $provider,
-        private readonly int $maxIter = 25,
+        private readonly int $maxIter = self::DEFAULT_MAX_ITERATIONS,
         private readonly ?ToolExecutionPolicyInterface $executionPolicy = null,
         private readonly ?CancellationTokenInterface $cancellationToken = null,
         private readonly ?PendingInputProviderInterface $pendingInputProvider = null,
@@ -62,6 +68,17 @@ abstract class AbstractAgent implements AgentInterface
     public function maxIterations(): int
     {
         return $this->maxIter;
+    }
+
+    /**
+     * Resolve the effective iteration limit.
+     *
+     * A value of 0 is the sentinel for "unlimited" — mapped to PHP_INT_MAX
+     * so the standard for-loop works without special-casing.
+     */
+    private function effectiveMaxIterations(): int
+    {
+        return $this->maxIter === 0 ? \PHP_INT_MAX : $this->maxIter;
     }
 
     /**
@@ -104,7 +121,13 @@ abstract class AbstractAgent implements AgentInterface
         $allToolResults = [];
         $totalUsage = new Usage();
 
-        for ($i = 0; $i < $this->maxIterations(); $i++) {
+        $effectiveMax = $this->effectiveMaxIterations();
+
+        if ($this->maxIter === 0) {
+            $this->notify('agent.warning', 'Unlimited iterations enabled (max_iterations=0). The agent will run until the task is complete.');
+        }
+
+        for ($i = 0; $i < $effectiveMax; $i++) {
             // Apply context window pruning when a budget is configured.
             // This prevents unbounded conversation growth that would cause
             // provider context-length errors.
