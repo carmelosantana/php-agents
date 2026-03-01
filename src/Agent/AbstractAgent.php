@@ -13,6 +13,7 @@ use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolkitInterface;
+use CarmeloSantana\PHPAgents\Enum\FinishReason;
 use CarmeloSantana\PHPAgents\Enum\ModelCapability;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Exception\TerminationException;
@@ -22,6 +23,7 @@ use CarmeloSantana\PHPAgents\Message\Conversation;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Prompt\SystemPrompt;
+use CarmeloSantana\PHPAgents\Provider\Response;
 use CarmeloSantana\PHPAgents\Provider\Usage;
 use CarmeloSantana\PHPAgents\Tool\DoneTool;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
@@ -136,9 +138,53 @@ abstract class AbstractAgent implements AgentInterface
             $this->notify('agent.iteration', $i + 1);
 
             try {
-                $response = $this->provider->chat(
-                    $conversation->messages(),
-                    $allTools,
+                $content = '';
+                $toolCalls = [];
+                $streamUsage = null;
+                $streamModel = '';
+
+                foreach ($this->provider->stream($conversation->messages(), $allTools) as $chunk) {
+                    if ($chunk->content !== '') {
+                        $content .= $chunk->content;
+                        $this->notify('agent.text_delta', $chunk->content);
+                    }
+
+                    if (!empty($chunk->toolCalls)) {
+                        $toolCalls = array_merge($toolCalls, $chunk->toolCalls);
+                    }
+
+                    if ($chunk->usage !== null) {
+                        // Merge usage across chunks — some providers split
+                        // input/output tokens across separate events (e.g.
+                        // Anthropic sends input in message_start, output in
+                        // message_delta). Take the max of each field.
+                        if ($streamUsage === null) {
+                            $streamUsage = $chunk->usage;
+                        } else {
+                            $streamUsage = new Usage(
+                                promptTokens: max($streamUsage->promptTokens, $chunk->usage->promptTokens),
+                                completionTokens: max($streamUsage->completionTokens, $chunk->usage->completionTokens),
+                                totalTokens: max(
+                                    $streamUsage->totalTokens,
+                                    $chunk->usage->totalTokens,
+                                    max($streamUsage->promptTokens, $chunk->usage->promptTokens)
+                                        + max($streamUsage->completionTokens, $chunk->usage->completionTokens),
+                                ),
+                            );
+                        }
+                    }
+
+                    if ($chunk->model !== '') {
+                        $streamModel = $chunk->model;
+                    }
+                }
+
+                $response = new Response(
+                    content: $content,
+                    finishReason: !empty($toolCalls) ? FinishReason::ToolUse : FinishReason::Stop,
+                    toolCalls: $toolCalls,
+                    model: $streamModel,
+                    usage: $streamUsage,
                 );
             } catch (\Throwable $e) {
                 $errorMessage = $e->getMessage();
