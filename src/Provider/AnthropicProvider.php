@@ -102,9 +102,20 @@ final class AnthropicProvider extends AbstractProvider
         $currentBlockIndex = -1;
         $currentBlockType = '';
 
+        // Buffer incomplete SSE lines across HTTP chunks.
+        $lineBuffer = '';
+
         foreach ($this->httpClient->stream($response) as $chunk) {
-            $data = $chunk->getContent();
-            foreach (explode("\n", $data) as $line) {
+            $data = $lineBuffer . $chunk->getContent();
+            $lineBuffer = '';
+
+            $lines = explode("\n", $data);
+
+            if (!str_ends_with($data, "\n")) {
+                $lineBuffer = array_pop($lines);
+            }
+
+            foreach ($lines as $line) {
                 if (!str_starts_with($line, 'data: ')) {
                     continue;
                 }

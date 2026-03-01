@@ -7,6 +7,13 @@ namespace CarmeloSantana\PHPAgents\Provider;
 use CarmeloSantana\PHPAgents\Contract\ConfigInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 
+/**
+ * Creates provider instances from OpenClaw-style model strings.
+ *
+ * Routes to the correct provider class based on provider name, config,
+ * and model auto-detection. Supports explicit API selection via the
+ * `api` field in provider config (e.g. `"api": "openai-responses"`).
+ */
 final class ProviderFactory
 {
     /**
@@ -54,6 +61,8 @@ final class ProviderFactory
         $baseUrl = self::resolveBaseUrl($providerName, $providerConfig);
         $apiKey = self::resolveApiKey($providerName, $providerConfig);
 
+        $api = $providerConfig['api'] ?? null;
+
         return match ($providerName) {
             'ollama' => new OllamaProvider(
                 model: $model,
@@ -64,11 +73,23 @@ final class ProviderFactory
                 baseUrl: $baseUrl,
                 apiKey: $apiKey,
             ),
-            default => new OpenAICompatibleProvider(
-                model: $model,
-                baseUrl: $baseUrl,
-                apiKey: $apiKey,
-            ),
+            default => match (true) {
+                $api === 'openai-responses' => new OpenAIResponsesProvider(
+                    model: $model,
+                    baseUrl: $baseUrl,
+                    apiKey: $apiKey,
+                ),
+                self::requiresResponsesApi($model) => new OpenAIResponsesProvider(
+                    model: $model,
+                    baseUrl: $baseUrl,
+                    apiKey: $apiKey,
+                ),
+                default => new OpenAICompatibleProvider(
+                    model: $model,
+                    baseUrl: $baseUrl,
+                    apiKey: $apiKey,
+                ),
+            },
         };
     }
 
@@ -145,5 +166,16 @@ final class ProviderFactory
         $configKey = $providerConfig['apiKey'] ?? '';
 
         return is_string($configKey) ? $configKey : '';
+    }
+
+    /**
+     * Detect models that require the OpenAI Responses API.
+     *
+     * Codex models (gpt-5-codex, etc.) return 404 on /v1/chat/completions
+     * and must be routed through /v1/responses instead.
+     */
+    private static function requiresResponsesApi(string $model): bool
+    {
+        return str_contains(strtolower($model), 'codex');
     }
 }

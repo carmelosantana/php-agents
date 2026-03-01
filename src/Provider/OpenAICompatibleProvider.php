@@ -49,6 +49,7 @@ class OpenAICompatibleProvider extends AbstractProvider
             'model' => $this->model,
             'messages' => $this->formatMessages($messages),
             'stream' => true,
+            'stream_options' => ['include_usage' => true],
             ...$options,
         ];
 
@@ -67,9 +68,23 @@ class OpenAICompatibleProvider extends AbstractProvider
         /** @var array<int, array{id: string, name: string, arguments: string}> $pendingToolCalls */
         $pendingToolCalls = [];
 
+        // Buffer incomplete SSE lines across HTTP chunks. Large payloads
+        // (tool call arguments, usage data) can span chunk boundaries.
+        $lineBuffer = '';
+
         foreach ($this->httpClient->stream($response) as $chunk) {
-            $data = $chunk->getContent();
-            foreach (explode("\n", $data) as $line) {
+            $data = $lineBuffer . $chunk->getContent();
+            $lineBuffer = '';
+
+            $lines = explode("\n", $data);
+
+            // If the data doesn't end with a newline, the last element
+            // is an incomplete line — buffer it for the next chunk.
+            if (!str_ends_with($data, "\n")) {
+                $lineBuffer = array_pop($lines);
+            }
+
+            foreach ($lines as $line) {
                 if (str_starts_with($line, 'data: ') && $line !== 'data: [DONE]') {
                     $json = json_decode(substr($line, 6), true);
                     if ($json === null) {
@@ -120,6 +135,24 @@ class OpenAICompatibleProvider extends AbstractProvider
                         continue;
                     }
 
+                    // Usage-only chunk (sent after all content when
+                    // stream_options.include_usage is true). The choices
+                    // array is empty but usage data is present.
+                    if (empty($json['choices']) && isset($json['usage'])) {
+                        yield new Response(
+                            content: '',
+                            finishReason: FinishReason::Stop,
+                            toolCalls: [],
+                            model: $json['model'] ?? $this->model,
+                            usage: new Usage(
+                                promptTokens: $json['usage']['prompt_tokens'] ?? 0,
+                                completionTokens: $json['usage']['completion_tokens'] ?? 0,
+                                totalTokens: $json['usage']['total_tokens'] ?? 0,
+                            ),
+                        );
+                        continue;
+                    }
+
                     // Regular text delta — yield immediately
                     if (isset($delta['content']) && $delta['content'] !== '') {
                         yield new Response(
@@ -129,7 +162,8 @@ class OpenAICompatibleProvider extends AbstractProvider
                             model: $json['model'] ?? $this->model,
                         );
                     } elseif ($finishReason === 'stop') {
-                        // Final chunk with usage data
+                        // Final content chunk (stop signal, usage may follow
+                        // in a separate chunk when stream_options is set)
                         $usage = null;
                         if (isset($json['usage'])) {
                             $usage = new Usage(
