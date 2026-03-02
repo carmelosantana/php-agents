@@ -32,16 +32,16 @@ graph LR
 
 ## Provider Feature Matrix
 
-| Feature | OpenAI Compatible | Ollama | Anthropic |
-|---------|:-:|:-:|:-:|
-| `chat()` | ✅ | ✅ | ✅ |
-| `stream()` | ✅ | ✅ | ✅ |
-| `structured()` | ✅ | ✅ | ✅ |
-| Tool calling | ✅ | ✅ | ✅ |
-| Streaming + tool calls | ✅ | ✅ | ✅ |
-| Image input (base64) | ✅ | ✅ | ✅ |
-| `models()` list | ✅ | ✅ | ✅ |
-| `isAvailable()` | ✅ | ✅ | ✅ |
+| Feature                | OpenAI Compatible | Ollama | Anthropic |
+| ---------------------- | :---------------: | :----: | :-------: |
+| `chat()`               |         ✅         |   ✅    |     ✅     |
+| `stream()`             |         ✅         |   ✅    |     ✅     |
+| `structured()`         |         ✅         |   ✅    |     ✅     |
+| Tool calling           |         ✅         |   ✅    |     ✅     |
+| Streaming + tool calls |         ✅         |   ✅    |     ✅     |
+| Image input (base64)   |         ✅         |   ✅    |     ✅     |
+| `models()` list        |         ✅         |   ✅    |     ✅     |
+| `isAvailable()`        |         ✅         |   ✅    |     ✅     |
 
 ## Requirements
 
@@ -88,11 +88,11 @@ echo $output->content . "\n";
 
 ## Bundled Agents
 
-| Agent | Description | Toolkits |
-|-------|-------------|----------|
-| `FileAgent` | Read, write, search, and manage files within a sandboxed root path | `FilesystemToolkit` |
-| `WebAgent` | Make HTTP requests and optionally search the web | `WebToolkit` |
-| `CodeAgent` | Filesystem access + shell command execution with an allowlist | `FilesystemToolkit` + `ShellToolkit` |
+| Agent       | Description                                                        | Toolkits                             |
+| ----------- | ------------------------------------------------------------------ | ------------------------------------ |
+| `FileAgent` | Read, write, search, and manage files within a sandboxed root path | `FilesystemToolkit`                  |
+| `WebAgent`  | Make HTTP requests and optionally search the web                   | `WebToolkit`                         |
+| `CodeAgent` | Filesystem access + shell command execution with an allowlist      | `FilesystemToolkit` + `ShellToolkit` |
 
 ## Providers
 
@@ -218,32 +218,32 @@ Publish your toolkit as a Composer package with auto-discovery:
 
 ## Documentation
 
-| Guide | Description |
-|-------|-------------|
-| [Architecture](docs/architecture.md) | System design, Mermaid diagrams, extension points |
-| [Getting Started](docs/getting-started.md) | Installation, provider setup, first agent |
-| [Providers](docs/providers.md) | Feature matrix, streaming, structured output, images |
+| Guide                                          | Description                                              |
+| ---------------------------------------------- | -------------------------------------------------------- |
+| [Architecture](docs/architecture.md)           | System design, Mermaid diagrams, extension points        |
+| [Getting Started](docs/getting-started.md)     | Installation, provider setup, first agent                |
+| [Providers](docs/providers.md)                 | Feature matrix, streaming, structured output, images     |
 | [Tools & Toolkits](docs/tools-and-toolkits.md) | Parameter types, execution policies, publishing packages |
-| [Agents](docs/agents.md) | Agent loop, observers, cancellation, context window |
-| [Memory](docs/memory.md) | Persistent storage, vector search, embeddings |
+| [Agents](docs/agents.md)                       | Agent loop, observers, cancellation, context window      |
+| [Memory](docs/memory.md)                       | Persistent storage, vector search, embeddings            |
 
 ## Examples
 
 Working examples live in the [`examples/`](examples/) directory:
 
-| Example | Description | Run |
-|---------|-------------|-----|
-| [CLI Chat](examples/cli-chat.php) | Interactive terminal conversation with an LLM | `php examples/cli-chat.php` |
+| Example                                       | Description                                               | Run                                                 |
+| --------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------- |
+| [CLI Chat](examples/cli-chat.php)             | Interactive terminal conversation with an LLM             | `php examples/cli-chat.php`                         |
 | [README Summarizer](examples/web-summarizer/) | Web UI that auto-summarizes this README using a FileAgent | `php -S localhost:8080 -t examples/web-summarizer/` |
 
-## How Coqui Uses php-agents
+## `php-agents` In The Wild
 
-[Coqui](https://github.com/coquibot/coqui) is a full AI assistant product built on php-agents. It demonstrates the framework's extensibility:
+[Coqui](https://github.com/AgentCoqui/coqui) is a full AI assistant product built on php-agents. It demonstrates the framework's extensibility:
 
 - **php-agents** is the **library** — agent loop, providers, tools, messages, memory
 - **Coqui** is the **product** — REPL, API server, session persistence, multi-agent orchestration, credential management, security policies, toolkit discovery
 
-Coqui adds ~75 files of product logic on top of php-agents' ~74 files of framework code, with zero code duplication. Every Coqui agent (`OrchestratorAgent`, `ChildAgent`) extends `AbstractAgent` — they are purely configuration layers.
+Coqui adds product logic on top of `php-agents` framework code, with zero code duplication. Each Coqui agent (`OrchestratorAgent`, `ChildAgent`) extends `AbstractAgent` — they are purely configuration layers.
 
 ## License
 
