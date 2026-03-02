@@ -399,6 +399,7 @@ abstract class AbstractAgent implements AgentInterface
     {
         $prompt = SystemPrompt::withIdentity($this->instructions());
         $prompt = SystemPrompt::withTools($tools, $prompt);
+        $prompt = SystemPrompt::withIterationBudget($this->maxIter, $prompt);
 
         if (!empty($this->toolkits)) {
             $prompt = SystemPrompt::withToolkits($this->toolkits, $prompt);
