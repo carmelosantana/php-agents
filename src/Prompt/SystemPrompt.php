@@ -12,6 +12,7 @@ final class SystemPrompt
     private string $identity = '';
     private string $instructions = '';
     private string $tools = '';
+    private string $iterationBudget = '';
     private string $guidelines = '';
 
     /**
@@ -67,6 +68,32 @@ final class SystemPrompt
     }
 
     /**
+     * Inject iteration budget awareness into the prompt.
+     *
+     * When the agent has a finite iteration limit, this section tells it
+     * how many iterations are available so it can manage resources wisely.
+     * A value of 0 (unlimited) omits the section entirely.
+     */
+    public static function withIterationBudget(int $maxIterations, self $prompt): self
+    {
+        if ($maxIterations === 0) {
+            return $prompt;
+        }
+
+        $new = clone $prompt;
+        $new->iterationBudget = <<<BUDGET
+            You have **{$maxIterations} iterations** to complete this task. Each iteration is one round-trip with the provider — you send a message, receive a response, and optionally execute tool calls. When all iterations are consumed, execution stops.
+
+            **Manage your budget wisely:**
+            - Batch multiple independent tool calls in a single iteration when possible.
+            - Prioritize the most impactful actions early.
+            - If you are running low on iterations, summarize your progress and prepare questions or next steps for the user so work can continue in the next turn.
+            BUDGET;
+
+        return $new;
+    }
+
+    /**
      * Add toolkit guidelines.
      *
      * @param ToolkitInterface[] $toolkits
@@ -102,6 +129,10 @@ final class SystemPrompt
 
         if ($prompt->tools !== '') {
             $sections[] = "# TOOLS\n\n{$prompt->tools}";
+        }
+
+        if ($prompt->iterationBudget !== '') {
+            $sections[] = "# ITERATION BUDGET\n\n{$prompt->iterationBudget}";
         }
 
         if ($prompt->guidelines !== '') {
