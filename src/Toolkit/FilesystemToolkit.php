@@ -380,7 +380,12 @@ final class FilesystemToolkit implements ToolkitInterface
         $realRoot = realpath($this->rootPath);
         $realPath = realpath($absolutePath);
 
-        // If realpath fails or path is under the primary root, not a mount
+        // For non-existent files (new writes), resolve via parent directory
+        if ($realPath === false) {
+            $realPath = realpath(dirname($absolutePath));
+        }
+
+        // If realpath still fails or path is under the primary root, not a mount
         if ($realPath === false || $realRoot === false) {
             return false;
         }
