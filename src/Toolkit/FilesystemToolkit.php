@@ -13,9 +13,19 @@ use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
 
 final class FilesystemToolkit implements ToolkitInterface
 {
+    /**
+     * @param string $rootPath       Primary sandbox root directory.
+     * @param bool   $readOnly       When true, write tools are not registered.
+     * @param array<int, array{realPath: string, readOnly: bool}> $allowedPaths
+     *        Additional allowed directories (e.g. mounts). Each entry has a
+     *        realPath (absolute canonical path) and a readOnly flag. Paths
+     *        that resolve under an allowed entry pass the sandbox check even
+     *        if they are outside the root (e.g. via symlink).
+     */
     public function __construct(
         private readonly string $rootPath = '.',
         private readonly bool $readOnly = false,
+        private readonly array $allowedPaths = [],
     ) {}
 
     public function tools(): array
@@ -40,6 +50,12 @@ final class FilesystemToolkit implements ToolkitInterface
     {
         $mode = $this->readOnly ? 'READ-ONLY' : 'READ/WRITE';
 
+        $mountInfo = '';
+        if ($this->allowedPaths !== []) {
+            $mountInfo = "\n        - Additional mounted directories are available under mnt/ in the workspace.";
+            $mountInfo .= "\n        - Write to mounted directories only when explicitly instructed.";
+        }
+
         return <<<GUIDELINES
         <FILESYSTEM-GUIDELINES>
         Mode: {$mode}
@@ -47,7 +63,7 @@ final class FilesystemToolkit implements ToolkitInterface
         - All paths are relative to the root directory.
         - Use list_dir before read_file to understand directory structure.
         - Read files before modifying them.
-        - Use search_files with glob patterns to find specific files.
+        - Use search_files with glob patterns to find specific files.{$mountInfo}
         </FILESYSTEM-GUIDELINES>
         GUIDELINES;
     }
@@ -93,6 +109,11 @@ final class FilesystemToolkit implements ToolkitInterface
             callback: function (array $input): ToolResult {
                 $path = $this->resolvePath($input['path'] ?? '');
                 $content = $input['content'] ?? '';
+
+                // Check if writing to a read-only mount
+                if ($this->isReadOnlyMountPath($path)) {
+                    return ToolResult::error("Cannot write — mount is read-only: {$input['path']}");
+                }
 
                 $dir = dirname($path);
                 if (!is_dir($dir)) {
@@ -228,6 +249,11 @@ final class FilesystemToolkit implements ToolkitInterface
             callback: function (array $input): ToolResult {
                 $path = $this->resolvePath($input['path'] ?? '');
 
+                // Check if creating in a read-only mount
+                if ($this->isReadOnlyMountPath($path)) {
+                    return ToolResult::error("Cannot create directory — mount is read-only: {$input['path']}");
+                }
+
                 if (is_dir($path)) {
                     return ToolResult::success("Directory already exists: {$input['path']}");
                 }
@@ -251,6 +277,11 @@ final class FilesystemToolkit implements ToolkitInterface
             ],
             callback: function (array $input): ToolResult {
                 $path = $this->resolvePath($input['path'] ?? '');
+
+                // Check if deleting from a read-only mount
+                if ($this->isReadOnlyMountPath($path)) {
+                    return ToolResult::error("Cannot delete — mount is read-only: {$input['path']}");
+                }
 
                 if (!file_exists($path)) {
                     return ToolResult::error("File not found: {$input['path']}");
@@ -297,12 +328,17 @@ final class FilesystemToolkit implements ToolkitInterface
         $realPath = realpath($path);
 
         if ($realPath !== false) {
-            // Existing path — verify it's within the root
-            if (!str_starts_with($realPath, $realRoot)) {
-                return $this->rootPath;
+            // Existing path — verify it's within the root or an allowed path
+            if (str_starts_with($realPath, $realRoot)) {
+                return $realPath;
             }
 
-            return $realPath;
+            // Check against allowed paths (mounts)
+            if ($this->isUnderAllowedPath($realPath)) {
+                return $realPath;
+            }
+
+            return $this->rootPath;
         }
 
         // Path doesn't exist yet (new file). Verify the canonicalized version
@@ -310,10 +346,61 @@ final class FilesystemToolkit implements ToolkitInterface
         // ancestor directory.
         $parentPath = dirname($path);
         $realParent = realpath($parentPath);
-        if ($realParent !== false && !str_starts_with($realParent, $realRoot)) {
-            return $this->rootPath;
+        if ($realParent !== false) {
+            if (!str_starts_with($realParent, $realRoot) && !$this->isUnderAllowedPath($realParent)) {
+                return $this->rootPath;
+            }
         }
 
         return $path;
+    }
+
+    /**
+     * Check if an absolute real path falls under any allowed (mounted) path.
+     */
+    private function isUnderAllowedPath(string $realPath): bool
+    {
+        foreach ($this->allowedPaths as $allowed) {
+            if (str_starts_with($realPath, $allowed['realPath'])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if an absolute real path falls under a read-only mount.
+     *
+     * Returns false if the path is under the primary root (not a mount),
+     * or if the mount is read-write.
+     */
+    private function isReadOnlyMountPath(string $absolutePath): bool
+    {
+        $realRoot = realpath($this->rootPath);
+        $realPath = realpath($absolutePath);
+
+        // For non-existent files (new writes), resolve via parent directory
+        if ($realPath === false) {
+            $realPath = realpath(dirname($absolutePath));
+        }
+
+        // If realpath still fails or path is under the primary root, not a mount
+        if ($realPath === false || $realRoot === false) {
+            return false;
+        }
+
+        if (str_starts_with($realPath, $realRoot)) {
+            return false;
+        }
+
+        // Path is outside root — check if it's under a read-only mount
+        foreach ($this->allowedPaths as $allowed) {
+            if (str_starts_with($realPath, $allowed['realPath'])) {
+                return $allowed['readOnly'];
+            }
+        }
+
+        return false;
     }
 }
