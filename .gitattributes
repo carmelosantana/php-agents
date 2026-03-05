@@ -1,0 +1,17 @@
+# Export-ignore: files excluded from `git archive` and production release builds.
+# These do not appear in ZIP/tar.gz artifacts or GitHub-generated source downloads.
+#
+# NOTE: docs/ and examples/ are intentionally INCLUDED — unlike application
+# packages, library consumers benefit from having documentation and runnable
+# examples in the downloaded archive.
+
+# CI / Dev tooling
+/.github/             export-ignore
+/.gitignore           export-ignore
+/.phpunit.cache/      export-ignore
+/phpstan.neon         export-ignore
+/phpunit.xml          export-ignore
+
+# Tests and build scripts
+/tests/               export-ignore
+/scripts/             export-ignore
