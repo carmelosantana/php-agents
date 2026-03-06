@@ -1,21 +1,23 @@
 # Providers
 
-Providers abstract the differences between LLM APIs. php-agents ships with three providers covering the major ecosystems.
+Providers abstract the differences between LLM APIs. php-agents ships with providers covering the major ecosystems.
 
 ## Provider Feature Matrix
 
-| Feature | OpenAI Compatible | Ollama | Anthropic |
-|---------|:-:|:-:|:-:|
-| `chat()` | ✅ | ✅ | ✅ |
-| `stream()` | ✅ | ✅ | ✅ |
-| `structured()` | ✅ | ✅ | ✅ |
-| Tool calling | ✅ | ✅ | ✅ |
-| Streaming + tool calls | ✅ | ✅ | ✅ |
-| Image input (base64) | ✅ | ✅ | ✅ |
-| Image input (URL) | ✅ | ✅ | ❌ |
-| `models()` list | ✅ | ✅ | ✅ |
-| `isAvailable()` health check | ✅ | ✅ | ✅ |
-| `withModel()` immutable swap | ✅ | ✅ | ✅ |
+| Feature | OpenAI Compatible | OpenAI Responses | Ollama | Anthropic | Gemini | xAI | Mistral |
+|---------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| `chat()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `stream()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `structured()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Tool calling | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Streaming + tool calls | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Image input (base64) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Image input (URL) | ✅ | ✅ | ✅ | ✅ | ✅* | ✅ | ✅ |
+| `models()` list | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `isAvailable()` health check | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `withModel()` immutable swap | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+\* Gemini does not natively support URL image references. The provider auto-downloads URL images and converts them to base64 `inlineData` for seamless compatibility.
 
 ## OpenAICompatibleProvider
 
@@ -218,7 +220,7 @@ $message = new UserMessage([
 // Anthropic converts to: {type: "image", source: {type: "base64", media_type: "image/png", data: "..."}}
 ```
 
-**Note:** Anthropic does not support URL-based images. Only base64-encoded data URIs work.
+**Note:** Anthropic supports both base64-encoded data URIs and URL-based images. The provider automatically converts OpenAI-format `image_url` blocks to Anthropic's native `image` source format.
 
 ### Streaming with Tool Calls
 
@@ -307,6 +309,165 @@ if ($provider->isAvailable()) {
 | Variable | Used By |
 |----------|---------|
 | `ANTHROPIC_API_KEY` | `AnthropicProvider` |
+
+## GeminiProvider
+
+Native provider for Google Gemini models. Uses Gemini's REST API directly (not the OpenAI-compatible endpoint) for full access to Gemini-specific features: `inlineData` images, `functionDeclarations` tool calling, and structured output via `response_mime_type`.
+
+```php
+use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
+
+$provider = new GeminiProvider(
+    model: 'gemini-2.5-flash',
+    apiKey: getenv('GEMINI_API_KEY'),
+);
+```
+
+### Configuration
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `model` | `string` | `'gemini-2.5-flash'` | Model identifier |
+| `apiKey` | `string` | `''` | Google AI API key |
+| `baseUrl` | `string` | `'https://generativelanguage.googleapis.com/v1beta'` | API base URL |
+| `httpClient` | `?HttpClientInterface` | `null` | Custom HTTP client |
+
+### Image Support
+
+Gemini uses `inlineData` parts with base64-encoded image data. The provider automatically converts OpenAI-format `image_url` blocks:
+
+- **Base64 data URIs** are extracted and sent as `inlineData` with the correct MIME type
+- **URL images** are auto-downloaded and converted to base64 `inlineData` (Gemini doesn't support URL references natively)
+
+```php
+// Both formats work transparently:
+$message = new UserMessage([
+    ['type' => 'text', 'text' => 'What is in this image?'],
+    [
+        'type' => 'image_url',
+        'image_url' => ['url' => 'https://example.com/photo.jpg'],  // auto-downloaded
+    ],
+]);
+```
+
+### Environment Variables
+
+| Variable | Used By |
+|----------|---------|
+| `GEMINI_API_KEY` | `GeminiProvider` |
+
+## OpenAIResponsesProvider
+
+Provider for OpenAI's Responses API (`/v1/responses`). Required for Codex models (`gpt-5-codex`, etc.) that don't support the Chat Completions endpoint. Also works as a forward-compatible alternative for standard models like `gpt-4o` and `gpt-5`.
+
+```php
+use CarmeloSantana\PHPAgents\Provider\OpenAIResponsesProvider;
+
+$provider = new OpenAIResponsesProvider(
+    model: 'gpt-5-codex',
+    apiKey: getenv('OPENAI_API_KEY'),
+);
+```
+
+### Key Differences from Chat Completions
+
+| Aspect | Chat Completions | Responses API |
+|--------|-----------------|---------------|
+| Endpoint | `POST /v1/chat/completions` | `POST /v1/responses` |
+| Request field | `messages` | `input` |
+| Tool results | `role: tool` messages | `function_call_output` items |
+| Response field | `choices[0].message` | `output` array of items |
+
+### Configuration
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `model` | `string` | — | Model identifier (required) |
+| `apiKey` | `string` | `''` | OpenAI API key |
+| `baseUrl` | `string` | `'https://api.openai.com/v1'` | API base URL |
+| `httpClient` | `?HttpClientInterface` | `null` | Custom HTTP client |
+
+### Auto-Routing
+
+`ProviderFactory` automatically routes Codex models to `OpenAIResponsesProvider`. You can also force it via the `api` field in provider config:
+
+```json
+{
+    "models": {
+        "providers": {
+            "openai": {
+                "api": "openai-responses"
+            }
+        }
+    }
+}
+```
+
+### Environment Variables
+
+| Variable | Used By |
+|----------|---------|
+| `OPENAI_API_KEY` | `OpenAIResponsesProvider` |
+
+## XAIProvider
+
+Provider for xAI (Grok) models. Extends `OpenAICompatibleProvider` with xAI-specific vision content type conversion.
+
+```php
+use CarmeloSantana\PHPAgents\Provider\XAIProvider;
+
+$provider = new XAIProvider(
+    model: 'grok-3',
+    apiKey: getenv('XAI_API_KEY'),
+);
+```
+
+### Vision Content Types
+
+xAI uses different content type names than OpenAI for vision messages. The provider automatically converts:
+
+| OpenAI Format | xAI Format |
+|--------------|------------|
+| `{type: "text", ...}` | `{type: "input_text", ...}` |
+| `{type: "image_url", ...}` | `{type: "input_image", image_url: "<url>", detail: "high"}` |
+
+Both URL and base64 data URI images are supported.
+
+### Environment Variables
+
+| Variable | Used By |
+|----------|---------|
+| `XAI_API_KEY` | `XAIProvider` |
+
+## MistralProvider
+
+Provider for Mistral AI models. Extends `OpenAICompatibleProvider` with Mistral-specific image format normalization.
+
+```php
+use CarmeloSantana\PHPAgents\Provider\MistralProvider;
+
+$provider = new MistralProvider(
+    model: 'mistral-large-latest',
+    apiKey: getenv('MISTRAL_API_KEY'),
+);
+```
+
+### Image Format
+
+Mistral accepts `image_url` as a flat string instead of a nested object. The provider normalizes OpenAI-format nested `image_url` objects:
+
+```
+// OpenAI format (nested):   {image_url: {url: "..."}}
+// Mistral format (flat):    {image_url: "..."}
+```
+
+Both URL and base64 data URI images are supported.
+
+### Environment Variables
+
+| Variable | Used By |
+|----------|---------|
+| `MISTRAL_API_KEY` | `MistralProvider` |
 
 ## Creating a Custom Provider
 

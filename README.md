@@ -1,5 +1,13 @@
 # php-agents
 
+<p align="center">
+  <a href="https://github.com/carmelosantana/php-agents/actions/workflows/ci.yml?branch=main"><img src="https://img.shields.io/github/actions/workflow/status/carmelosantana/php-agents/ci.yml?branch=main&style=for-the-badge" alt="CI status"></a>
+  <a href="https://github.com/carmelosantana/php-agents/releases"><img src="https://img.shields.io/github/v/release/carmelosantana/php-agents?include_prereleases&style=for-the-badge" alt="GitHub release"></a>
+  <a href="https://www.php.net/"><img src="https://img.shields.io/badge/PHP-8.4%2B-777BB4?style=for-the-badge&logo=php&logoColor=white" alt="PHP 8.4+"></a>
+  <a href="https://discord.gg/Vc29xdvGAH"><img src="https://img.shields.io/discord/1471632654624489668?label=Discord&logo=discord&logoColor=white&color=5865F2&style=for-the-badge" alt="Discord"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT License"></a>
+</p>
+
 PHP 8.4+ framework for building AI agents with tool-use loops, provider abstraction, and composable toolkits.
 
 Build agents that can read files, browse the web, execute code, and use custom tools — powered by any OpenAI-compatible API, Anthropic, or local models via Ollama.
@@ -18,10 +26,10 @@ graph LR
 ## Features
 
 - **Agentic tool-use loop** — automatic iteration: the LLM calls tools, processes results, and decides when it's done
-- **Multi-provider** — Ollama (local), OpenAI, Anthropic, OpenRouter, or any OpenAI-compatible endpoint
-- **Streaming + tool calls** — both OpenAI and Anthropic providers support streaming with assembled tool call deltas
+- **Multi-provider** — Ollama (local), OpenAI, Anthropic, Gemini, xAI, Mistral, OpenRouter, or any OpenAI-compatible endpoint
+- **Streaming + tool calls** — all providers support streaming with assembled tool call deltas
 - **Structured output** — extract typed data from LLMs via JSON mode (OpenAI) or tool-use trick (Anthropic)
-- **Image input** — send base64 images to vision models (auto-converts between OpenAI and Anthropic formats)
+- **Image input** — send images to vision models via base64, URL, or file path (auto-converts between provider formats; URLs pre-downloaded for providers that don't support them natively)
 - **Bundled agents** — `FileAgent`, `WebAgent`, `CodeAgent` ready to use out of the box
 - **Composable toolkits** — filesystem, web, shell, and memory toolkits that snap onto any agent
 - **Context window management** — automatic conversation pruning when approaching token limits
@@ -32,16 +40,19 @@ graph LR
 
 ## Provider Feature Matrix
 
-| Feature                | OpenAI Compatible | Ollama | Anthropic |
-| ---------------------- | :---------------: | :----: | :-------: |
-| `chat()`               |         ✅         |   ✅    |     ✅     |
-| `stream()`             |         ✅         |   ✅    |     ✅     |
-| `structured()`         |         ✅         |   ✅    |     ✅     |
-| Tool calling           |         ✅         |   ✅    |     ✅     |
-| Streaming + tool calls |         ✅         |   ✅    |     ✅     |
-| Image input (base64)   |         ✅         |   ✅    |     ✅     |
-| `models()` list        |         ✅         |   ✅    |     ✅     |
-| `isAvailable()`        |         ✅         |   ✅    |     ✅     |
+| Feature                | OpenAI Compatible | OpenAI Responses | Ollama | Anthropic | Gemini |  xAI  | Mistral |
+| ---------------------- | :---------------: | :--------------: | :----: | :-------: | :----: | :---: | :-----: |
+| `chat()`               |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
+| `stream()`             |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
+| `structured()`         |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
+| Tool calling           |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
+| Streaming + tool calls |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
+| Image input (base64)   |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
+| Image input (URL)      |         ✅         |        ✅         |   ✅    |     ✅     |   *    |   ✅   |    ✅    |
+| `models()` list        |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
+| `isAvailable()`        |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
+
+*\* Gemini does not natively support URL image references. The provider auto-downloads URL images and converts them to base64 `inlineData`.*
 
 ## Requirements
 
@@ -100,6 +111,9 @@ echo $output->content . "\n";
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
 use CarmeloSantana\PHPAgents\Provider\OpenAICompatibleProvider;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
+use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
+use CarmeloSantana\PHPAgents\Provider\XAIProvider;
+use CarmeloSantana\PHPAgents\Provider\MistralProvider;
 
 // Ollama (local — no API key needed)
 $provider = new OllamaProvider(model: 'llama3.2');
@@ -114,6 +128,24 @@ $provider = new OpenAICompatibleProvider(
 $provider = new AnthropicProvider(
     model: 'claude-sonnet-4-20250514',
     apiKey: getenv('ANTHROPIC_API_KEY'),
+);
+
+// Google Gemini
+$provider = new GeminiProvider(
+    model: 'gemini-2.5-flash',
+    apiKey: getenv('GEMINI_API_KEY'),
+);
+
+// xAI (Grok)
+$provider = new XAIProvider(
+    model: 'grok-3',
+    apiKey: getenv('XAI_API_KEY'),
+);
+
+// Mistral
+$provider = new MistralProvider(
+    model: 'mistral-large-latest',
+    apiKey: getenv('MISTRAL_API_KEY'),
 );
 
 // Any OpenAI-compatible endpoint (OpenRouter, Together, Groq, vLLM, etc.)
