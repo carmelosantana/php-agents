@@ -302,11 +302,17 @@ final class GeminiProvider extends AbstractProvider
         }
 
         // Merge consecutive same-role contents (Gemini requires role alternation)
+        /** @var array<int, array{role: string, parts: array<array<string, mixed>>}> $merged */
         $merged = [];
         foreach ($contents as $content) {
             $last = end($merged);
             $lastKey = array_key_last($merged);
-            if ($last !== false && $lastKey !== null && $last['role'] === $content['role']) {
+            if (
+                $last !== false &&
+                $lastKey !== null &&
+                isset($last['role'], $content['role']) &&
+                $last['role'] === $content['role']
+            ) {
                 $merged[$lastKey]['parts'] = array_merge($last['parts'], $content['parts']);
             } else {
                 $merged[] = $content;

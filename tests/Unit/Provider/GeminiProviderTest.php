@@ -5,6 +5,7 @@ declare(strict_types=1);
 use CarmeloSantana\PHPAgents\Enum\FinishReason;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
+use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
 use CarmeloSantana\PHPAgents\Tool\Tool;
@@ -495,4 +496,87 @@ test('mixed text and functionCall parts in response', function () {
     expect($response->content)->toBe('Let me check... ')
         ->and($response->toolCalls)->toHaveCount(1)
         ->and($response->finishReason)->toBe(FinishReason::ToolUse);
+});
+
+test('three consecutive user messages are merged into one content block', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $provider->chat([
+        new UserMessage('one'),
+        new UserMessage('two'),
+        new UserMessage('three'),
+    ]);
+
+    expect($requestPayload['contents'])->toHaveCount(1)
+        ->and($requestPayload['contents'][0]['role'])->toBe('user')
+        ->and($requestPayload['contents'][0]['parts'])->toHaveCount(3);
+});
+
+test('consecutive assistant messages are merged into one model content block', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $provider->chat([
+        new UserMessage('go'),
+        new AssistantMessage('first response'),
+        new AssistantMessage('second response'),
+    ]);
+
+    // user + two assistants; assistants become 'model' role and should merge
+    expect($requestPayload['contents'])->toHaveCount(2)
+        ->and($requestPayload['contents'][0]['role'])->toBe('user')
+        ->and($requestPayload['contents'][1]['role'])->toBe('model')
+        ->and($requestPayload['contents'][1]['parts'])->toHaveCount(2);
+});
+
+test('system message plus consecutive user messages: system goes to systemInstruction users merge', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $provider->chat([
+        new SystemMessage('You are helpful.'),
+        new UserMessage('hello'),
+        new UserMessage('world'),
+    ]);
+
+    expect($requestPayload['systemInstruction'])->toBe(['parts' => [['text' => 'You are helpful.']]])
+        ->and($requestPayload['contents'])->toHaveCount(1)
+        ->and($requestPayload['contents'][0]['role'])->toBe('user')
+        ->and($requestPayload['contents'][0]['parts'])->toHaveCount(2);
+});
+
+test('consecutive tool result messages mapping to user role are merged', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $provider->chat([
+        new UserMessage('run both tools'),
+        new AssistantMessage('calling tools'),
+        new ToolResultMessage(ToolResult::success('result-a')->withCallId('tool_a')),
+        new ToolResultMessage(ToolResult::success('result-b')->withCallId('tool_b')),
+    ]);
+
+    // user → model → two tool results (both 'user' role); the two tool results merge into one content block
+    expect($requestPayload['contents'])->toHaveCount(3)
+        ->and($requestPayload['contents'][0]['role'])->toBe('user')
+        ->and($requestPayload['contents'][1]['role'])->toBe('model')
+        ->and($requestPayload['contents'][2]['role'])->toBe('user')
+        ->and($requestPayload['contents'][2]['parts'])->toHaveCount(2);
 });
