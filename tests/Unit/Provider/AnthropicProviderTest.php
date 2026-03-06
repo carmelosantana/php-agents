@@ -249,3 +249,137 @@ test('chat merges consecutive assistant text messages', function () {
     expect($requestPayload['messages'][1]['role'])->toBe('assistant');
     expect($requestPayload['messages'][2]['role'])->toBe('user');
 });
+
+test('data URI image is converted to Anthropic base64 source format', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockAnthropicResponse();
+    });
+
+    $provider = new AnthropicProvider(
+        model: 'claude-sonnet-4-20250514',
+        apiKey: 'test-key',
+        httpClient: $mockClient,
+    );
+
+    $provider->chat([
+        new UserMessage([
+            ['type' => 'text', 'text' => 'What is in this image?'],
+            ['type' => 'image_url', 'image_url' => ['url' => 'data:image/jpeg;base64,/9j/4AAQ']],
+        ]),
+    ]);
+
+    $content = $requestPayload['messages'][0]['content'];
+    expect($content)->toHaveCount(2)
+        ->and($content[0]['type'])->toBe('text')
+        ->and($content[1]['type'])->toBe('image')
+        ->and($content[1]['source']['type'])->toBe('base64')
+        ->and($content[1]['source']['media_type'])->toBe('image/jpeg')
+        ->and($content[1]['source']['data'])->toBe('/9j/4AAQ');
+});
+
+test('URL image is converted to Anthropic url source format', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockAnthropicResponse();
+    });
+
+    $provider = new AnthropicProvider(
+        model: 'claude-sonnet-4-20250514',
+        apiKey: 'test-key',
+        httpClient: $mockClient,
+    );
+
+    $provider->chat([
+        new UserMessage([
+            ['type' => 'image_url', 'image_url' => ['url' => 'https://example.com/photo.jpg']],
+        ]),
+    ]);
+
+    $content = $requestPayload['messages'][0]['content'];
+    expect($content[0]['type'])->toBe('image')
+        ->and($content[0]['source']['type'])->toBe('url')
+        ->and($content[0]['source']['url'])->toBe('https://example.com/photo.jpg');
+});
+
+test('PNG data URI is correctly parsed', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockAnthropicResponse();
+    });
+
+    $provider = new AnthropicProvider(
+        model: 'claude-sonnet-4-20250514',
+        apiKey: 'test-key',
+        httpClient: $mockClient,
+    );
+
+    $provider->chat([
+        new UserMessage([
+            ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,iVBORw0KGgo']],
+        ]),
+    ]);
+
+    $content = $requestPayload['messages'][0]['content'];
+    expect($content[0]['source']['media_type'])->toBe('image/png')
+        ->and($content[0]['source']['data'])->toBe('iVBORw0KGgo');
+});
+
+test('string content passes through without image conversion', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockAnthropicResponse();
+    });
+
+    $provider = new AnthropicProvider(
+        model: 'claude-sonnet-4-20250514',
+        apiKey: 'test-key',
+        httpClient: $mockClient,
+    );
+
+    $provider->chat([new UserMessage('Just text')]);
+
+    expect($requestPayload['messages'][0]['content'])->toBe('Just text');
+});
+
+test('finish reason mapping: max_tokens', function () {
+    $mockClient = new MockHttpClient([
+        mockAnthropicResponse(['stop_reason' => 'max_tokens']),
+    ]);
+
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('hi')]);
+
+    expect($response->finishReason)->toBe(FinishReason::MaxTokens);
+});
+
+test('structured output uses tool_use trick', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockAnthropicResponse([
+            'content' => [
+                ['type' => 'tool_use', 'id' => 'toolu_1', 'name' => 'extract_data', 'input' => ['name' => 'Alice']],
+            ],
+            'stop_reason' => 'tool_use',
+        ]);
+    });
+
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $schema = json_encode([
+        'name' => 'extract_data',
+        'description' => 'Extract structured data',
+        'schema' => ['type' => 'object', 'properties' => ['name' => ['type' => 'string']]],
+    ]);
+
+    $result = $provider->structured([new UserMessage('My name is Alice')], $schema);
+
+    expect($requestPayload['tools'])->toHaveCount(1)
+        ->and($requestPayload['tools'][0]['name'])->toBe('extract_data')
+        ->and($requestPayload['tool_choice'])->toBe(['type' => 'tool', 'name' => 'extract_data'])
+        ->and($result)->toBe(['name' => 'Alice']);
+});

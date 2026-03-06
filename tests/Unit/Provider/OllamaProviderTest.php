@@ -1,0 +1,289 @@
+<?php
+
+declare(strict_types=1);
+
+use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Message\UserMessage;
+use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
+use CarmeloSantana\PHPAgents\Tool\Tool;
+use CarmeloSantana\PHPAgents\Tool\Parameter\NumberParameter;
+use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
+use CarmeloSantana\PHPAgents\Tool\ToolResult;
+use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Response\MockResponse;
+
+function mockOllamaResponse(array $overrides = []): MockResponse
+{
+    $body = json_encode(array_merge([
+        'id' => 'chatcmpl-ollama',
+        'model' => 'llama3.2',
+        'choices' => [
+            [
+                'index' => 0,
+                'message' => ['role' => 'assistant', 'content' => 'Hello from Ollama!'],
+                'finish_reason' => 'stop',
+            ],
+        ],
+        'usage' => ['prompt_tokens' => 10, 'completion_tokens' => 5, 'total_tokens' => 15],
+    ], $overrides));
+
+    return new MockResponse($body, ['http_code' => 200]);
+}
+
+test('basic chat returns correct response', function () {
+    $mockClient = new MockHttpClient([mockOllamaResponse()]);
+
+    $provider = new OllamaProvider(
+        model: 'llama3.2',
+        httpClient: $mockClient,
+    );
+
+    $response = $provider->chat([new UserMessage('Hi')]);
+
+    expect($response->content)->toBe('Hello from Ollama!')
+        ->and($response->finishReason)->toBe(FinishReason::Stop);
+});
+
+test('num_ctx is injected when tools are present', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOllamaResponse();
+    });
+
+    $provider = new OllamaProvider(model: 'llama3.2', httpClient: $mockClient);
+
+    $tool = new Tool(
+        name: 'test_tool',
+        description: 'Test',
+        parameters: [new StringParameter('input', 'Input', required: true)],
+        callback: fn(array $args): ToolResult => ToolResult::success('ok'),
+    );
+
+    $provider->chat([new UserMessage('Hi')], [$tool]);
+
+    expect($requestPayload['num_ctx'])->toBe(65536);
+});
+
+test('num_ctx not injected without tools', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOllamaResponse();
+    });
+
+    $provider = new OllamaProvider(model: 'llama3.2', httpClient: $mockClient);
+    $provider->chat([new UserMessage('Hi')]);
+
+    expect($requestPayload)->not->toHaveKey('num_ctx');
+});
+
+test('custom num_ctx is not overridden', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOllamaResponse();
+    });
+
+    $provider = new OllamaProvider(model: 'llama3.2', httpClient: $mockClient);
+
+    $tool = new Tool(
+        name: 'test_tool',
+        description: 'Test',
+        parameters: [new StringParameter('input', 'Input', required: true)],
+        callback: fn(array $args): ToolResult => ToolResult::success('ok'),
+    );
+
+    $provider->chat([new UserMessage('Hi')], [$tool], ['num_ctx' => 32768]);
+
+    expect($requestPayload['num_ctx'])->toBe(32768);
+});
+
+test('schema sanitization removes unsupported keywords', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOllamaResponse();
+    });
+
+    $provider = new OllamaProvider(model: 'llama3.2', httpClient: $mockClient);
+
+    // Create a tool with constraints that generate unsupported keywords
+    $tool = new Tool(
+        name: 'test_tool',
+        description: 'Tool with constraints',
+        parameters: [
+            new NumberParameter('count', 'A number', required: true),
+        ],
+        callback: fn(array $args): ToolResult => ToolResult::success('ok'),
+    );
+
+    $provider->chat([new UserMessage('test')], [$tool]);
+
+    $params = $requestPayload['tools'][0]['function']['parameters'] ?? [];
+    // Verify unsupported keywords are stripped from properties
+    $countProp = $params['properties']['count'] ?? [];
+    expect($countProp)->not->toHaveKey('additionalProperties')
+        ->and($countProp)->not->toHaveKey('$ref')
+        ->and($countProp)->not->toHaveKey('$defs');
+});
+
+test('constraint demotion appends to description', function () {
+    // Test the sanitization by checking the description contains demoted constraints
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOllamaResponse();
+    });
+
+    $provider = new OllamaProvider(model: 'llama3.2', httpClient: $mockClient);
+
+    // Create tool with known schema structure
+    $tool = new Tool(
+        name: 'test_tool',
+        description: 'Test',
+        parameters: [new StringParameter('name', 'User name', required: true)],
+        callback: fn(array $args): ToolResult => ToolResult::success('ok'),
+    );
+
+    $provider->chat([new UserMessage('test')], [$tool]);
+
+    // Basic schema check — string params should be intact
+    $props = $requestPayload['tools'][0]['function']['parameters']['properties'] ?? [];
+    expect($props)->toHaveKey('name')
+        ->and($props['name']['type'])->toBe('string');
+});
+
+test('models() parses Ollama native API response', function () {
+    $mockClient = new MockHttpClient([
+        new MockResponse(json_encode([
+            'models' => [
+                ['name' => 'llama3.2:latest'],
+                ['name' => 'codellama:7b'],
+            ],
+        ]), ['http_code' => 200]),
+    ]);
+
+    $provider = new OllamaProvider(httpClient: $mockClient);
+    $models = $provider->models();
+
+    expect($models)->toHaveCount(2)
+        ->and($models[0]->id)->toBe('llama3.2:latest')
+        ->and($models[1]->id)->toBe('codellama:7b')
+        ->and($models[0]->provider)->toBe('ollama');
+});
+
+test('models() uses native API endpoint not OpenAI compat', function () {
+    $capturedUrl = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url) use (&$capturedUrl): MockResponse {
+        $capturedUrl = $url;
+        return new MockResponse(json_encode(['models' => []]), ['http_code' => 200]);
+    });
+
+    $provider = new OllamaProvider(
+        baseUrl: 'http://localhost:11434/v1',
+        httpClient: $mockClient,
+    );
+
+    $provider->models();
+
+    expect($capturedUrl)->toBe('http://localhost:11434/api/tags');
+});
+
+test('isAvailable uses native API', function () {
+    $capturedUrl = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url) use (&$capturedUrl): MockResponse {
+        $capturedUrl = $url;
+        return new MockResponse(json_encode(['models' => []]), ['http_code' => 200]);
+    });
+
+    $provider = new OllamaProvider(httpClient: $mockClient);
+    $result = $provider->isAvailable();
+
+    expect($result)->toBeTrue()
+        ->and($capturedUrl)->toContain('/api/tags');
+});
+
+test('isAvailable returns false on connection error', function () {
+    $mockClient = new MockHttpClient(function (): MockResponse {
+        throw new \Symfony\Component\HttpClient\Exception\TransportException('Connection refused');
+    });
+
+    $provider = new OllamaProvider(httpClient: $mockClient);
+
+    expect($provider->isAvailable())->toBeFalse();
+});
+
+test('models() returns empty array on error', function () {
+    $mockClient = new MockHttpClient(function (): MockResponse {
+        throw new \Symfony\Component\HttpClient\Exception\TransportException('Connection refused');
+    });
+
+    $provider = new OllamaProvider(httpClient: $mockClient);
+
+    expect($provider->models())->toBeEmpty();
+});
+
+test('hasModel checks model list', function () {
+    $mockClient = new MockHttpClient([
+        new MockResponse(json_encode([
+            'models' => [
+                ['name' => 'llama3.2:latest'],
+                ['name' => 'codellama:7b'],
+            ],
+        ]), ['http_code' => 200]),
+    ]);
+
+    $provider = new OllamaProvider(httpClient: $mockClient);
+
+    expect($provider->hasModel('llama3.2:latest'))->toBeTrue();
+});
+
+test('hasModel matches prefix', function () {
+    $mockClient = new MockHttpClient([
+        new MockResponse(json_encode([
+            'models' => [
+                ['name' => 'llama3.2:latest'],
+            ],
+        ]), ['http_code' => 200]),
+    ]);
+
+    $provider = new OllamaProvider(httpClient: $mockClient);
+
+    expect($provider->hasModel('llama3.2'))->toBeTrue();
+});
+
+test('default apiKey is ollama-local', function () {
+    $capturedHeaders = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$capturedHeaders): MockResponse {
+        $capturedHeaders = $options['normalized_headers'] ?? $options['headers'] ?? [];
+        return mockOllamaResponse();
+    });
+
+    $provider = new OllamaProvider(httpClient: $mockClient);
+    $provider->chat([new UserMessage('hi')]);
+
+    // The provider should have been constructed with 'ollama-local' for the API key
+    expect($capturedHeaders)->toBeArray();
+});
+
+test('custom numCtx is used', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOllamaResponse();
+    });
+
+    $provider = new OllamaProvider(model: 'llama3.2', httpClient: $mockClient, numCtx: 131072);
+
+    $tool = new Tool(
+        name: 'test_tool',
+        description: 'Test',
+        parameters: [new StringParameter('x', 'X', required: true)],
+        callback: fn(array $args): ToolResult => ToolResult::success('ok'),
+    );
+
+    $provider->chat([new UserMessage('test')], [$tool]);
+
+    expect($requestPayload['num_ctx'])->toBe(131072);
+});

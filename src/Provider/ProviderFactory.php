@@ -28,6 +28,10 @@ final class ProviderFactory
         'anthropic' => 'ANTHROPIC_API_KEY',
         'openrouter' => 'OPENROUTER_API_KEY',
         'xai' => 'XAI_API_KEY',
+        'gemini' => 'GEMINI_API_KEY',
+        'google' => 'GEMINI_API_KEY',
+        'mistral' => 'MISTRAL_API_KEY',
+        'minimax' => 'MINIMAX_API_KEY',
     ];
 
     public function __construct(
@@ -70,6 +74,21 @@ final class ProviderFactory
                 baseUrl: $baseUrl,
             ),
             'anthropic' => new AnthropicProvider(
+                model: $model,
+                baseUrl: $baseUrl,
+                apiKey: $apiKey,
+            ),
+            'gemini', 'google' => new GeminiProvider(
+                model: $model,
+                baseUrl: $baseUrl,
+                apiKey: $apiKey,
+            ),
+            'xai' => new XAIProvider(
+                model: $model,
+                baseUrl: $baseUrl,
+                apiKey: $apiKey,
+            ),
+            'mistral' => new MistralProvider(
                 model: $model,
                 baseUrl: $baseUrl,
                 apiKey: $apiKey,
@@ -142,6 +161,9 @@ final class ProviderFactory
             'anthropic' => 'https://api.anthropic.com/v1',
             'openrouter' => 'https://openrouter.ai/api/v1',
             'xai' => 'https://api.x.ai/v1',
+            'gemini', 'google' => 'https://generativelanguage.googleapis.com/v1beta',
+            'mistral' => 'https://api.mistral.ai/v1',
+            'minimax' => 'https://api.minimaxi.com/v1',
             default => '',
         };
     }
