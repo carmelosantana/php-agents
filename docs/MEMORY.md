@@ -1,5 +1,7 @@
 # Memory
 
+> **Deprecated.** `FileMemory`, `MemoryToolkit`, and the `MemoryInterface` in php-agents will be removed in 1.0. For production use, implement a database-backed memory store (e.g. Coqui's SQLite-backed `MemoryStore`). The vector store layer (`VectorStoreInterface`, `InMemoryVectorStore`, embedding providers) is **not** deprecated.
+
 php-agents provides a layered memory system: simple key-value storage, persistent file-backed memory, and vector similarity search for semantic retrieval.
 
 ## Architecture
@@ -58,7 +60,9 @@ interface MemoryInterface
 }
 ```
 
-## FileMemory
+## FileMemory (Deprecated)
+
+> **Deprecated.** Use a database-backed implementation instead. Will be removed in 1.0.
 
 Persists memories to a Markdown file. Each entry is a third-level heading with the key as the title and the value as the body:
 
@@ -117,7 +121,9 @@ sequenceDiagram
 
 `FileMemory::search()` performs simple substring matching on keys and values. For semantic search, use a vector store.
 
-## MemoryToolkit
+## MemoryToolkit (Deprecated)
+
+> **Deprecated.** Use a database-backed memory toolkit instead. Will be removed in 1.0.
 
 Exposes memory operations as tools the agent can use:
 

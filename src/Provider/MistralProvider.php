@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Provider;
 
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
+use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
@@ -25,12 +26,14 @@ final class MistralProvider extends OpenAICompatibleProvider
         string $baseUrl = 'https://api.mistral.ai/v1',
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
+        ?LoggerInterface $logger = null,
     ) {
         parent::__construct(
             model: $model,
             baseUrl: $baseUrl,
             apiKey: $apiKey,
             httpClient: $httpClient,
+            logger: $logger,
         );
     }
 

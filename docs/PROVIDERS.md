@@ -469,6 +469,61 @@ Both URL and base64 data URI images are supported.
 |----------|---------|
 | `MISTRAL_API_KEY` | `MistralProvider` |
 
+## Shared Provider Utilities
+
+### PSR-3 Logging
+
+All providers accept an optional `Psr\Log\LoggerInterface` via their constructor. When provided, errors in non-critical paths (model listing, health checks, image downloads) are logged instead of silently swallowed:
+
+```php
+use Monolog\Logger;
+use Monolog\Handler\StreamHandler;
+
+$logger = new Logger('providers');
+$logger->pushHandler(new StreamHandler('php://stderr'));
+
+$provider = new OllamaProvider(
+    model: 'llama3.2',
+    logger: $logger,
+);
+```
+
+### SseStreamParser
+
+Shared SSE line-buffering parser used by all streaming providers. Handles chunk boundary splits, `[DONE]` sentinels, and malformed JSON gracefully:
+
+```php
+use CarmeloSantana\PHPAgents\Provider\SseStreamParser;
+
+$parser = new SseStreamParser($httpClient, $response);
+
+foreach ($parser->events() as $payload) {
+    // $payload is a decoded associative array from each `data: {...}` line
+}
+```
+
+Custom providers can use `SseStreamParser` directly instead of implementing their own SSE buffering logic.
+
+### SchemaUtils
+
+Static helpers for JSON Schema normalization. Each method operates on a single schema node — providers handle their own recursion:
+
+| Method | Purpose |
+|--------|---------|
+| `stripKeywords(array $schema, array $keywords)` | Remove unsupported keywords from a schema node |
+| `flattenCombinator(array $schema, string $combinator)` | Replace `anyOf`/`oneOf`/`allOf` with the first non-null variant |
+| `demoteConstraints(array $schema, array $templates)` | Move constraint metadata (minLength, enum, etc.) into the description field |
+
+```php
+use CarmeloSantana\PHPAgents\Provider\SchemaUtils;
+
+// Strip keywords a provider doesn't support
+$schema = SchemaUtils::stripKeywords($schema, ['additionalProperties', '$schema', 'default']);
+
+// Flatten anyOf to a single type (for providers that don't support union types)
+$schema = SchemaUtils::flattenCombinator($schema, 'anyOf');
+```
+
 ## Creating a Custom Provider
 
 Implement `ProviderInterface` or extend `AbstractProvider`:

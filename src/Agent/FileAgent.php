@@ -8,6 +8,9 @@ use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Enum\ModelCapability;
 use CarmeloSantana\PHPAgents\Toolkit\FilesystemToolkit;
 
+/**
+ * @deprecated Use AbstractAgent with FilesystemToolkit instead. Will be removed in 1.0.
+ */
 final class FileAgent extends AbstractAgent
 {
     private FilesystemToolkit $filesystem;

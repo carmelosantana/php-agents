@@ -9,6 +9,7 @@ use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\FinishReason;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
+use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 class OpenAICompatibleProvider extends AbstractProvider
@@ -18,8 +19,9 @@ class OpenAICompatibleProvider extends AbstractProvider
         string $baseUrl = 'http://localhost:11434/v1',
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
+        ?LoggerInterface $logger = null,
     ) {
-        parent::__construct($model, $baseUrl, $apiKey, $httpClient);
+        parent::__construct($model, $baseUrl, $apiKey, $httpClient, $logger);
     }
 
     public function chat(array $messages, array $tools = [], array $options = []): Response
@@ -88,142 +90,120 @@ class OpenAICompatibleProvider extends AbstractProvider
         // with empty delta.content, then switch to regular content for the final answer.
         $reasoningBuffer = '';
 
-        // Buffer incomplete SSE lines across HTTP chunks. Large payloads
-        // (tool call arguments, usage data) can span chunk boundaries.
-        $lineBuffer = '';
+        $parser = new SseStreamParser($this->httpClient, $response);
 
-        foreach ($this->httpClient->stream($response) as $chunk) {
-            $data = $lineBuffer . $chunk->getContent();
-            $lineBuffer = '';
+        foreach ($parser->events() as $json) {
+            $choice = $json['choices'][0] ?? [];
+            $delta = $choice['delta'] ?? [];
+            $finishReason = $choice['finish_reason'] ?? null;
 
-            $lines = explode("\n", $data);
+            // Accumulate tool call deltas
+            foreach ($delta['tool_calls'] ?? [] as $tc) {
+                $index = $tc['index'] ?? 0;
 
-            // If the data doesn't end with a newline, the last element
-            // is an incomplete line — buffer it for the next chunk.
-            if (!str_ends_with($data, "\n")) {
-                $lineBuffer = array_pop($lines);
+                if (isset($tc['id'])) {
+                    // First chunk for this tool call — initialize
+                    $pendingToolCalls[$index] = [
+                        'id' => $tc['id'],
+                        'name' => $tc['function']['name'] ?? '',
+                        'arguments' => $tc['function']['arguments'] ?? '',
+                    ];
+                } elseif (isset($pendingToolCalls[$index])) {
+                    // Subsequent chunk — append argument fragment
+                    $pendingToolCalls[$index]['arguments'] .= $tc['function']['arguments'] ?? '';
+                }
             }
 
-            foreach ($lines as $line) {
-                if (str_starts_with($line, 'data: ') && $line !== 'data: [DONE]') {
-                    $json = json_decode(substr($line, 6), true);
-                    if ($json === null) {
-                        continue;
-                    }
+            // Accumulate reasoning content from thinking models.
+            // Models use different field names: reasoning (Ollama/qwen),
+            // reasoning_content (DeepSeek), thinking (some others).
+            $reasoningDelta = $delta['reasoning']
+                ?? $delta['reasoning_content']
+                ?? $delta['thinking']
+                ?? null;
+            if ($reasoningDelta !== null && $reasoningDelta !== '') {
+                $reasoningBuffer .= $reasoningDelta;
+                yield new Response(
+                    content: '',
+                    finishReason: FinishReason::Stop,
+                    toolCalls: [],
+                    model: $json['model'] ?? $this->model,
+                    reasoning: $reasoningDelta,
+                );
+            }
 
-                    $choice = $json['choices'][0] ?? [];
-                    $delta = $choice['delta'] ?? [];
-                    $finishReason = $choice['finish_reason'] ?? null;
-
-                    // Accumulate tool call deltas
-                    foreach ($delta['tool_calls'] ?? [] as $tc) {
-                        $index = $tc['index'] ?? 0;
-
-                        if (isset($tc['id'])) {
-                            // First chunk for this tool call — initialize
-                            $pendingToolCalls[$index] = [
-                                'id' => $tc['id'],
-                                'name' => $tc['function']['name'] ?? '',
-                                'arguments' => $tc['function']['arguments'] ?? '',
-                            ];
-                        } elseif (isset($pendingToolCalls[$index])) {
-                            // Subsequent chunk — append argument fragment
-                            $pendingToolCalls[$index]['arguments'] .= $tc['function']['arguments'] ?? '';
-                        }
-                    }
-
-                    // Accumulate reasoning content from thinking models.
-                    // Models use different field names: reasoning (Ollama/qwen),
-                    // reasoning_content (DeepSeek), thinking (some others).
-                    $reasoningDelta = $delta['reasoning']
-                        ?? $delta['reasoning_content']
-                        ?? $delta['thinking']
-                        ?? null;
-                    if ($reasoningDelta !== null && $reasoningDelta !== '') {
-                        $reasoningBuffer .= $reasoningDelta;
-                        yield new Response(
-                            content: '',
-                            finishReason: FinishReason::Stop,
-                            toolCalls: [],
-                            model: $json['model'] ?? $this->model,
-                            reasoning: $reasoningDelta,
-                        );
-                    }
-
-                    // When the stream signals tool_calls finish, yield a
-                    // Response with the fully-assembled ToolCall objects.
-                    if ($finishReason === 'tool_calls' && !empty($pendingToolCalls)) {
-                        $toolCalls = [];
-                        foreach ($pendingToolCalls as $tc) {
-                            $toolCalls[] = new ToolCall(
-                                id: $tc['id'],
-                                name: $tc['name'],
-                                arguments: json_decode($tc['arguments'], true) ?? [],
-                            );
-                        }
-
-                        yield new Response(
-                            content: $delta['content'] ?? '',
-                            finishReason: FinishReason::ToolUse,
-                            toolCalls: $toolCalls,
-                            model: $json['model'] ?? $this->model,
-                            reasoning: $reasoningBuffer,
-                        );
-                        $reasoningBuffer = '';
-
-                        $pendingToolCalls = [];
-                        continue;
-                    }
-
-                    // Usage-only chunk (sent after all content when
-                    // stream_options.include_usage is true). The choices
-                    // array is empty but usage data is present.
-                    if (empty($json['choices']) && isset($json['usage'])) {
-                        yield new Response(
-                            content: '',
-                            finishReason: FinishReason::Stop,
-                            toolCalls: [],
-                            model: $json['model'] ?? $this->model,
-                            usage: new Usage(
-                                promptTokens: $json['usage']['prompt_tokens'] ?? 0,
-                                completionTokens: $json['usage']['completion_tokens'] ?? 0,
-                                totalTokens: $json['usage']['total_tokens'] ?? 0,
-                            ),
-                        );
-                        continue;
-                    }
-
-                    // Regular text delta — yield immediately
-                    if (isset($delta['content']) && $delta['content'] !== '') {
-                        yield new Response(
-                            content: $delta['content'],
-                            finishReason: $this->mapFinishReason($finishReason),
-                            toolCalls: [],
-                            model: $json['model'] ?? $this->model,
-                        );
-                    } elseif ($finishReason === 'stop') {
-                        // Final content chunk (stop signal, usage may follow
-                        // in a separate chunk when stream_options is set)
-                        $usage = null;
-                        if (isset($json['usage'])) {
-                            $usage = new Usage(
-                                promptTokens: $json['usage']['prompt_tokens'] ?? 0,
-                                completionTokens: $json['usage']['completion_tokens'] ?? 0,
-                                totalTokens: $json['usage']['total_tokens'] ?? 0,
-                            );
-                        }
-
-                        yield new Response(
-                            content: '',
-                            finishReason: FinishReason::Stop,
-                            toolCalls: [],
-                            model: $json['model'] ?? $this->model,
-                            usage: $usage,
-                            reasoning: $reasoningBuffer,
-                        );
-                        $reasoningBuffer = '';
-                    }
+            // When the stream signals tool_calls finish, yield a
+            // Response with the fully-assembled ToolCall objects.
+            if ($finishReason === 'tool_calls' && !empty($pendingToolCalls)) {
+                $toolCalls = [];
+                foreach ($pendingToolCalls as $tc) {
+                    $toolCalls[] = new ToolCall(
+                        id: $tc['id'],
+                        name: $tc['name'],
+                        arguments: json_decode($tc['arguments'], true) ?? [],
+                    );
                 }
+
+                yield new Response(
+                    content: $delta['content'] ?? '',
+                    finishReason: FinishReason::ToolUse,
+                    toolCalls: $toolCalls,
+                    model: $json['model'] ?? $this->model,
+                    reasoning: $reasoningBuffer,
+                );
+                $reasoningBuffer = '';
+
+                $pendingToolCalls = [];
+                continue;
+            }
+
+            // Usage-only chunk (sent after all content when
+            // stream_options.include_usage is true). The choices
+            // array is empty but usage data is present.
+            if (empty($json['choices']) && isset($json['usage'])) {
+                yield new Response(
+                    content: '',
+                    finishReason: FinishReason::Stop,
+                    toolCalls: [],
+                    model: $json['model'] ?? $this->model,
+                    usage: new Usage(
+                        promptTokens: $json['usage']['prompt_tokens'] ?? 0,
+                        completionTokens: $json['usage']['completion_tokens'] ?? 0,
+                        totalTokens: $json['usage']['total_tokens'] ?? 0,
+                    ),
+                );
+                continue;
+            }
+
+            // Regular text delta — yield immediately
+            if (isset($delta['content']) && $delta['content'] !== '') {
+                yield new Response(
+                    content: $delta['content'],
+                    finishReason: $this->mapFinishReason($finishReason),
+                    toolCalls: [],
+                    model: $json['model'] ?? $this->model,
+                );
+            } elseif ($finishReason === 'stop') {
+                // Final content chunk (stop signal, usage may follow
+                // in a separate chunk when stream_options is set)
+                $usage = null;
+                if (isset($json['usage'])) {
+                    $usage = new Usage(
+                        promptTokens: $json['usage']['prompt_tokens'] ?? 0,
+                        completionTokens: $json['usage']['completion_tokens'] ?? 0,
+                        totalTokens: $json['usage']['total_tokens'] ?? 0,
+                    );
+                }
+
+                yield new Response(
+                    content: '',
+                    finishReason: FinishReason::Stop,
+                    toolCalls: [],
+                    model: $json['model'] ?? $this->model,
+                    usage: $usage,
+                    reasoning: $reasoningBuffer,
+                );
+                $reasoningBuffer = '';
             }
         }
     }
@@ -260,7 +240,9 @@ class OpenAICompatibleProvider extends AbstractProvider
             }
 
             return $models;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            $this->logger?->debug('Failed to fetch models: {error}', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -274,7 +256,9 @@ class OpenAICompatibleProvider extends AbstractProvider
             ]);
 
             return true;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            $this->logger?->debug('Provider availability check failed: {error}', ['error' => $e->getMessage()]);
+
             return false;
         }
     }

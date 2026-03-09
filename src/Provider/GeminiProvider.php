@@ -10,6 +10,7 @@ use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\FinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
+use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
@@ -28,17 +29,28 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  */
 final class GeminiProvider extends AbstractProvider
 {
+    /** JSON Schema keywords unsupported by Gemini. */
+    private const UNSUPPORTED_KEYWORDS = [
+        'additionalProperties',
+        '$schema',
+        '$ref',
+        '$defs',
+        'default',
+    ];
+
     public function __construct(
         string $model = 'gemini-2.5-flash',
         string $baseUrl = 'https://generativelanguage.googleapis.com/v1beta',
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
+        ?LoggerInterface $logger = null,
     ) {
         parent::__construct(
             model: $model,
             baseUrl: $baseUrl,
             apiKey: $apiKey,
             httpClient: $httpClient,
+            logger: $logger,
         );
     }
 
@@ -80,67 +92,49 @@ final class GeminiProvider extends AbstractProvider
             ],
         );
 
-        $lineBuffer = '';
+        $parser = new SseStreamParser($this->httpClient, $response);
+        $toolCallCounter = 0;
 
-        foreach ($this->httpClient->stream($response) as $chunk) {
-            $data = $lineBuffer . $chunk->getContent();
-            $lineBuffer = '';
+        foreach ($parser->events() as $json) {
+            $candidate = $json['candidates'][0] ?? [];
+            $parts = $candidate['content']['parts'] ?? [];
+            $finishReason = $this->mapGeminiFinishReason($candidate['finishReason'] ?? null);
 
-            $lines = explode("\n", $data);
+            $text = '';
+            $toolCalls = [];
 
-            if (!str_ends_with($data, "\n")) {
-                $lineBuffer = array_pop($lines);
+            foreach ($parts as $part) {
+                if (isset($part['text'])) {
+                    $text .= $part['text'];
+                } elseif (isset($part['functionCall'])) {
+                    $name = $part['functionCall']['name'];
+                    $toolCalls[] = new ToolCall(
+                        id: 'call_gemini_' . $name . '_' . $toolCallCounter++,
+                        name: $name,
+                        arguments: $part['functionCall']['args'] ?? [],
+                    );
+                }
             }
 
-            foreach ($lines as $line) {
-                if (!str_starts_with($line, 'data: ')) {
-                    continue;
-                }
+            if (!empty($toolCalls)) {
+                yield new Response(
+                    content: $text,
+                    finishReason: FinishReason::ToolUse,
+                    toolCalls: $toolCalls,
+                    model: $this->model,
+                    usage: $this->parseUsageMetadata($json),
+                );
+                continue;
+            }
 
-                $json = json_decode(substr($line, 6), true);
-                if ($json === null) {
-                    continue;
-                }
-
-                $candidate = $json['candidates'][0] ?? [];
-                $parts = $candidate['content']['parts'] ?? [];
-                $finishReason = $this->mapGeminiFinishReason($candidate['finishReason'] ?? null);
-
-                $text = '';
-                $toolCalls = [];
-
-                foreach ($parts as $part) {
-                    if (isset($part['text'])) {
-                        $text .= $part['text'];
-                    } elseif (isset($part['functionCall'])) {
-                        $toolCalls[] = new ToolCall(
-                            id: 'call_' . bin2hex(random_bytes(12)),
-                            name: $part['functionCall']['name'],
-                            arguments: $part['functionCall']['args'] ?? [],
-                        );
-                    }
-                }
-
-                if (!empty($toolCalls)) {
-                    yield new Response(
-                        content: $text,
-                        finishReason: FinishReason::ToolUse,
-                        toolCalls: $toolCalls,
-                        model: $this->model,
-                        usage: $this->parseUsageMetadata($json),
-                    );
-                    continue;
-                }
-
-                if ($text !== '' || $finishReason !== FinishReason::Stop) {
-                    yield new Response(
-                        content: $text,
-                        finishReason: $finishReason,
-                        toolCalls: [],
-                        model: $this->model,
-                        usage: $this->parseUsageMetadata($json),
-                    );
-                }
+            if ($text !== '' || $finishReason !== FinishReason::Stop) {
+                yield new Response(
+                    content: $text,
+                    finishReason: $finishReason,
+                    toolCalls: [],
+                    model: $this->model,
+                    usage: $this->parseUsageMetadata($json),
+                );
             }
         }
     }
@@ -213,7 +207,9 @@ final class GeminiProvider extends AbstractProvider
             }
 
             return $models;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            $this->logger?->debug('Failed to fetch Gemini models: {error}', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -231,7 +227,9 @@ final class GeminiProvider extends AbstractProvider
             ]);
 
             return true;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            $this->logger?->debug('Gemini availability check failed: {error}', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -501,14 +499,13 @@ final class GeminiProvider extends AbstractProvider
                     'data' => base64_encode($body),
                 ],
             ];
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            $this->logger?->debug('Failed to download image from URL: {error}', ['error' => $e->getMessage()]);
+
             return null;
         }
     }
 
-    /**
-     * Guess MIME type from URL file extension.
-     */
     private function guessMimeFromUrl(string $url): ?string
     {
         $path = parse_url($url, PHP_URL_PATH);
@@ -573,7 +570,7 @@ final class GeminiProvider extends AbstractProvider
      */
     private function normalizeSchemaForGemini(array $schema): array
     {
-        // Convert type to uppercase
+        // Convert type to uppercase (Gemini requirement)
         if (isset($schema['type']) && is_string($schema['type'])) {
             $schema['type'] = strtoupper($schema['type']);
         }
@@ -592,16 +589,7 @@ final class GeminiProvider extends AbstractProvider
             $schema['items'] = $this->normalizeSchemaForGemini($schema['items']);
         }
 
-        // Strip unsupported keywords
-        unset(
-            $schema['additionalProperties'],
-            $schema['$schema'],
-            $schema['$ref'],
-            $schema['$defs'],
-            $schema['default'],
-        );
-
-        return $schema;
+        return SchemaUtils::stripKeywords($schema, self::UNSUPPORTED_KEYWORDS);
     }
 
     /**
@@ -630,13 +618,15 @@ final class GeminiProvider extends AbstractProvider
         $content = '';
         $toolCalls = [];
 
+        $callIndex = 0;
         foreach ($parts as $part) {
             if (isset($part['text'])) {
                 $content .= $part['text'];
             } elseif (isset($part['functionCall'])) {
+                $name = $part['functionCall']['name'];
                 $toolCalls[] = new ToolCall(
-                    id: 'call_' . bin2hex(random_bytes(12)),
-                    name: $part['functionCall']['name'],
+                    id: 'call_gemini_' . $name . '_' . $callIndex++,
+                    name: $name,
                     arguments: $part['functionCall']['args'] ?? [],
                 );
             }

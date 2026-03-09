@@ -13,9 +13,9 @@ graph TB
     subgraph "php-agents Framework"
         subgraph "Agent Layer"
             AA[AbstractAgent]
-            FA[FileAgent]
-            WA[WebAgent]
-            CA[CodeAgent]
+            FA[FileAgent<br/><i>deprecated</i>]
+            WA[WebAgent<br/><i>deprecated</i>]
+            CA[CodeAgent<br/><i>deprecated</i>]
             FA --> AA
             WA --> AA
             CA --> AA
@@ -38,7 +38,7 @@ graph TB
             FST[FilesystemToolkit]
             WT[WebToolkit]
             ST[ShellToolkit]
-            MT[MemoryToolkit]
+            MT[MemoryToolkit<br/><i>deprecated</i>]
             T --> TI
             FST --> TK
             WT --> TK
@@ -130,11 +130,14 @@ flowchart TD
 Agents are composed from providers, toolkits, and policies rather than inheriting complex behavior:
 
 ```php
-$agent = new FileAgent(
+$agent = new class(
     provider: new OllamaProvider(model: 'llama3.2'),
     maxIterations: 10,
     executionPolicy: new MyPolicy(),
-);
+) extends AbstractAgent {
+    public function name(): string { return 'My Agent'; }
+    public function instructions(): string { return 'You help users.'; }
+};
 ```
 
 ### Interface-Driven Extensibility
@@ -150,7 +153,7 @@ Every major component has an interface contract. You can replace any layer:
 | `CancellationTokenInterface` | Cooperative cancellation | `NullCancellationToken` |
 | `PendingInputProviderInterface` | External input injection | `NullPendingInputProvider` |
 | `ContextWindowInterface` | Token budget tracking | `ContextWindow` |
-| `MemoryInterface` | Persistent memory | `FileMemory` |
+| `MemoryInterface` | Persistent memory | `FileMemory` *(deprecated)* |
 | `VectorStoreInterface` | Similarity search | `InMemoryVectorStore` |
 | `EmbeddingProviderInterface` | Text → vector | Ollama, OpenAI |
 | `TokenCounterInterface` | Token counting | `HeuristicCounter`, `TiktokenCounter` |
@@ -379,12 +382,12 @@ flowchart LR
 ```mermaid
 graph TB
     subgraph "Agent-Facing"
-        MTK[MemoryToolkit]
+        MTK[MemoryToolkit<br/><i>deprecated</i>]
     end
 
     subgraph "Storage Layer"
         MI[MemoryInterface]
-        FM[FileMemory<br/>Markdown file]
+        FM[FileMemory<br/><i>deprecated</i>]
     end
 
     subgraph "Vector Search"

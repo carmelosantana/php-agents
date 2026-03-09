@@ -41,13 +41,16 @@ composer require hkulekci/qdrant
 
    require __DIR__ . '/vendor/autoload.php';
 
-   use CarmeloSantana\PHPAgents\Agent\FileAgent;
+   use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
    use CarmeloSantana\PHPAgents\Message\UserMessage;
    use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
+   use CarmeloSantana\PHPAgents\Toolkit\FilesystemToolkit;
 
-   $agent = new FileAgent(
-       provider: new OllamaProvider(model: 'llama3.2'),
-   );
+   $agent = new class(provider: new OllamaProvider(model: 'llama3.2')) extends AbstractAgent {
+       public function name(): string { return 'File Agent'; }
+       public function instructions(): string { return 'You manage files in the workspace.'; }
+   };
+   $agent->addToolkit(new FilesystemToolkit(__DIR__));
 
    $output = $agent->run(new UserMessage('List the files in the current directory'));
    echo $output->content;
@@ -100,14 +103,16 @@ declare(strict_types=1);
 
 require __DIR__ . '/vendor/autoload.php';
 
-use CarmeloSantana\PHPAgents\Agent\FileAgent;
+use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
+use CarmeloSantana\PHPAgents\Toolkit\FilesystemToolkit;
 
-$agent = new FileAgent(
-    provider: new OllamaProvider(model: 'llama3.2'),
-    maxIterations: 15,
-);
+$agent = new class(provider: new OllamaProvider(model: 'llama3.2'), maxIterations: 15) extends AbstractAgent {
+    public function name(): string { return 'File Agent'; }
+    public function instructions(): string { return 'You manage files in the workspace.'; }
+};
+$agent->addToolkit(new FilesystemToolkit(__DIR__));
 
 $output = $agent->run(
     new UserMessage('Create a file called hello.txt with the contents "Hello, World!"'),
@@ -117,7 +122,7 @@ echo $output->content;
 // Agent creates the file using FilesystemToolkit tools, then responds
 ```
 
-The `FileAgent` comes pre-loaded with `FilesystemToolkit` (file read/write/list/search/delete) tools. The agent loop works like this:
+The agent is pre-loaded with `FilesystemToolkit` (file read/write/list/search/delete) tools. The agent loop works like this:
 
 1. Your message is sent to the LLM with tool definitions
 2. The LLM decides which tool to call (e.g., `write_file`)

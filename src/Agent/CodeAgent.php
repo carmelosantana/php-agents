@@ -9,6 +9,9 @@ use CarmeloSantana\PHPAgents\Enum\ModelCapability;
 use CarmeloSantana\PHPAgents\Toolkit\FilesystemToolkit;
 use CarmeloSantana\PHPAgents\Toolkit\ShellToolkit;
 
+/**
+ * @deprecated Use AbstractAgent with custom toolkits instead. Will be removed in 1.0.
+ */
 final class CodeAgent extends AbstractAgent
 {
     private FilesystemToolkit $filesystem;

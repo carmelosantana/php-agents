@@ -10,6 +10,7 @@ use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\FinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
+use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 final class AnthropicProvider extends AbstractProvider
@@ -21,12 +22,14 @@ final class AnthropicProvider extends AbstractProvider
         string $baseUrl = 'https://api.anthropic.com/v1',
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
+        ?LoggerInterface $logger = null,
     ) {
         parent::__construct(
             model: $model,
             baseUrl: $baseUrl,
             apiKey: $apiKey,
             httpClient: $httpClient,
+            logger: $logger,
         );
     }
 
@@ -102,111 +105,94 @@ final class AnthropicProvider extends AbstractProvider
         $currentBlockIndex = -1;
         $currentBlockType = '';
 
-        // Buffer incomplete SSE lines across HTTP chunks.
-        $lineBuffer = '';
+        $parser = new SseStreamParser($this->httpClient, $response);
 
-        foreach ($this->httpClient->stream($response) as $chunk) {
-            $data = $lineBuffer . $chunk->getContent();
-            $lineBuffer = '';
-
-            $lines = explode("\n", $data);
-
-            if (!str_ends_with($data, "\n")) {
-                $lineBuffer = array_pop($lines);
+        foreach ($parser->events() as $json) {
+            if (!isset($json['type'])) {
+                continue;
             }
 
-            foreach ($lines as $line) {
-                if (!str_starts_with($line, 'data: ')) {
-                    continue;
+            $eventType = $json['type'];
+
+            if ($eventType === 'content_block_start') {
+                $currentBlockIndex = $json['index'] ?? 0;
+                $block = $json['content_block'] ?? [];
+                $currentBlockType = $block['type'] ?? 'text';
+
+                if ($currentBlockType === 'tool_use') {
+                    $pendingToolCalls[$currentBlockIndex] = [
+                        'id' => $block['id'] ?? '',
+                        'name' => $block['name'] ?? '',
+                        'arguments' => '',
+                    ];
                 }
+            } elseif ($eventType === 'content_block_delta') {
+                $delta = $json['delta'] ?? [];
+                $index = $json['index'] ?? $currentBlockIndex;
+                $deltaType = $delta['type'] ?? '';
 
-                $json = json_decode(substr($line, 6), true);
-                if ($json === null || !isset($json['type'])) {
-                    continue;
-                }
-
-                $eventType = $json['type'];
-
-                if ($eventType === 'content_block_start') {
-                    $currentBlockIndex = $json['index'] ?? 0;
-                    $block = $json['content_block'] ?? [];
-                    $currentBlockType = $block['type'] ?? 'text';
-
-                    if ($currentBlockType === 'tool_use') {
-                        $pendingToolCalls[$currentBlockIndex] = [
-                            'id' => $block['id'] ?? '',
-                            'name' => $block['name'] ?? '',
-                            'arguments' => '',
-                        ];
-                    }
-                } elseif ($eventType === 'content_block_delta') {
-                    $delta = $json['delta'] ?? [];
-                    $index = $json['index'] ?? $currentBlockIndex;
-                    $deltaType = $delta['type'] ?? '';
-
-                    if ($deltaType === 'input_json_delta' && isset($pendingToolCalls[$index])) {
-                        $pendingToolCalls[$index]['arguments'] .= $delta['partial_json'] ?? '';
-                    } elseif ($deltaType === 'text_delta' && isset($delta['text'])) {
-                        yield new Response(
-                            content: $delta['text'],
-                            finishReason: FinishReason::Stop,
-                            toolCalls: [],
-                            model: $this->model,
-                        );
-                    }
-                } elseif ($eventType === 'message_delta') {
-                    $stopReason = $json['delta']['stop_reason'] ?? null;
-
-                    $usage = null;
-                    if (isset($json['usage'])) {
-                        $usage = new Usage(
-                            promptTokens: 0,
-                            completionTokens: $json['usage']['output_tokens'] ?? 0,
-                            totalTokens: $json['usage']['output_tokens'] ?? 0,
-                        );
-                    }
-
-                    if ($stopReason === 'tool_use' && !empty($pendingToolCalls)) {
-                        $toolCalls = [];
-                        foreach ($pendingToolCalls as $tc) {
-                            $toolCalls[] = new ToolCall(
-                                id: $tc['id'],
-                                name: $tc['name'],
-                                arguments: json_decode($tc['arguments'], true) ?? [],
-                            );
-                        }
-                        $pendingToolCalls = [];
-
-                        yield new Response(
-                            content: '',
-                            finishReason: FinishReason::ToolUse,
-                            toolCalls: $toolCalls,
-                            model: $this->model,
-                            usage: $usage,
-                        );
-                    } elseif ($stopReason === 'end_turn' || $stopReason === 'max_tokens') {
-                        yield new Response(
-                            content: '',
-                            finishReason: $stopReason === 'max_tokens' ? FinishReason::MaxTokens : FinishReason::Stop,
-                            toolCalls: [],
-                            model: $this->model,
-                            usage: $usage,
-                        );
-                    }
-                } elseif ($eventType === 'message_start' && isset($json['message']['usage'])) {
-                    // Initial usage data (input tokens)
+                if ($deltaType === 'input_json_delta' && isset($pendingToolCalls[$index])) {
+                    $pendingToolCalls[$index]['arguments'] .= $delta['partial_json'] ?? '';
+                } elseif ($deltaType === 'text_delta' && isset($delta['text'])) {
                     yield new Response(
-                        content: '',
+                        content: $delta['text'],
                         finishReason: FinishReason::Stop,
                         toolCalls: [],
-                        model: $json['message']['model'] ?? $this->model,
-                        usage: new Usage(
-                            promptTokens: $json['message']['usage']['input_tokens'] ?? 0,
-                            completionTokens: 0,
-                            totalTokens: $json['message']['usage']['input_tokens'] ?? 0,
-                        ),
+                        model: $this->model,
                     );
                 }
+            } elseif ($eventType === 'message_delta') {
+                $stopReason = $json['delta']['stop_reason'] ?? null;
+
+                $usage = null;
+                if (isset($json['usage'])) {
+                    $usage = new Usage(
+                        promptTokens: 0,
+                        completionTokens: $json['usage']['output_tokens'] ?? 0,
+                        totalTokens: $json['usage']['output_tokens'] ?? 0,
+                    );
+                }
+
+                if ($stopReason === 'tool_use' && !empty($pendingToolCalls)) {
+                    $toolCalls = [];
+                    foreach ($pendingToolCalls as $tc) {
+                        $toolCalls[] = new ToolCall(
+                            id: $tc['id'],
+                            name: $tc['name'],
+                            arguments: json_decode($tc['arguments'], true) ?? [],
+                        );
+                    }
+                    $pendingToolCalls = [];
+
+                    yield new Response(
+                        content: '',
+                        finishReason: FinishReason::ToolUse,
+                        toolCalls: $toolCalls,
+                        model: $this->model,
+                        usage: $usage,
+                    );
+                } elseif ($stopReason === 'end_turn' || $stopReason === 'max_tokens') {
+                    yield new Response(
+                        content: '',
+                        finishReason: $stopReason === 'max_tokens' ? FinishReason::MaxTokens : FinishReason::Stop,
+                        toolCalls: [],
+                        model: $this->model,
+                        usage: $usage,
+                    );
+                }
+            } elseif ($eventType === 'message_start' && isset($json['message']['usage'])) {
+                // Initial usage data (input tokens)
+                yield new Response(
+                    content: '',
+                    finishReason: FinishReason::Stop,
+                    toolCalls: [],
+                    model: $json['message']['model'] ?? $this->model,
+                    usage: new Usage(
+                        promptTokens: $json['message']['usage']['input_tokens'] ?? 0,
+                        completionTokens: 0,
+                        totalTokens: $json['message']['usage']['input_tokens'] ?? 0,
+                    ),
+                );
             }
         }
     }
@@ -307,7 +293,8 @@ final class AnthropicProvider extends AbstractProvider
             if (!empty($models)) {
                 return $models;
             }
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            $this->logger?->debug('Failed to fetch Anthropic models: {error}', ['error' => $e->getMessage()]);
             // Fall through to static list
         }
 
@@ -335,7 +322,9 @@ final class AnthropicProvider extends AbstractProvider
             ]);
 
             return true;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            $this->logger?->debug('Anthropic availability check failed: {error}', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -388,7 +377,7 @@ final class AnthropicProvider extends AbstractProvider
             if ($last !== false && $lastKey !== null && $last['role'] === $msg['role']) {
                 $lastContent = $this->normalizeContent($last['content']);
                 $msgContent = $this->normalizeContent($msg['content']);
-                $merged[$lastKey]['content'] = array_merge($lastContent, $msgContent);
+                $merged[$lastKey]['content'] = [...$lastContent, ...$msgContent];
             } else {
                 $merged[] = $msg;
             }

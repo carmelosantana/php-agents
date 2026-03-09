@@ -14,6 +14,9 @@ use CarmeloSantana\PHPAgents\Tool\Parameter\EnumParameter;
 use CarmeloSantana\PHPAgents\Tool\Parameter\NumberParameter;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
 
+/**
+ * @deprecated Use a dedicated memory implementation (e.g. Coqui MemoryToolkit with SQLite). Will be removed in 1.0.
+ */
 final class MemoryToolkit implements ToolkitInterface
 {
     public function __construct(

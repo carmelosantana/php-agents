@@ -10,6 +10,7 @@ use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\FinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
+use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
@@ -33,8 +34,9 @@ final class OpenAIResponsesProvider extends AbstractProvider
         string $baseUrl = 'https://api.openai.com/v1',
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
+        ?LoggerInterface $logger = null,
     ) {
-        parent::__construct($model, $baseUrl, $apiKey, $httpClient);
+        parent::__construct($model, $baseUrl, $apiKey, $httpClient, $logger);
     }
 
     public function chat(array $messages, array $tools = [], array $options = []): Response
@@ -78,115 +80,97 @@ final class OpenAIResponsesProvider extends AbstractProvider
         /** @var array<int, array{call_id: string, name: string, arguments: string}> $pendingToolCalls */
         $pendingToolCalls = [];
 
-        // Buffer incomplete SSE lines across HTTP chunks. Responses API
-        // payloads (especially tool call arguments) can be large enough
-        // that a single `data:` line spans multiple HTTP chunks.
-        $lineBuffer = '';
+        $parser = new SseStreamParser($this->httpClient, $response);
 
-        foreach ($this->httpClient->stream($response) as $chunk) {
-            $data = $lineBuffer . $chunk->getContent();
-            $lineBuffer = '';
-
-            $lines = explode("\n", $data);
-
-            // If the data doesn't end with a newline, the last element
-            // is an incomplete line — buffer it for the next chunk.
-            if (!str_ends_with($data, "\n")) {
-                $lineBuffer = array_pop($lines);
+        foreach ($parser->events() as $json) {
+            if (!isset($json['type'])) {
+                continue;
             }
 
-            foreach ($lines as $line) {
-                if (!str_starts_with($line, 'data: ')) {
-                    continue;
+            $eventType = $json['type'];
+
+            if ($eventType === 'response.output_text.delta') {
+                $delta = $json['delta'] ?? '';
+                if ($delta !== '') {
+                    yield new Response(
+                        content: $delta,
+                        finishReason: FinishReason::Stop,
+                        toolCalls: [],
+                        model: $this->model,
+                    );
                 }
-
-                $json = json_decode(substr($line, 6), true);
-                if ($json === null || !isset($json['type'])) {
-                    continue;
-                }
-
-                $eventType = $json['type'];
-
-                if ($eventType === 'response.output_text.delta') {
-                    $delta = $json['delta'] ?? '';
-                    if ($delta !== '') {
-                        yield new Response(
-                            content: $delta,
-                            finishReason: FinishReason::Stop,
-                            toolCalls: [],
-                            model: $this->model,
-                        );
-                    }
-                } elseif ($eventType === 'response.output_item.added') {
-                    $item = $json['item'] ?? [];
-                    if (($item['type'] ?? '') === 'function_call') {
-                        $index = $json['output_index'] ?? 0;
-                        $pendingToolCalls[$index] = [
-                            'call_id' => $item['call_id'] ?? '',
-                            'name' => $item['name'] ?? '',
-                            'arguments' => '',
-                        ];
-                    }
-                } elseif ($eventType === 'response.function_call_arguments.delta') {
+            } elseif ($eventType === 'response.output_item.added') {
+                $item = $json['item'] ?? [];
+                if (($item['type'] ?? '') === 'function_call') {
                     $index = $json['output_index'] ?? 0;
-                    if (isset($pendingToolCalls[$index])) {
-                        $pendingToolCalls[$index]['arguments'] .= $json['delta'] ?? '';
-                    }
-                } elseif ($eventType === 'response.output_item.done') {
-                    $item = $json['item'] ?? [];
-                    if (($item['type'] ?? '') === 'function_call') {
-                        $index = $json['output_index'] ?? 0;
-                        $pendingToolCalls[$index] = [
-                            'call_id' => $item['call_id'] ?? $pendingToolCalls[$index]['call_id'] ?? '',
-                            'name' => $item['name'] ?? $pendingToolCalls[$index]['name'] ?? '',
-                            'arguments' => $item['arguments'] ?? $pendingToolCalls[$index]['arguments'] ?? '',
-                        ];
-                    }
-                } elseif ($eventType === 'response.completed') {
-                    $responseData = $json['response'] ?? [];
-                    $usage = $this->parseUsage($responseData);
+                    $pendingToolCalls[$index] = [
+                        'call_id' => $item['call_id'] ?? '',
+                        'name' => $item['name'] ?? '',
+                        'arguments' => '',
+                    ];
+                }
+            } elseif ($eventType === 'response.function_call_arguments.delta') {
+                $index = $json['output_index'] ?? 0;
+                if (isset($pendingToolCalls[$index])) {
+                    $pendingToolCalls[$index]['arguments'] .= $json['delta'] ?? '';
+                }
+            } elseif ($eventType === 'response.output_item.done') {
+                $item = $json['item'] ?? [];
+                if (($item['type'] ?? '') === 'function_call') {
+                    $index = $json['output_index'] ?? 0;
+                    // Merge final item data with accumulated state — prefer
+                    // already-accumulated arguments over incomplete final data
+                    $existing = $pendingToolCalls[$index] ?? ['call_id' => '', 'name' => '', 'arguments' => ''];
+                    $pendingToolCalls[$index] = [
+                        'call_id' => ($item['call_id'] ?? '') !== '' ? $item['call_id'] : $existing['call_id'],
+                        'name' => ($item['name'] ?? '') !== '' ? $item['name'] : $existing['name'],
+                        'arguments' => $existing['arguments'] !== '' ? $existing['arguments'] : ($item['arguments'] ?? ''),
+                    ];
+                }
+            } elseif ($eventType === 'response.completed') {
+                $responseData = $json['response'] ?? [];
+                $usage = $this->parseUsage($responseData);
 
-                    if (!empty($pendingToolCalls)) {
-                        $toolCalls = [];
-                        foreach ($pendingToolCalls as $tc) {
-                            $toolCalls[] = new ToolCall(
-                                id: $tc['call_id'],
-                                name: $tc['name'],
-                                arguments: json_decode($tc['arguments'], true) ?? [],
-                            );
-                        }
-                        $pendingToolCalls = [];
-
-                        yield new Response(
-                            content: '',
-                            finishReason: FinishReason::ToolUse,
-                            toolCalls: $toolCalls,
-                            model: $this->model,
-                            usage: $usage,
-                        );
-                    } else {
-                        yield new Response(
-                            content: '',
-                            finishReason: FinishReason::Stop,
-                            toolCalls: [],
-                            model: $this->model,
-                            usage: $usage,
+                if (!empty($pendingToolCalls)) {
+                    $toolCalls = [];
+                    foreach ($pendingToolCalls as $tc) {
+                        $toolCalls[] = new ToolCall(
+                            id: $tc['call_id'],
+                            name: $tc['name'],
+                            arguments: json_decode($tc['arguments'], true) ?? [],
                         );
                     }
-                } elseif ($eventType === 'response.created') {
-                    // Initial response metadata — extract model if present
-                    $responseData = $json['response'] ?? [];
-                    $reportedModel = $responseData['model'] ?? '';
+                    $pendingToolCalls = [];
 
-                    if (isset($responseData['usage'])) {
-                        yield new Response(
-                            content: '',
-                            finishReason: FinishReason::Stop,
-                            toolCalls: [],
-                            model: $reportedModel !== '' ? $reportedModel : $this->model,
-                            usage: $this->parseUsage($responseData),
-                        );
-                    }
+                    yield new Response(
+                        content: '',
+                        finishReason: FinishReason::ToolUse,
+                        toolCalls: $toolCalls,
+                        model: $this->model,
+                        usage: $usage,
+                    );
+                } else {
+                    yield new Response(
+                        content: '',
+                        finishReason: FinishReason::Stop,
+                        toolCalls: [],
+                        model: $this->model,
+                        usage: $usage,
+                    );
+                }
+            } elseif ($eventType === 'response.created') {
+                // Initial response metadata — extract model if present
+                $responseData = $json['response'] ?? [];
+                $reportedModel = $responseData['model'] ?? '';
+
+                if (isset($responseData['usage'])) {
+                    yield new Response(
+                        content: '',
+                        finishReason: FinishReason::Stop,
+                        toolCalls: [],
+                        model: $reportedModel !== '' ? $reportedModel : $this->model,
+                        usage: $this->parseUsage($responseData),
+                    );
                 }
             }
         }
@@ -257,7 +241,9 @@ final class OpenAIResponsesProvider extends AbstractProvider
             }
 
             return $models;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            $this->logger?->debug('Failed to fetch models: {error}', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -271,7 +257,9 @@ final class OpenAIResponsesProvider extends AbstractProvider
             ]);
 
             return true;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            $this->logger?->debug('Provider availability check failed: {error}', ['error' => $e->getMessage()]);
+
             return false;
         }
     }

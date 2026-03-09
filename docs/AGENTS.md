@@ -102,39 +102,42 @@ flowchart TD
     LOOP --> NOTIFY_DONE[notify: agent.done]
 ```
 
-## Built-in Agents
+## Built-in Agents (Deprecated)
+
+> **Deprecated.** `FileAgent`, `WebAgent`, and `CodeAgent` will be removed in 1.0. Use `AbstractAgent` with explicit toolkits instead — this gives you full control over which tools are available.
 
 ### FileAgent
 
-Pre-loaded with `FilesystemToolkit`. Good for file manipulation tasks.
-
 ```php
-use CarmeloSantana\PHPAgents\Agent\FileAgent;
-
-$agent = new FileAgent(provider: $provider);
-// Has: read_file, write_file, list_directory, search_files, file_info, create_directory, delete_file
+// DEPRECATED — use AbstractAgent + FilesystemToolkit instead:
+$agent = new class($provider) extends AbstractAgent {
+    public function name(): string { return 'File Agent'; }
+    public function instructions(): string { return 'You manage files.'; }
+};
+$agent->addToolkit(new FilesystemToolkit('/path/to/root'));
 ```
 
 ### WebAgent
 
-Pre-loaded with `WebToolkit`. Good for web research and API interaction.
-
 ```php
-use CarmeloSantana\PHPAgents\Agent\WebAgent;
-
-$agent = new WebAgent(provider: $provider);
-// Has: http_request, web_search
+// DEPRECATED — use AbstractAgent + WebToolkit instead:
+$agent = new class($provider) extends AbstractAgent {
+    public function name(): string { return 'Web Agent'; }
+    public function instructions(): string { return 'You research the web.'; }
+};
+$agent->addToolkit(new WebToolkit());
 ```
 
 ### CodeAgent
 
-Pre-loaded with `FilesystemToolkit` and `ShellToolkit`. Good for coding tasks.
-
 ```php
-use CarmeloSantana\PHPAgents\Agent\CodeAgent;
-
-$agent = new CodeAgent(provider: $provider);
-// Has: file tools + execute_command
+// DEPRECATED — use AbstractAgent + FilesystemToolkit + ShellToolkit instead:
+$agent = new class($provider) extends AbstractAgent {
+    public function name(): string { return 'Code Agent'; }
+    public function instructions(): string { return 'You write and execute code.'; }
+};
+$agent->addToolkit(new FilesystemToolkit('/path/to/root'));
+$agent->addToolkit(new ShellToolkit());
 ```
 
 ## Adding Tools and Toolkits
@@ -145,7 +148,7 @@ $agent->addTool($myTool);
 
 // Add a toolkit (registers all its tools + injects guidelines)
 $agent->addToolkit(new WebToolkit());
-$agent->addToolkit(new MemoryToolkit(memory: $memory));
+$agent->addToolkit(new MemoryToolkit(memory: $memory)); // Note: MemoryToolkit is deprecated — use a database-backed implementation
 ```
 
 Tools from toolkits are merged with directly-added tools. Guidelines from all toolkits are concatenated and appended to the system prompt.
@@ -218,7 +221,7 @@ final class TimeoutToken implements CancellationTokenInterface
     }
 }
 
-$agent = new FileAgent(
+$agent = new MyAgent(
     provider: $provider,
     cancellationToken: new TimeoutToken(30),
 );
@@ -254,7 +257,7 @@ final class QueuedInputProvider implements PendingInputProviderInterface
 }
 
 $inputProvider = new QueuedInputProvider();
-$agent = new FileAgent(
+$agent = new MyAgent(
     provider: $provider,
     pendingInputProvider: $inputProvider,
 );
@@ -277,7 +280,7 @@ $contextWindow = new ContextWindow(
     reservedTokens: 4_000, // Space for the response
 );
 
-$agent = new FileAgent(
+$agent = new MyAgent(
     provider: $provider,
     contextWindow: $contextWindow,
 );
