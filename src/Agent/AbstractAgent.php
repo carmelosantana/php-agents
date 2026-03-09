@@ -112,8 +112,13 @@ abstract class AbstractAgent implements AgentInterface
     {
         $this->notify('agent.start', $input);
 
-        $allTools = $this->allTools();
-        $systemPrompt = $this->buildSystemPrompt($allTools);
+        // Advertised tools are capped by maxTools and sent to the provider.
+        // Executable tools are the full uncapped set — used by findTool() so
+        // that tools discovered via tool_search can still be executed even
+        // when not in the provider's tool schema payload.
+        $advertisedTools = $this->allTools();
+        $executableTools = $this->fullToolSet();
+        $systemPrompt = $this->buildSystemPrompt($advertisedTools);
 
         $conversation = new Conversation();
         $conversation->add(new SystemMessage($systemPrompt));
@@ -178,7 +183,11 @@ abstract class AbstractAgent implements AgentInterface
                 $streamUsage = null;
                 $streamModel = '';
 
-                foreach ($this->provider->stream($conversation->messages(), $allTools) as $chunk) {
+                foreach ($this->provider->stream($conversation->messages(), $advertisedTools) as $chunk) {
+                    if ($chunk->reasoning !== '') {
+                        $this->notify('agent.reasoning', $chunk->reasoning);
+                    }
+
                     if ($chunk->content !== '') {
                         $content .= $chunk->content;
                         $this->notify('agent.text_delta', $chunk->content);
@@ -314,7 +323,7 @@ abstract class AbstractAgent implements AgentInterface
                     }
 
                     try {
-                        $tool = $this->findTool($toolCall->name, $allTools);
+                        $tool = $this->findTool($toolCall->name, $executableTools);
                         $result = $tool->execute($toolCall->arguments);
                         $result = $result->withCallId($toolCall->id);
                     } catch (TerminationException $e) {
@@ -376,7 +385,8 @@ abstract class AbstractAgent implements AgentInterface
     }
 
     /**
-     * Collect all tools with name-based deduplication (last-registered wins).
+     * Collect all tools with name-based deduplication (last-registered wins),
+     * then apply the maxTools cap for the provider's tool parameter.
      *
      * Order: standalone tools → toolkit tools → DoneTool.
      * If multiple tools share the same name, the later registration
@@ -391,19 +401,7 @@ abstract class AbstractAgent implements AgentInterface
      */
     private function allTools(): array
     {
-        $indexed = [];
-
-        foreach ($this->tools() as $tool) {
-            $indexed[$tool->name()] = $tool;
-        }
-
-        foreach ($this->toolkits as $toolkit) {
-            foreach ($toolkit->tools() as $tool) {
-                $indexed[$tool->name()] = $tool;
-            }
-        }
-
-        $indexed[DoneTool::NAME] = DoneTool::create();
+        $indexed = $this->collectAllToolsIndexed();
 
         // Apply tool cap if configured — preserves DoneTool and prioritises
         // standalone tools over toolkit tools by slicing last.
@@ -420,12 +418,49 @@ abstract class AbstractAgent implements AgentInterface
     }
 
     /**
+     * Return the full uncapped tool set for execution.
+     *
+     * Used by findTool() so tools discovered via tool_search (or called by
+     * name by the LLM) can be executed even when they are not in the
+     * capped set sent to the provider's tools parameter.
+     *
+     * @return ToolInterface[]
+     */
+    private function fullToolSet(): array
+    {
+        return array_values($this->collectAllToolsIndexed());
+    }
+
+    /**
+     * Collect all tools into a name-indexed map (no cap applied).
+     *
+     * @return array<string, ToolInterface>
+     */
+    private function collectAllToolsIndexed(): array
+    {
+        $indexed = [];
+
+        foreach ($this->tools() as $tool) {
+            $indexed[$tool->name()] = $tool;
+        }
+
+        foreach ($this->toolkits as $toolkit) {
+            foreach ($toolkit->tools() as $tool) {
+                $indexed[$tool->name()] = $tool;
+            }
+        }
+
+        $indexed[DoneTool::NAME] = DoneTool::create();
+
+        return $indexed;
+    }
+
+    /**
      * @param ToolInterface[] $tools
      */
     private function buildSystemPrompt(array $tools): string
     {
         $prompt = SystemPrompt::withIdentity($this->instructions());
-        $prompt = SystemPrompt::withTools($tools, $prompt);
         $prompt = SystemPrompt::withIterationBudget($this->maxIter, $prompt);
 
         if (!empty($this->toolkits)) {

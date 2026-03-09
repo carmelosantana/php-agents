@@ -83,6 +83,11 @@ class OpenAICompatibleProvider extends AbstractProvider
         /** @var array<int, array{id: string, name: string, arguments: string}> $pendingToolCalls */
         $pendingToolCalls = [];
 
+        // Accumulate reasoning/thinking content from models like qwen3.5, DeepSeek-R1.
+        // These models send thinking tokens via delta.reasoning or delta.reasoning_content
+        // with empty delta.content, then switch to regular content for the final answer.
+        $reasoningBuffer = '';
+
         // Buffer incomplete SSE lines across HTTP chunks. Large payloads
         // (tool call arguments, usage data) can span chunk boundaries.
         $lineBuffer = '';
@@ -127,6 +132,24 @@ class OpenAICompatibleProvider extends AbstractProvider
                         }
                     }
 
+                    // Accumulate reasoning content from thinking models.
+                    // Models use different field names: reasoning (Ollama/qwen),
+                    // reasoning_content (DeepSeek), thinking (some others).
+                    $reasoningDelta = $delta['reasoning']
+                        ?? $delta['reasoning_content']
+                        ?? $delta['thinking']
+                        ?? null;
+                    if ($reasoningDelta !== null && $reasoningDelta !== '') {
+                        $reasoningBuffer .= $reasoningDelta;
+                        yield new Response(
+                            content: '',
+                            finishReason: FinishReason::Stop,
+                            toolCalls: [],
+                            model: $json['model'] ?? $this->model,
+                            reasoning: $reasoningDelta,
+                        );
+                    }
+
                     // When the stream signals tool_calls finish, yield a
                     // Response with the fully-assembled ToolCall objects.
                     if ($finishReason === 'tool_calls' && !empty($pendingToolCalls)) {
@@ -144,7 +167,9 @@ class OpenAICompatibleProvider extends AbstractProvider
                             finishReason: FinishReason::ToolUse,
                             toolCalls: $toolCalls,
                             model: $json['model'] ?? $this->model,
+                            reasoning: $reasoningBuffer,
                         );
+                        $reasoningBuffer = '';
 
                         $pendingToolCalls = [];
                         continue;
@@ -194,7 +219,9 @@ class OpenAICompatibleProvider extends AbstractProvider
                             toolCalls: [],
                             model: $json['model'] ?? $this->model,
                             usage: $usage,
+                            reasoning: $reasoningBuffer,
                         );
+                        $reasoningBuffer = '';
                     }
                 }
             }
