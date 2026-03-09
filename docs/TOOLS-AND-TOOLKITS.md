@@ -238,6 +238,7 @@ classDiagram
     }
 
     class MemoryToolkit {
+        <<deprecated>>
         -memory: MemoryInterface
         +tools() 4 tools
         +guidelines() "Memory operations..."
@@ -309,7 +310,9 @@ $toolkit = new ShellToolkit(
 
 **Security:** Only commands in the allowlist can execute. Shell injection patterns (`;`, `&&`, `|`, `$(...)`, backticks) are detected and blocked.
 
-#### MemoryToolkit
+#### MemoryToolkit (Deprecated)
+
+> **Deprecated.** Use a database-backed memory implementation instead. Will be removed in 1.0.
 
 Persistent memory operations.
 
@@ -321,6 +324,7 @@ Persistent memory operations.
 | `memory_delete` | Delete a memory entry |
 
 ```php
+// DEPRECATED — prefer a database-backed implementation
 use CarmeloSantana\PHPAgents\Toolkit\MemoryToolkit;
 use CarmeloSantana\PHPAgents\Memory\FileMemory;
 
@@ -441,7 +445,7 @@ final class ReadOnlyPolicy implements ToolExecutionPolicyInterface
 Register on the agent:
 
 ```php
-$agent = new FileAgent(
+$agent = new MyAgent(
     provider: $provider,
     executionPolicy: new ReadOnlyPolicy(),
 );

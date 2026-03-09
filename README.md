@@ -30,12 +30,13 @@ graph LR
 - **Streaming + tool calls** — all providers support streaming with assembled tool call deltas
 - **Structured output** — extract typed data from LLMs via JSON mode (OpenAI) or tool-use trick (Anthropic)
 - **Image input** — send images to vision models via base64, URL, or file path (auto-converts between provider formats; URLs pre-downloaded for providers that don't support them natively)
-- **Bundled agents** — `FileAgent`, `WebAgent`, `CodeAgent` ready to use out of the box
+- **Bundled agents** — `FileAgent`, `WebAgent`, `CodeAgent` for quick prototyping *(deprecated — use `AbstractAgent` with toolkits for production)*
 - **Composable toolkits** — filesystem, web, shell, and memory toolkits that snap onto any agent
 - **Context window management** — automatic conversation pruning when approaching token limits
 - **Observer pattern** — attach `SplObserver` to watch agent lifecycle events in real time
 - **Security by default** — path traversal protection, SSRF blocking, shell injection detection
 - **OpenClaw config** — centralized model routing with aliases, fallbacks, and per-provider settings
+- **PSR-3 logging** — optional `LoggerInterface` on all providers for diagnostic visibility
 - **Zero framework coupling** — depends only on `symfony/http-client` and `psr/log`
 
 ## Provider Feature Matrix
@@ -78,18 +79,34 @@ declare(strict_types=1);
 
 require 'vendor/autoload.php';
 
-use CarmeloSantana\PHPAgents\Agent\FileAgent;
+use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
+use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
+use CarmeloSantana\PHPAgents\Toolkit\FilesystemToolkit;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 
+// Create a simple file agent using AbstractAgent + FilesystemToolkit
+final class MyFileAgent extends AbstractAgent
+{
+    public function __construct(ProviderInterface $provider, string $rootPath)
+    {
+        parent::__construct($provider);
+        $this->addToolkit(new FilesystemToolkit($rootPath, readOnly: true));
+    }
+
+    public function instructions(): string
+    {
+        return 'You are a helpful file assistant. Read and summarize files when asked.';
+    }
+
+    public function name(): string
+    {
+        return 'FileAgent';
+    }
+}
+
 $provider = new OllamaProvider(model: 'llama3.2');
-
-$agent = new FileAgent(
-    provider: $provider,
-    rootPath: getcwd(),
-    readOnly: true,
-);
-
+$agent = new MyFileAgent($provider, getcwd());
 $output = $agent->run(new UserMessage('Summarize the README.md file.'));
 
 echo $output->content . "\n";
@@ -97,7 +114,9 @@ echo $output->content . "\n";
 
 > Make sure Ollama is running: `ollama serve` and a model is pulled: `ollama pull llama3.2`
 
-## Bundled Agents
+## Bundled Agents (Deprecated)
+
+> **Note:** Bundled agents are deprecated and will be removed in 1.0. Use `AbstractAgent` with composable toolkits instead (see [Creating Custom Agents](#creating-custom-agents)).
 
 | Agent       | Description                                                        | Toolkits                             |
 | ----------- | ------------------------------------------------------------------ | ------------------------------------ |

@@ -8,6 +8,9 @@ use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Enum\ModelCapability;
 use CarmeloSantana\PHPAgents\Toolkit\WebToolkit;
 
+/**
+ * @deprecated Use AbstractAgent with WebToolkit instead. Will be removed in 1.0.
+ */
 final class WebAgent extends AbstractAgent
 {
     private WebToolkit $web;

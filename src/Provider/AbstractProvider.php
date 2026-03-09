@@ -7,6 +7,7 @@ namespace CarmeloSantana\PHPAgents\Provider;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
+use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
@@ -16,17 +17,20 @@ abstract class AbstractProvider implements ProviderInterface
     protected string $baseUrl;
     protected string $apiKey;
     protected HttpClientInterface $httpClient;
+    protected ?LoggerInterface $logger;
 
     public function __construct(
         string $model,
         string $baseUrl,
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
+        ?LoggerInterface $logger = null,
     ) {
         $this->model = $model;
         $this->baseUrl = rtrim($baseUrl, '/');
         $this->apiKey = $apiKey;
         $this->httpClient = $httpClient ?? HttpClient::create(['timeout' => 300]);
+        $this->logger = $logger;
     }
 
     public function getModel(): string

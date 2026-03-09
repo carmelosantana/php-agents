@@ -7,6 +7,7 @@ namespace CarmeloSantana\PHPAgents\Provider;
 use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Provider\Response;
+use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 final class OllamaProvider extends OpenAICompatibleProvider
@@ -76,12 +77,14 @@ final class OllamaProvider extends OpenAICompatibleProvider
         string $baseUrl = 'http://localhost:11434/v1',
         ?HttpClientInterface $httpClient = null,
         private int $numCtx = self::DEFAULT_NUM_CTX,
+        ?LoggerInterface $logger = null,
     ) {
         parent::__construct(
             model: $model,
             baseUrl: $baseUrl,
             apiKey: 'ollama-local',
             httpClient: $httpClient,
+            logger: $logger,
         );
     }
 
@@ -129,7 +132,9 @@ final class OllamaProvider extends OpenAICompatibleProvider
             }
 
             return $models;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            $this->logger?->debug('Failed to fetch Ollama models: {error}', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -170,7 +175,9 @@ final class OllamaProvider extends OpenAICompatibleProvider
             ]);
 
             return true;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            $this->logger?->debug('Ollama availability check failed: {error}', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -238,17 +245,13 @@ final class OllamaProvider extends OpenAICompatibleProvider
         // Flatten anyOf / oneOf / allOf → pick first non-null type
         foreach (['anyOf', 'oneOf', 'allOf'] as $combinator) {
             if (isset($schema[$combinator]) && is_array($schema[$combinator])) {
-                $schema = $this->flattenCombinator($schema, $combinator);
+                $schema = SchemaUtils::flattenCombinator($schema, $combinator);
             }
         }
 
-        // Demote validation keywords into description
-        $schema = $this->demoteConstraints($schema);
-
-        // Strip everything Ollama doesn't understand
-        foreach (self::UNSUPPORTED_SCHEMA_KEYWORDS as $keyword) {
-            unset($schema[$keyword]);
-        }
+        // Demote validation keywords into description, then strip
+        $schema = SchemaUtils::demoteConstraints($schema, self::DEMOTABLE_KEYWORDS);
+        $schema = SchemaUtils::stripKeywords($schema, self::UNSUPPORTED_SCHEMA_KEYWORDS);
 
         // Recurse into object properties
         if (isset($schema['properties']) && is_array($schema['properties'])) {
@@ -262,74 +265,6 @@ final class OllamaProvider extends OpenAICompatibleProvider
         // Recurse into array items
         if (isset($schema['items']) && is_array($schema['items'])) {
             $schema['items'] = $this->sanitizeSchema($schema['items']);
-        }
-
-        return $schema;
-    }
-
-    /**
-     * Flatten a union combinator (anyOf/oneOf/allOf) into a single type.
-     *
-     * Picks the first non-null variant and merges its fields into the
-     * parent schema, so Ollama sees a simple single-type property.
-     *
-     * @param array<string, mixed> $schema
-     * @return array<string, mixed>
-     */
-    private function flattenCombinator(array $schema, string $combinator): array
-    {
-        /** @var list<array<string, mixed>> $variants */
-        $variants = $schema[$combinator];
-        unset($schema[$combinator]);
-
-        // Find the first variant that isn't just {type: "null"}
-        foreach ($variants as $variant) {
-            if (!is_array($variant)) {
-                continue;
-            }
-            if (($variant['type'] ?? null) === 'null') {
-                continue;
-            }
-            // Merge variant fields into parent (type, description, etc.)
-            $schema = array_merge($schema, $variant);
-            return $schema;
-        }
-
-        // All variants were null — fall back to string
-        $schema['type'] = 'string';
-
-        return $schema;
-    }
-
-    /**
-     * Demote validation constraints into the description field.
-     *
-     * Before stripping unsupported keywords, append their values as
-     * human-readable hints so the LLM still respects the constraints.
-     *
-     * @param array<string, mixed> $schema
-     * @return array<string, mixed>
-     */
-    private function demoteConstraints(array $schema): array
-    {
-        $hints = [];
-
-        foreach (self::DEMOTABLE_KEYWORDS as $keyword => $template) {
-            if (!isset($schema[$keyword])) {
-                continue;
-            }
-
-            $value = $schema[$keyword];
-            $display = is_scalar($value) ? (string) $value : json_encode($value);
-            $hints[] = sprintf($template, $display);
-        }
-
-        if (!empty($hints)) {
-            $existing = $schema['description'] ?? '';
-            $suffix = implode(' ', $hints);
-            $schema['description'] = $existing !== ''
-                ? $existing . ' ' . $suffix
-                : $suffix;
         }
 
         return $schema;

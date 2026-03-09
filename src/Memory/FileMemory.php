@@ -7,6 +7,9 @@ namespace CarmeloSantana\PHPAgents\Memory;
 use CarmeloSantana\PHPAgents\Contract\MemoryInterface;
 use DateTimeImmutable;
 
+/**
+ * @deprecated Use a database-backed memory store instead. Will be removed in 1.0.
+ */
 final class FileMemory implements MemoryInterface
 {
     private string $content;
