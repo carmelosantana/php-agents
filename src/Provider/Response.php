@@ -18,5 +18,6 @@ final readonly class Response
         public array $toolCalls = [],
         public string $model = '',
         public ?Usage $usage = null,
+        public string $reasoning = '',
     ) {}
 }
