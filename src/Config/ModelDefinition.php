@@ -20,6 +20,7 @@ final readonly class ModelDefinition
         public int $contextWindow = 4096,
         public int $maxTokens = 2048,
         public ?string $alias = null,
+        public ?int $numCtx = null,
     ) {}
 
     public function supports(ModelCapability $capability): bool
@@ -48,6 +49,7 @@ final readonly class ModelDefinition
             contextWindow: $data['contextWindow'] ?? 4096,
             maxTokens: $data['maxTokens'] ?? 2048,
             alias: $data['alias'] ?? null,
+            numCtx: isset($data['numCtx']) ? (int) $data['numCtx'] : null,
         );
     }
 }

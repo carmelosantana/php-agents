@@ -44,6 +44,18 @@ abstract class AbstractAgent implements AgentInterface
     /** @var ToolkitInterface[] */
     private array $toolkits = [];
 
+    /**
+     * Maximum number of tools exposed to the provider per iteration.
+     * 0 = unlimited (default). When set, DoneTool always counts toward the cap.
+     * Use setMaxTools() to configure — e.g. from OrchestratorAgent based on config.
+     */
+    protected int $maxTools = 0;
+
+    public function setMaxTools(int $max): void
+    {
+        $this->maxTools = $max;
+    }
+
     public function __construct(
         private readonly ProviderInterface $provider,
         private readonly int $maxIter = self::DEFAULT_MAX_ITERATIONS,
@@ -371,6 +383,10 @@ abstract class AbstractAgent implements AgentInterface
      * silently overrides the earlier one. This allows workspace-installed
      * toolkit packages to replace core tools.
      *
+     * When $maxTools > 0, the combined list is capped to that count.
+     * DoneTool is always included and counts as one slot in the cap.
+     * Standalone tools (from tools()) are prioritised over toolkit tools.
+     *
      * @return ToolInterface[]
      */
     private function allTools(): array
@@ -388,6 +404,17 @@ abstract class AbstractAgent implements AgentInterface
         }
 
         $indexed[DoneTool::NAME] = DoneTool::create();
+
+        // Apply tool cap if configured — preserves DoneTool and prioritises
+        // standalone tools over toolkit tools by slicing last.
+        if ($this->maxTools > 0 && count($indexed) > $this->maxTools) {
+            $doneTool = $indexed[DoneTool::NAME];
+            unset($indexed[DoneTool::NAME]);
+            // Keep first (maxTools - 1) tools so DoneTool always fits in budget
+            $capped = array_slice($indexed, 0, $this->maxTools - 1, true);
+            $capped[DoneTool::NAME] = $doneTool;
+            return array_values($capped);
+        }
 
         return array_values($indexed);
     }
