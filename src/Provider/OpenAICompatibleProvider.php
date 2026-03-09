@@ -24,6 +24,11 @@ class OpenAICompatibleProvider extends AbstractProvider
 
     public function chat(array $messages, array $tools = [], array $options = []): Response
     {
+        // chat() is never a streaming call — stream_options is a streaming-only
+        // OpenAI extension. Remove it if a caller (e.g. OllamaProvider) sets it
+        // to null to suppress it from the stream() path as well.
+        unset($options['stream_options']);
+
         $payload = [
             'model' => $this->model,
             'messages' => $this->formatMessages($messages),
@@ -45,13 +50,23 @@ class OpenAICompatibleProvider extends AbstractProvider
 
     public function stream(array $messages, array $tools = [], array $options = []): iterable
     {
+        // Allow callers to suppress stream_options by passing null (e.g. OllamaProvider).
+        // Default to include_usage so OpenAI-compatible providers return token counts.
+        $streamOptions = array_key_exists('stream_options', $options)
+            ? $options['stream_options']
+            : ['include_usage' => true];
+        unset($options['stream_options']);
+
         $payload = [
             'model' => $this->model,
             'messages' => $this->formatMessages($messages),
             'stream' => true,
-            'stream_options' => ['include_usage' => true],
             ...$options,
         ];
+
+        if ($streamOptions !== null) {
+            $payload['stream_options'] = $streamOptions;
+        }
 
         if (!empty($tools)) {
             $payload['tools'] = $this->formatTools($tools);

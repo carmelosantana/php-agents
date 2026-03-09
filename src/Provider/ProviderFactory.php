@@ -69,10 +69,7 @@ final class ProviderFactory
         $api = $providerConfig['api'] ?? null;
 
         return match ($providerName) {
-            'ollama' => new OllamaProvider(
-                model: $model,
-                baseUrl: $baseUrl,
-            ),
+            'ollama' => self::makeOllamaProvider($model, $baseUrl, $config),
             'anthropic' => new AnthropicProvider(
                 model: $model,
                 baseUrl: $baseUrl,
@@ -111,6 +108,33 @@ final class ProviderFactory
                 ),
             },
         };
+    }
+
+    /**
+     * Construct an OllamaProvider, optionally reading per-model numCtx from config.
+     *
+     * Looks up the model definition in the config to extract an overridden numCtx value.
+     * This allows small-VRAM models (e.g. ministral-3:3b) to declare a tighter context
+     * window in openclaw.json while larger models keep the 65536 default.
+     */
+    private static function makeOllamaProvider(
+        string $model,
+        string $baseUrl,
+        ?ConfigInterface $config,
+    ): OllamaProvider {
+        $modelDef = $config?->getModelDefinition($model);
+        $numCtx = $modelDef?->numCtx;
+
+        $args = [
+            'model' => $model,
+            'baseUrl' => $baseUrl,
+        ];
+
+        if ($numCtx !== null) {
+            $args['numCtx'] = $numCtx;
+        }
+
+        return new OllamaProvider(...$args);
     }
 
     /**

@@ -287,3 +287,36 @@ test('custom numCtx is used', function () {
 
     expect($requestPayload['num_ctx'])->toBe(131072);
 });
+
+test('stream_options is absent from Ollama chat payload', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOllamaResponse();
+    });
+
+    $provider = new OllamaProvider(model: 'llama3.2', httpClient: $mockClient);
+    $provider->chat([new UserMessage('hi')]);
+
+    expect($requestPayload)->not->toHaveKey('stream_options');
+});
+
+test('stream_options is absent from Ollama streaming payload', function () {
+    $capturedPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$capturedPayload): MockResponse {
+        $capturedPayload = json_decode($options['body'], true);
+        // Return SSE stream with a done event
+        $body = "data: " . json_encode([
+            'id' => 'chatcmpl-1',
+            'choices' => [['delta' => ['content' => 'Hi'], 'finish_reason' => 'stop', 'index' => 0]],
+            'usage' => ['prompt_tokens' => 5, 'completion_tokens' => 2, 'total_tokens' => 7],
+        ]) . "\n\ndata: [DONE]\n\n";
+        return new MockResponse($body, ['http_code' => 200]);
+    });
+
+    $provider = new OllamaProvider(model: 'llama3.2', httpClient: $mockClient);
+    // Consume the generator fully
+    foreach ($provider->stream([new UserMessage('hi')]) as $_) {}
+
+    expect($capturedPayload)->not->toHaveKey('stream_options');
+});

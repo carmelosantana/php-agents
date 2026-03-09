@@ -178,10 +178,10 @@ final class OllamaProvider extends OpenAICompatibleProvider
     /**
      * Inject Ollama-specific options into the request payload.
      *
-     * When tools are present, sets num_ctx to ensure Ollama allocates
-     * enough KV cache for the full tool schema payload. Without this,
-     * Ollama's default 8192 tokens truncates tool definitions mid-schema,
-     * causing the model to generate invalid tool calls → 500 errors.
+     * - Suppresses `stream_options` (not supported by Ollama's OpenAI-compat endpoint).
+     * - Sets `num_ctx` at the top level, which is the format supported by Ollama's
+     *   OpenAI-compatible endpoint (`/v1/chat/completions`). The nested `options.num_ctx`
+     *   format is for the native API (`/api/chat`) only and is silently ignored here.
      *
      * @param array<string, mixed> $options
      * @param array<ToolInterface> $tools
@@ -189,6 +189,10 @@ final class OllamaProvider extends OpenAICompatibleProvider
      */
     private function injectOllamaOptions(array $options, array $tools): array
     {
+        // Suppress stream_options — Ollama's OpenAI-compat endpoint does not support
+        // this OpenAI extension and may return parse errors or ignore the request.
+        $options['stream_options'] = null;
+
         if (!empty($tools) && !isset($options['num_ctx'])) {
             $options['num_ctx'] = $this->numCtx;
         }
