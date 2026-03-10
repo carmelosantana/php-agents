@@ -101,7 +101,7 @@ abstract class AbstractAgent implements AgentInterface
         return [ModelCapability::Text, ModelCapability::Tools];
     }
 
-    public function addToolkit(ToolkitInterface $toolkit): self
+    public function addToolkit(ToolkitInterface $toolkit): static
     {
         $this->toolkits[] = $toolkit;
 
