@@ -183,6 +183,10 @@ test('image content blocks convert to inlineData parts', function () {
 test('URL image falls back to text description', function () {
     $requestPayload = null;
     $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        if ($method === 'GET') {
+            // Image download attempt — return 404 to trigger the text fallback
+            return new MockResponse('', ['http_code' => 404]);
+        }
         $requestPayload = json_decode($options['body'], true);
         return mockGeminiResponse();
     });

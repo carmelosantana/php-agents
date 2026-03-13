@@ -34,13 +34,6 @@ interface ConfigInterface
     public function getPrimaryModel(): string;
 
     /**
-     * Get fallback model strings, ordered by priority.
-     *
-     * @return string[]
-     */
-    public function getFallbacks(): array;
-
-    /**
      * Get the primary vision/image model.
      */
     public function getImageModel(): ?string;
