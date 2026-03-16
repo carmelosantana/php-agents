@@ -383,3 +383,96 @@ test('structured output uses tool_use trick', function () {
         ->and($requestPayload['tool_choice'])->toBe(['type' => 'tool', 'name' => 'extract_data'])
         ->and($result)->toBe(['name' => 'Alice']);
 });
+
+// --- Reasoning / Extended Thinking ---
+
+test('parseResponse extracts thinking content blocks into reasoning', function () {
+    $mockClient = new MockHttpClient([
+        mockAnthropicResponse([
+            'content' => [
+                ['type' => 'thinking', 'thinking' => 'Let me think about this carefully.'],
+                ['type' => 'text', 'text' => 'The answer is 42.'],
+            ],
+        ]),
+    ]);
+
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('What is life?')]);
+
+    expect($response->content)->toBe('The answer is 42.')
+        ->and($response->reasoning)->toBe('Let me think about this carefully.');
+});
+
+test('parseResponse concatenates multiple thinking blocks', function () {
+    $mockClient = new MockHttpClient([
+        mockAnthropicResponse([
+            'content' => [
+                ['type' => 'thinking', 'thinking' => 'First thought. '],
+                ['type' => 'thinking', 'thinking' => 'Second thought.'],
+                ['type' => 'text', 'text' => 'Done.'],
+            ],
+        ]),
+    ]);
+
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('hi')]);
+
+    expect($response->reasoning)->toBe('First thought. Second thought.');
+});
+
+test('parseResponse reasoning is empty string when no thinking block', function () {
+    $mockClient = new MockHttpClient([
+        mockAnthropicResponse([
+            'content' => [
+                ['type' => 'text', 'text' => 'Plain answer.'],
+            ],
+        ]),
+    ]);
+
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('hi')]);
+
+    expect($response->reasoning)->toBe('');
+});
+
+test('stream yields reasoning Response chunks for thinking_delta events', function () {
+    $sseData = implode('', [
+        "data: " . json_encode(['type' => 'content_block_start', 'index' => 0, 'content_block' => ['type' => 'thinking']]) . "\n\n",
+        "data: " . json_encode(['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'thinking_delta', 'thinking' => 'I ponder']]) . "\n\n",
+        "data: " . json_encode(['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'thinking_delta', 'thinking' => ' deeply']]) . "\n\n",
+        "data: " . json_encode(['type' => 'content_block_stop', 'index' => 0]) . "\n\n",
+        "data: " . json_encode(['type' => 'content_block_start', 'index' => 1, 'content_block' => ['type' => 'text', 'text' => '']]) . "\n\n",
+        "data: " . json_encode(['type' => 'content_block_delta', 'index' => 1, 'delta' => ['type' => 'text_delta', 'text' => 'Answer.']]) . "\n\n",
+        "data: " . json_encode(['type' => 'content_block_stop', 'index' => 1]) . "\n\n",
+        "data: " . json_encode(['type' => 'message_delta', 'delta' => ['stop_reason' => 'end_turn'], 'usage' => ['output_tokens' => 20]]) . "\n\n",
+    ]);
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $chunks = iterator_to_array($provider->stream([new UserMessage('Think carefully')]));
+
+    // Collect all reasoning chunks
+    $reasoningChunks = array_filter($chunks, fn($r) => $r->reasoning !== '');
+    expect($reasoningChunks)->not->toBeEmpty();
+
+    $allReasoning = implode('', array_map(fn($r) => $r->reasoning, $reasoningChunks));
+    expect($allReasoning)->toBe('I ponder deeply');
+});
+
+test('stream thinking_delta chunks have empty content', function () {
+    $sseData = implode('', [
+        "data: " . json_encode(['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'thinking_delta', 'thinking' => 'thinking...']]) . "\n\n",
+        "data: " . json_encode(['type' => 'message_delta', 'delta' => ['stop_reason' => 'end_turn'], 'usage' => ['output_tokens' => 5]]) . "\n\n",
+    ]);
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $chunks = iterator_to_array($provider->stream([new UserMessage('hi')]));
+    $reasoningChunks = array_filter($chunks, fn($r) => $r->reasoning !== '');
+
+    foreach ($reasoningChunks as $chunk) {
+        expect($chunk->content)->toBe('');
+    }
+});

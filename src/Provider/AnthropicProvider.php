@@ -100,6 +100,12 @@ final class AnthropicProvider extends AbstractProvider
         //   content_block_delta  → type: input_json_delta with partial JSON
         //   content_block_stop   → block finalized
         //   message_delta        → stop_reason: tool_use when all blocks done
+        //
+        // Extended thinking blocks follow a similar pattern:
+        //   content_block_start  → type: thinking
+        //   content_block_delta  → type: thinking_delta with partial thinking text
+        //   content_block_delta  → type: signature_delta (ignored)
+        //   content_block_stop   → block finalized
         /** @var array<int, array{id: string, name: string, arguments: string}> $pendingToolCalls */
         $pendingToolCalls = [];
         $currentBlockIndex = -1;
@@ -133,6 +139,14 @@ final class AnthropicProvider extends AbstractProvider
 
                 if ($deltaType === 'input_json_delta' && isset($pendingToolCalls[$index])) {
                     $pendingToolCalls[$index]['arguments'] .= $delta['partial_json'] ?? '';
+                } elseif ($deltaType === 'thinking_delta' && isset($delta['thinking'])) {
+                    yield new Response(
+                        content: '',
+                        finishReason: FinishReason::Stop,
+                        toolCalls: [],
+                        model: $this->model,
+                        reasoning: $delta['thinking'],
+                    );
                 } elseif ($deltaType === 'text_delta' && isset($delta['text'])) {
                     yield new Response(
                         content: $delta['text'],
@@ -501,11 +515,14 @@ final class AnthropicProvider extends AbstractProvider
     protected function parseResponse(array $data): Response
     {
         $content = '';
+        $reasoning = '';
         $toolCalls = [];
 
         foreach ($data['content'] ?? [] as $block) {
             if ($block['type'] === 'text') {
                 $content .= $block['text'] ?? '';
+            } elseif ($block['type'] === 'thinking') {
+                $reasoning .= $block['thinking'] ?? '';
             } elseif ($block['type'] === 'tool_use') {
                 $toolCalls[] = new ToolCall(
                     id: $block['id'] ?? '',
@@ -537,6 +554,7 @@ final class AnthropicProvider extends AbstractProvider
             toolCalls: $toolCalls,
             model: $data['model'] ?? $this->model,
             usage: $usage,
+            reasoning: $reasoning,
         );
     }
 

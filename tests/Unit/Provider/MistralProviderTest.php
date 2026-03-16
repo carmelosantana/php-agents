@@ -225,3 +225,113 @@ test('mixed content with multiple images converts correctly', function () {
         ->and($content[1]['image_url'])->toBe('https://a.com/1.jpg')
         ->and($content[2]['image_url'])->toBe('data:image/png;base64,abc');
 });
+
+// --- Magistral / Reasoning (array content format) ---
+
+test('parseResponse handles Magistral array content with thinking and text blocks', function () {
+    $mockClient = new MockHttpClient([
+        new MockResponse(json_encode([
+            'id' => 'chatcmpl-magistral',
+            'object' => 'chat.completion',
+            'model' => 'magistral-small-latest',
+            'choices' => [[
+                'index' => 0,
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => [
+                        [
+                            'type' => 'thinking',
+                            'thinking' => [
+                                ['type' => 'text', 'text' => 'Let me reason about this. '],
+                                ['type' => 'text', 'text' => 'Step two.'],
+                            ],
+                        ],
+                        [
+                            'type' => 'text',
+                            'text' => 'The final answer.',
+                        ],
+                    ],
+                ],
+                'finish_reason' => 'stop',
+            ]],
+            'usage' => ['prompt_tokens' => 50, 'completion_tokens' => 30, 'total_tokens' => 80],
+        ]), ['http_code' => 200]),
+    ]);
+
+    $provider = new MistralProvider(model: 'magistral-small-latest', apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('Explain something complex')]);
+
+    expect($response->content)->toBe('The final answer.')
+        ->and($response->reasoning)->toBe('Let me reason about this. Step two.');
+});
+
+test('parseResponse Magistral reasoning is empty when no thinking block', function () {
+    $mockClient = new MockHttpClient([
+        new MockResponse(json_encode([
+            'id' => 'chatcmpl-magistral',
+            'object' => 'chat.completion',
+            'model' => 'magistral-small-latest',
+            'choices' => [[
+                'index' => 0,
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => [
+                        ['type' => 'text', 'text' => 'Simple answer.'],
+                    ],
+                ],
+                'finish_reason' => 'stop',
+            ]],
+            'usage' => ['prompt_tokens' => 10, 'completion_tokens' => 5, 'total_tokens' => 15],
+        ]), ['http_code' => 200]),
+    ]);
+
+    $provider = new MistralProvider(model: 'magistral-small-latest', apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('hi')]);
+
+    expect($response->content)->toBe('Simple answer.')
+        ->and($response->reasoning)->toBe('');
+});
+
+test('parseResponse standard string content delegates to parent (no array content)', function () {
+    $mockClient = new MockHttpClient([mockMistralResponse(['choices' => [[
+        'index' => 0,
+        'message' => ['role' => 'assistant', 'content' => 'Plain string response.'],
+        'finish_reason' => 'stop',
+    ]]])]);
+
+    $provider = new MistralProvider(model: 'mistral-large-latest', apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('hi')]);
+
+    expect($response->content)->toBe('Plain string response.')
+        ->and($response->reasoning)->toBe('');
+});
+
+test('parseResponse Magistral usage is extracted correctly', function () {
+    $mockClient = new MockHttpClient([
+        new MockResponse(json_encode([
+            'id' => 'chatcmpl-magistral',
+            'object' => 'chat.completion',
+            'model' => 'magistral-small-latest',
+            'choices' => [[
+                'index' => 0,
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => [
+                        ['type' => 'thinking', 'thinking' => [['type' => 'text', 'text' => 'pondering']]],
+                        ['type' => 'text', 'text' => 'Answer.'],
+                    ],
+                ],
+                'finish_reason' => 'stop',
+            ]],
+            'usage' => ['prompt_tokens' => 100, 'completion_tokens' => 50, 'total_tokens' => 150],
+        ]), ['http_code' => 200]),
+    ]);
+
+    $provider = new MistralProvider(model: 'magistral-small-latest', apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('hi')]);
+
+    expect($response->usage)->not->toBeNull()
+        ->and($response->usage->promptTokens)->toBe(100)
+        ->and($response->usage->completionTokens)->toBe(50)
+        ->and($response->usage->totalTokens)->toBe(150);
+});

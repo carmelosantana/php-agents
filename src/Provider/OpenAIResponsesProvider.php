@@ -99,6 +99,18 @@ final class OpenAIResponsesProvider extends AbstractProvider
                         model: $this->model,
                     );
                 }
+            } elseif ($eventType === 'response.reasoning_summary_text.delta') {
+                // o1/o3/o4-mini reasoning summary streaming delta
+                $delta = $json['delta'] ?? '';
+                if ($delta !== '') {
+                    yield new Response(
+                        content: '',
+                        finishReason: FinishReason::Stop,
+                        toolCalls: [],
+                        model: $this->model,
+                        reasoning: $delta,
+                    );
+                }
             } elseif ($eventType === 'response.output_item.added') {
                 $item = $json['item'] ?? [];
                 if (($item['type'] ?? '') === 'function_call') {
@@ -362,6 +374,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
     protected function parseResponse(array $data): Response
     {
         $content = '';
+        $reasoning = '';
         $toolCalls = [];
 
         foreach ($data['output'] ?? [] as $item) {
@@ -372,6 +385,11 @@ final class OpenAIResponsesProvider extends AbstractProvider
                     if (($block['type'] ?? '') === 'output_text') {
                         $content .= $block['text'] ?? '';
                     }
+                }
+            } elseif ($type === 'reasoning') {
+                // o1/o3/o4 reasoning summary — extract text from summary blocks
+                foreach ($item['summary'] ?? [] as $block) {
+                    $reasoning .= $block['text'] ?? '';
                 }
             } elseif ($type === 'function_call') {
                 $toolCalls[] = new ToolCall(
@@ -394,6 +412,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
             toolCalls: $toolCalls,
             model: $data['model'] ?? $this->model,
             usage: $this->parseUsage($data),
+            reasoning: $reasoning,
         );
     }
 
