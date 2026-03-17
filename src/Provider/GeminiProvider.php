@@ -101,11 +101,17 @@ final class GeminiProvider extends AbstractProvider
             $finishReason = $this->mapGeminiFinishReason($candidate['finishReason'] ?? null);
 
             $text = '';
+            $reasoning = '';
             $toolCalls = [];
 
             foreach ($parts as $part) {
                 if (isset($part['text'])) {
-                    $text .= $part['text'];
+                    // Thought parts (thinkingConfig.includeThoughts = true) have thought: true
+                    if (($part['thought'] ?? false) === true) {
+                        $reasoning .= $part['text'];
+                    } else {
+                        $text .= $part['text'];
+                    }
                 } elseif (isset($part['functionCall'])) {
                     $name = $part['functionCall']['name'];
                     $toolCalls[] = new ToolCall(
@@ -114,6 +120,17 @@ final class GeminiProvider extends AbstractProvider
                         arguments: $part['functionCall']['args'] ?? [],
                     );
                 }
+            }
+
+            // Yield reasoning separately so the agent can emit agent.reasoning events
+            if ($reasoning !== '') {
+                yield new Response(
+                    content: '',
+                    finishReason: FinishReason::Stop,
+                    toolCalls: [],
+                    model: $this->model,
+                    reasoning: $reasoning,
+                );
             }
 
             if (!empty($toolCalls)) {
@@ -616,12 +633,18 @@ final class GeminiProvider extends AbstractProvider
         $parts = $candidate['content']['parts'] ?? [];
 
         $content = '';
+        $reasoning = '';
         $toolCalls = [];
 
         $callIndex = 0;
         foreach ($parts as $part) {
             if (isset($part['text'])) {
-                $content .= $part['text'];
+                // Thought parts (thinkingConfig.includeThoughts = true) have thought: true
+                if (($part['thought'] ?? false) === true) {
+                    $reasoning .= $part['text'];
+                } else {
+                    $content .= $part['text'];
+                }
             } elseif (isset($part['functionCall'])) {
                 $name = $part['functionCall']['name'];
                 $toolCalls[] = new ToolCall(
@@ -645,6 +668,7 @@ final class GeminiProvider extends AbstractProvider
             toolCalls: $toolCalls,
             model: $this->model,
             usage: $this->parseUsageMetadata($data),
+            reasoning: $reasoning,
         );
     }
 

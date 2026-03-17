@@ -149,7 +149,6 @@ class OpenAICompatibleProvider extends AbstractProvider
                     finishReason: FinishReason::ToolUse,
                     toolCalls: $toolCalls,
                     model: $json['model'] ?? $this->model,
-                    reasoning: $reasoningBuffer,
                 );
                 $reasoningBuffer = '';
 
@@ -201,7 +200,6 @@ class OpenAICompatibleProvider extends AbstractProvider
                     toolCalls: [],
                     model: $json['model'] ?? $this->model,
                     usage: $usage,
-                    reasoning: $reasoningBuffer,
                 );
                 $reasoningBuffer = '';
             }
@@ -298,12 +296,17 @@ class OpenAICompatibleProvider extends AbstractProvider
             );
         }
 
+        // Ollama non-streaming thinking models return a top-level `thinking` field
+        // on the message object alongside `content`.
+        $reasoning = $message['thinking'] ?? '';
+
         return new Response(
             content: $message['content'] ?? '',
             finishReason: $finishReason,
             toolCalls: $toolCalls,
             model: $data['model'] ?? $this->model,
             usage: $usage,
+            reasoning: is_string($reasoning) ? $reasoning : '',
         );
     }
 

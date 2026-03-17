@@ -394,3 +394,99 @@ test('image content blocks pass through in formatMessages', function () {
         ->and($content[1]['type'])->toBe('image_url')
         ->and($content[1]['image_url']['url'])->toBe('data:image/png;base64,abc');
 });
+
+// --- Reasoning / Thinking (Ollama non-streaming) ---
+
+test('parseResponse extracts thinking field from Ollama non-streaming response', function () {
+    $mockClient = new MockHttpClient([
+        new MockResponse(json_encode([
+            'choices' => [[
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => 'The answer is 42.',
+                    'thinking' => 'Let me reason through this step by step.',
+                ],
+                'finish_reason' => 'stop',
+            ]],
+            'model' => 'qwen3:latest',
+            'usage' => ['prompt_tokens' => 10, 'completion_tokens' => 20, 'total_tokens' => 30],
+        ]), ['http_code' => 200]),
+    ]);
+
+    $provider = new OpenAICompatibleProvider(model: 'qwen3:latest', apiKey: '', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('What is the answer?')]);
+
+    expect($response->content)->toBe('The answer is 42.')
+        ->and($response->reasoning)->toBe('Let me reason through this step by step.');
+});
+
+test('parseResponse reasoning is empty string when no thinking field', function () {
+    $mockClient = new MockHttpClient([mockOpenAIResponse()]);
+
+    $provider = new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('hi')]);
+
+    expect($response->reasoning)->toBe('');
+});
+
+test('stream yields reasoning Response chunks from delta.reasoning field', function () {
+    $sseData = implode("\n", [
+        'data: ' . json_encode(['choices' => [['delta' => ['reasoning' => 'thinking... '], 'finish_reason' => null]]]),
+        'data: ' . json_encode(['choices' => [['delta' => ['reasoning' => 'more thinking'], 'finish_reason' => null]]]),
+        'data: ' . json_encode(['choices' => [['delta' => ['content' => 'Final answer.'], 'finish_reason' => null]]]),
+        'data: ' . json_encode(['choices' => [['delta' => [], 'finish_reason' => 'stop']]]),
+        'data: [DONE]',
+        '',
+    ]);
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $provider = new OpenAICompatibleProvider(model: 'qwen3:latest', apiKey: '', httpClient: $mockClient);
+
+    $chunks = iterator_to_array($provider->stream([new UserMessage('think')]));
+
+    $reasoningChunks = array_filter($chunks, fn($r) => $r->reasoning !== '');
+    // Each delta yields one reasoning chunk; the stop event does NOT re-broadcast the buffer
+    expect($reasoningChunks)->toHaveCount(2);
+
+    $deltaReasonings = array_map(fn($r) => $r->reasoning, array_values($reasoningChunks));
+    expect($deltaReasonings)->toBe(['thinking... ', 'more thinking']);
+});
+
+test('stream yields reasoning Response chunks from delta.thinking field', function () {
+    $sseData = implode("\n", [
+        'data: ' . json_encode(['choices' => [['delta' => ['thinking' => 'deep thought'], 'finish_reason' => null]]]),
+        'data: ' . json_encode(['choices' => [['delta' => ['content' => 'Answer.'], 'finish_reason' => null]]]),
+        'data: ' . json_encode(['choices' => [['delta' => [], 'finish_reason' => 'stop']]]),
+        'data: [DONE]',
+        '',
+    ]);
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $provider = new OpenAICompatibleProvider(model: 'ollama-think', apiKey: '', httpClient: $mockClient);
+
+    $chunks = iterator_to_array($provider->stream([new UserMessage('think')]));
+
+    $reasoningChunks = array_filter($chunks, fn($r) => $r->reasoning !== '');
+    // Exactly 1 delta chunk; the stop event does NOT re-broadcast the buffer
+    expect($reasoningChunks)->toHaveCount(1);
+    expect(array_values($reasoningChunks)[0]->reasoning)->toBe('deep thought');
+});
+
+test('stream reasoning chunks have empty content', function () {
+    $sseData = implode("\n", [
+        'data: ' . json_encode(['choices' => [['delta' => ['reasoning' => 'reasoning token'], 'finish_reason' => null]]]),
+        'data: ' . json_encode(['choices' => [['delta' => [], 'finish_reason' => 'stop']]]),
+        'data: [DONE]',
+        '',
+    ]);
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $provider = new OpenAICompatibleProvider(model: 'qwen3', apiKey: '', httpClient: $mockClient);
+
+    $chunks = iterator_to_array($provider->stream([new UserMessage('hi')]));
+    $reasoningChunks = array_filter($chunks, fn($r) => $r->reasoning !== '');
+
+    foreach ($reasoningChunks as $chunk) {
+        expect($chunk->content)->toBe('');
+    }
+});

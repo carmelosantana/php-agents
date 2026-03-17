@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Provider;
 
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
+use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
@@ -65,6 +67,76 @@ final class MistralProvider extends OpenAICompatibleProvider
 
             return $data;
         }, $messages);
+    }
+
+    /**
+     * Parse the response, handling Magistral models which return array content.
+     *
+     * Standard Mistral models return `message.content` as a string (handled by
+     * the parent). Magistral models return it as an array of typed chunks:
+     *   [{type: "thinking", thinking: [{type: "text", text: "..."}]}, {type: "text", text: "..."}]
+     *
+     * @param array<string, mixed> $data
+     */
+    #[\Override]
+    protected function parseResponse(array $data): Response
+    {
+        $choice = $data['choices'][0] ?? [];
+        $message = $choice['message'] ?? [];
+        $messageContent = $message['content'] ?? '';
+
+        // Standard string content — delegate to parent
+        if (is_string($messageContent)) {
+            return parent::parseResponse($data);
+        }
+
+        // Magistral array content — extract thinking and text blocks separately
+        $content = '';
+        $reasoning = '';
+        $toolCalls = [];
+
+        foreach ($messageContent as $block) {
+            $type = $block['type'] ?? '';
+
+            if ($type === 'thinking') {
+                // thinking value is an array of text chunks
+                foreach ($block['thinking'] ?? [] as $chunk) {
+                    $reasoning .= $chunk['text'] ?? '';
+                }
+            } elseif ($type === 'text') {
+                $content .= $block['text'] ?? '';
+            }
+        }
+
+        // Tool calls are still at the top level (same as standard Mistral)
+        foreach ($message['tool_calls'] ?? [] as $tc) {
+            $arguments = $tc['function']['arguments'] ?? '{}';
+            $toolCalls[] = new ToolCall(
+                id: $tc['id'] ?? '',
+                name: $tc['function']['name'] ?? '',
+                arguments: json_decode($arguments, true) ?? [],
+            );
+        }
+
+        $finishReason = $this->mapFinishReason($choice['finish_reason'] ?? 'stop');
+
+        $usage = null;
+        if (isset($data['usage'])) {
+            $usage = new Usage(
+                promptTokens: $data['usage']['prompt_tokens'] ?? 0,
+                completionTokens: $data['usage']['completion_tokens'] ?? 0,
+                totalTokens: $data['usage']['total_tokens'] ?? 0,
+            );
+        }
+
+        return new Response(
+            content: $content,
+            finishReason: $finishReason,
+            toolCalls: $toolCalls,
+            model: $data['model'] ?? $this->model,
+            usage: $usage,
+            reasoning: $reasoning,
+        );
     }
 
     /**

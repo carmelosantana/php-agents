@@ -301,7 +301,7 @@ test('stream_options is absent from Ollama chat payload', function () {
     expect($requestPayload)->not->toHaveKey('stream_options');
 });
 
-test('stream_options is absent from Ollama streaming payload', function () {
+test('stream_options include_usage is sent in Ollama streaming payload', function () {
     $capturedPayload = null;
     $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$capturedPayload): MockResponse {
         $capturedPayload = json_decode($options['body'], true);
@@ -318,5 +318,6 @@ test('stream_options is absent from Ollama streaming payload', function () {
     // Consume the generator fully
     foreach ($provider->stream([new UserMessage('hi')]) as $_) {}
 
-    expect($capturedPayload)->not->toHaveKey('stream_options');
+    expect($capturedPayload)->toHaveKey('stream_options');
+    expect($capturedPayload['stream_options'])->toBe(['include_usage' => true]);
 });

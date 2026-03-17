@@ -584,3 +584,149 @@ test('consecutive tool result messages mapping to user role are merged', functio
         ->and($requestPayload['contents'][2]['role'])->toBe('user')
         ->and($requestPayload['contents'][2]['parts'])->toHaveCount(2);
 });
+
+// --- Reasoning / Thought Parts ---
+
+test('parseResponse routes thought:true parts to reasoning, not content', function () {
+    $mockClient = new MockHttpClient([
+        mockGeminiResponse([
+            'candidates' => [
+                [
+                    'content' => [
+                        'role' => 'model',
+                        'parts' => [
+                            ['text' => 'I am thinking...', 'thought' => true],
+                            ['text' => 'The answer is 42.'],
+                        ],
+                    ],
+                    'finishReason' => 'STOP',
+                ],
+            ],
+        ]),
+    ]);
+
+    $provider = new GeminiProvider(model: 'gemini-2.5-flash', apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('What is life?')]);
+
+    expect($response->content)->toBe('The answer is 42.')
+        ->and($response->reasoning)->toBe('I am thinking...');
+});
+
+test('parseResponse thought:false parts go to content', function () {
+    $mockClient = new MockHttpClient([
+        mockGeminiResponse([
+            'candidates' => [
+                [
+                    'content' => [
+                        'role' => 'model',
+                        'parts' => [['text' => 'Normal response.', 'thought' => false]],
+                    ],
+                    'finishReason' => 'STOP',
+                ],
+            ],
+        ]),
+    ]);
+
+    $provider = new GeminiProvider(model: 'gemini-2.5-flash', apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('hi')]);
+
+    expect($response->content)->toBe('Normal response.')
+        ->and($response->reasoning)->toBe('');
+});
+
+test('parseResponse parts without thought key go to content', function () {
+    $mockClient = new MockHttpClient([
+        mockGeminiResponse([
+            'candidates' => [
+                [
+                    'content' => [
+                        'role' => 'model',
+                        'parts' => [['text' => 'Regular text.']],
+                    ],
+                    'finishReason' => 'STOP',
+                ],
+            ],
+        ]),
+    ]);
+
+    $provider = new GeminiProvider(model: 'gemini-2.5-flash', apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('hi')]);
+
+    expect($response->content)->toBe('Regular text.')
+        ->and($response->reasoning)->toBe('');
+});
+
+test('parseResponse concatenates multiple thought parts', function () {
+    $mockClient = new MockHttpClient([
+        mockGeminiResponse([
+            'candidates' => [
+                [
+                    'content' => [
+                        'role' => 'model',
+                        'parts' => [
+                            ['text' => 'Step 1. ', 'thought' => true],
+                            ['text' => 'Step 2.', 'thought' => true],
+                            ['text' => 'Final answer.'],
+                        ],
+                    ],
+                    'finishReason' => 'STOP',
+                ],
+            ],
+        ]),
+    ]);
+
+    $provider = new GeminiProvider(model: 'gemini-2.5-flash', apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('hi')]);
+
+    expect($response->reasoning)->toBe('Step 1. Step 2.')
+        ->and($response->content)->toBe('Final answer.');
+});
+
+test('stream yields separate reasoning Response for thought:true parts', function () {
+    $sseData =
+        "data: " . json_encode([
+            'candidates' => [[
+                'content' => ['role' => 'model', 'parts' => [['text' => 'thinking chunk', 'thought' => true]]],
+                'finishReason' => 'STOP',
+            ]],
+        ]) . "\n\n" .
+        "data: " . json_encode([
+            'candidates' => [[
+                'content' => ['role' => 'model', 'parts' => [['text' => 'response text']]],
+                'finishReason' => 'STOP',
+            ]],
+        ]) . "\n\n";
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $provider = new GeminiProvider(model: 'gemini-2.5-flash', apiKey: 'test-key', httpClient: $mockClient);
+
+    $chunks = iterator_to_array($provider->stream([new UserMessage('think')]));
+
+    $reasoningChunks = array_filter($chunks, fn($r) => $r->reasoning !== '');
+    $textChunks = array_filter($chunks, fn($r) => $r->content !== '');
+
+    expect($reasoningChunks)->toHaveCount(1);
+    expect(array_values($reasoningChunks)[0]->reasoning)->toBe('thinking chunk');
+    expect(array_values($reasoningChunks)[0]->content)->toBe('');
+
+    expect($textChunks)->toHaveCount(1);
+    expect(array_values($textChunks)[0]->content)->toBe('response text');
+});
+
+test('stream does not yield reasoning Response when no thought parts', function () {
+    $sseData =
+        "data: " . json_encode([
+            'candidates' => [[
+                'content' => ['role' => 'model', 'parts' => [['text' => 'plain answer']]],
+                'finishReason' => 'STOP',
+            ]],
+        ]) . "\n\n";
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $provider = new GeminiProvider(model: 'gemini-2.5-flash', apiKey: 'test-key', httpClient: $mockClient);
+
+    $chunks = iterator_to_array($provider->stream([new UserMessage('hi')]));
+    $reasoningChunks = array_filter($chunks, fn($r) => $r->reasoning !== '');
+
+    expect($reasoningChunks)->toBeEmpty();
+});
