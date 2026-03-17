@@ -196,9 +196,8 @@ final class OllamaProvider extends OpenAICompatibleProvider
      */
     private function injectOllamaOptions(array $options, array $tools): array
     {
-        // Suppress stream_options — Ollama's OpenAI-compat endpoint does not support
-        // this OpenAI extension and may return parse errors or ignore the request.
-        $options['stream_options'] = null;
+        // Ollama 0.5+ supports stream_options.include_usage for token reporting.
+        // Allow the parent OpenAICompatibleProvider to send it (default behavior).
 
         if (!empty($tools) && !isset($options['num_ctx'])) {
             $options['num_ctx'] = $this->numCtx;
