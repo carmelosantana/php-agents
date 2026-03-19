@@ -204,12 +204,48 @@ final class Conversation
      */
     public function repairToolPairing(): self
     {
-        // Collect all tool_call IDs from assistant messages
-        $validCallIds = [];
+        // Collect all call IDs that actually have a corresponding tool result
+        $answeredCallIds = [];
         foreach ($this->messages as $msg) {
-            if ($msg->role() === Role::Assistant) {
-                foreach ($msg->toolCalls() as $tc) {
+            if ($msg->role() === Role::Tool) {
+                $callId = $msg->toolCallId();
+                if ($callId !== null) {
+                    $answeredCallIds[$callId] = true;
+                }
+            }
+        }
+
+        // Classify each assistant message's tool_call IDs as valid (all results present)
+        // or invalid (one or more results missing). An incomplete group must be dropped
+        // entirely — OpenAI and Anthropic reject conversations where an assistant message
+        // with tool_calls is not followed by a tool message for every call_id.
+        $validCallIds = [];
+        $invalidCallIds = [];
+
+        foreach ($this->messages as $msg) {
+            if ($msg->role() !== Role::Assistant) {
+                continue;
+            }
+            $toolCalls = $msg->toolCalls();
+            if (empty($toolCalls)) {
+                continue; // Text-only assistant message — always valid
+            }
+
+            $allAnswered = true;
+            foreach ($toolCalls as $tc) {
+                if (!isset($answeredCallIds[$tc->id])) {
+                    $allAnswered = false;
+                    break;
+                }
+            }
+
+            if ($allAnswered) {
+                foreach ($toolCalls as $tc) {
                     $validCallIds[$tc->id] = true;
+                }
+            } else {
+                foreach ($toolCalls as $tc) {
+                    $invalidCallIds[$tc->id] = true;
                 }
             }
         }
@@ -217,13 +253,23 @@ final class Conversation
         $result = new self();
 
         foreach ($this->messages as $msg) {
+            // Drop assistant messages with incomplete tool result coverage
+            if ($msg->role() === Role::Assistant && !empty($msg->toolCalls())) {
+                foreach ($msg->toolCalls() as $tc) {
+                    if (isset($invalidCallIds[$tc->id])) {
+                        continue 2;
+                    }
+                }
+            }
+
+            // Drop orphaned tool results (no matching valid assistant message)
             if ($msg->role() === Role::Tool) {
                 $callId = $msg->toolCallId();
-                // Drop orphaned tool results
                 if ($callId !== null && !isset($validCallIds[$callId])) {
                     continue;
                 }
             }
+
             $result->add($msg);
         }
 
