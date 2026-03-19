@@ -122,8 +122,12 @@ abstract class AbstractAgent implements AgentInterface
         $conversation = new Conversation();
         $conversation->add(new SystemMessage($systemPrompt));
 
-        // Inject prior conversation history (skip system messages — we use our own)
+        // Inject prior conversation history (skip system messages — we use our own).
+        // Repair tool pairing before injection so broken history from interrupted
+        // sessions (orphaned assistant tool_calls with no matching tool results)
+        // is cleaned up before reaching any provider.
         if ($history !== null) {
+            $history = $history->repairToolPairing();
             foreach ($history->messages() as $msg) {
                 if ($msg->role() === \CarmeloSantana\PHPAgents\Enum\Role::System) {
                     continue;
