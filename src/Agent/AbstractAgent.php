@@ -183,6 +183,12 @@ abstract class AbstractAgent implements AgentInterface
                 $streamModel = '';
 
                 foreach ($this->provider->stream($conversation->messages(), $advertisedTools) as $chunk) {
+                    // Check cancellation between stream chunks so ESC/Ctrl+C returns
+                    // to the prompt immediately without waiting for the full response.
+                    if ($this->cancellationToken?->isCancelled()) {
+                        break;
+                    }
+
                     if ($chunk->reasoning !== '') {
                         $this->notify('agent.reasoning', $chunk->reasoning);
                     }
