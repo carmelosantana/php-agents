@@ -2,10 +2,12 @@
 
 declare(strict_types=1);
 
+use CarmeloSantana\PHPAgents\Contract\BudgetPruningStrategyInterface;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Enum\ToolResultStatus;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\Conversation;
+use CarmeloSantana\PHPAgents\Message\DefaultBudgetPruningStrategy;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
@@ -426,4 +428,61 @@ test('fitWithinBudget merges consecutive roles after pruning', function () {
             );
         }
     }
+});
+
+// --- BudgetPruningStrategyInterface ---
+
+test('fitWithinBudget uses custom strategy when provided', function () {
+    $conversation = new Conversation();
+    $conversation->add(new SystemMessage('system'));
+    $conversation->add(new UserMessage('hello'));
+    $conversation->add(new AssistantMessage('world'));
+
+    $strategy = new class implements BudgetPruningStrategyInterface {
+        public bool $called = false;
+
+        public function prune(Conversation $conversation, int $budgetTokens): Conversation
+        {
+            $this->called = true;
+            // Custom strategy: return only the last message
+            $result = new Conversation();
+            $result->add($conversation->last());
+            return $result;
+        }
+    };
+
+    $result = $conversation->fitWithinBudget(100, strategy: $strategy);
+
+    expect($strategy->called)->toBeTrue();
+    expect($result->count())->toBe(1);
+    expect($result->last()->content())->toBe('world');
+});
+
+test('fitWithinBudget uses DefaultBudgetPruningStrategy when no strategy provided', function () {
+    $conversation = new Conversation();
+    $conversation->add(new SystemMessage('system'));
+    $conversation->add(new UserMessage('hello'));
+    $conversation->add(new AssistantMessage('hi'));
+
+    // With null strategy (default), should behave as before
+    $result = $conversation->fitWithinBudget(100000);
+
+    expect($result->count())->toBe(3);
+});
+
+test('DefaultBudgetPruningStrategy prunes over-budget conversations', function () {
+    $conversation = new Conversation();
+    $conversation->add(new SystemMessage('system'));
+
+    for ($i = 0; $i < 20; $i++) {
+        $conversation->add(new UserMessage('user message ' . $i . str_repeat(' ', 200)));
+        $conversation->add(new AssistantMessage('assistant response ' . $i . str_repeat(' ', 200)));
+    }
+
+    $strategy = new DefaultBudgetPruningStrategy();
+    $result = $strategy->prune($conversation, 200);
+
+    $userMessages = $result->filter(Role::User);
+    expect(count($userMessages))->toBeLessThan(20);
+    expect(count($userMessages))->toBeGreaterThanOrEqual(1);
 });
