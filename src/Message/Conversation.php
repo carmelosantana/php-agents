@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Message;
 
+use CarmeloSantana\PHPAgents\Contract\BudgetPruningStrategyInterface;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Enum\Role;
 
@@ -361,36 +362,16 @@ final class Conversation
      *
      * Returns a new Conversation.
      */
-    public function fitWithinBudget(int $maxTokens, int $safetyMarginPercent = 20): self
-    {
+    public function fitWithinBudget(
+        int $maxTokens,
+        int $safetyMarginPercent = 20,
+        ?BudgetPruningStrategyInterface $strategy = null,
+    ): self {
         $effectiveBudget = (int) ($maxTokens * (1 - $safetyMarginPercent / 100));
 
-        $result = clone $this;
+        $strategy ??= new DefaultBudgetPruningStrategy();
 
-        // Step 1: Soft-trim tool results if over budget
-        if ($result->estimateTokens() > $effectiveBudget) {
-            $result = $result->trimToolResults(500, 100);
-        }
-
-        // Step 2: Progressively drop oldest turns if still over budget
-        $userCount = count($result->filter(Role::User));
-        while ($result->estimateTokens() > $effectiveBudget && $userCount > 1) {
-            $userCount--;
-            $result = $result->dropOldestTurns($userCount);
-        }
-
-        // Step 3: More aggressive tool trimming if still over budget
-        if ($result->estimateTokens() > $effectiveBudget) {
-            $result = $result->trimToolResults(200, 50);
-        }
-
-        // Step 4: Repair any orphaned tool results from dropped turns
-        $result = $result->repairToolPairing();
-
-        // Step 5: Merge consecutive same-role messages that may result from pruning
-        $result = $result->mergeConsecutiveRoles();
-
-        return $result;
+        return $strategy->prune($this, $effectiveBudget);
     }
 
     /**

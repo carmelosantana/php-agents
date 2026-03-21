@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Agent;
 
 use CarmeloSantana\PHPAgents\Contract\AgentInterface;
+use CarmeloSantana\PHPAgents\Contract\BudgetPruningStrategyInterface;
 use CarmeloSantana\PHPAgents\Contract\CancellationTokenInterface;
 use CarmeloSantana\PHPAgents\Contract\ContextWindowInterface;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
@@ -62,6 +63,7 @@ abstract class AbstractAgent implements AgentInterface
         private readonly ?CancellationTokenInterface $cancellationToken = null,
         private readonly ?PendingInputProviderInterface $pendingInputProvider = null,
         private readonly ?ContextWindowInterface $contextWindow = null,
+        private readonly ?BudgetPruningStrategyInterface $pruningStrategy = null,
     ) {}
 
     abstract public function instructions(): string;
@@ -154,7 +156,7 @@ abstract class AbstractAgent implements AgentInterface
             if ($this->contextWindow !== null) {
                 $budget = $this->contextWindow->availableTokens();
                 if ($budget > 0) {
-                    $conversation = $conversation->fitWithinBudget($budget);
+                    $conversation = $conversation->fitWithinBudget($budget, strategy: $this->pruningStrategy);
                 }
             }
 
