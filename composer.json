@@ -1,7 +1,6 @@
 {
     "name": "carmelosantana/php-agents",
     "description": "PHP 8.4+ agent framework — interfaces, tools, and providers for building AI agents",
-    "version": "0.10.0",
     "type": "library",
     "license": "MIT",
     "authors": [
