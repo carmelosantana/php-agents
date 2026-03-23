@@ -114,10 +114,15 @@ final class GeminiProvider extends AbstractProvider
                     }
                 } elseif (isset($part['functionCall'])) {
                     $name = $part['functionCall']['name'];
+                    $metadata = [];
+                    if (isset($part['thoughtSignature'])) {
+                        $metadata['thoughtSignature'] = $part['thoughtSignature'];
+                    }
                     $toolCalls[] = new ToolCall(
                         id: sprintf('g%08x', $toolCallCounter++),
                         name: $name,
                         arguments: $part['functionCall']['args'] ?? [],
+                        metadata: $metadata,
                     );
                 }
             }
@@ -390,12 +395,20 @@ final class GeminiProvider extends AbstractProvider
                 $parts[] = ['text' => $text];
             }
             foreach ($message->toolCalls() as $toolCall) {
-                $parts[] = [
+                $part = [
                     'functionCall' => [
                         'name' => $toolCall->name,
                         'args' => !empty($toolCall->arguments) ? $toolCall->arguments : (object) [],
                     ],
                 ];
+                // Gemini 3 requires thoughtSignature on functionCall parts.
+                // Use real signature if available, otherwise dummy to skip validation.
+                if (isset($toolCall->metadata['thoughtSignature'])) {
+                    $part['thoughtSignature'] = $toolCall->metadata['thoughtSignature'];
+                } else {
+                    $part['thoughtSignature'] = 'skip_thought_signature_validator';
+                }
+                $parts[] = $part;
             }
 
             return ['role' => 'model', 'parts' => $parts];
@@ -659,10 +672,15 @@ final class GeminiProvider extends AbstractProvider
                 }
             } elseif (isset($part['functionCall'])) {
                 $name = $part['functionCall']['name'];
+                $metadata = [];
+                if (isset($part['thoughtSignature'])) {
+                    $metadata['thoughtSignature'] = $part['thoughtSignature'];
+                }
                 $toolCalls[] = new ToolCall(
                     id: sprintf('g%08x', $callIndex++),
                     name: $name,
                     arguments: $part['functionCall']['args'] ?? [],
+                    metadata: $metadata,
                 );
             }
         }
