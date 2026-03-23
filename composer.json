@@ -11,7 +11,7 @@
     "keywords": ["php-agents", "ai-agent", "llm", "tools", "function-calling"],
     "require": {
         "php": "^8.4",
-        "symfony/http-client": "^8.0",
+        "symfony/http-client": "^7.0|^8.0",
         "psr/log": "^3.0"
     },
     "suggest": {
