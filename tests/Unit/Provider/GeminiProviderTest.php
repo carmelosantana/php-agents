@@ -838,3 +838,181 @@ test('functionResponse maps multiple tool results to correct function names', fu
         ->and($functionResponses[0]['name'])->toBe('read_file')
         ->and($functionResponses[1]['name'])->toBe('exec');
 });
+
+// ── Thought Signature Tests ──────────────────────────────────────────────
+
+test('parseResponse captures thoughtSignature in ToolCall metadata', function () {
+    $mockClient = new MockHttpClient([
+        mockGeminiResponse([
+            'candidates' => [
+                [
+                    'content' => [
+                        'role' => 'model',
+                        'parts' => [
+                            [
+                                'functionCall' => [
+                                    'name' => 'get_weather',
+                                    'args' => ['city' => 'London'],
+                                ],
+                                'thoughtSignature' => 'gs:abc123signature',
+                            ],
+                        ],
+                    ],
+                    'finishReason' => 'STOP',
+                ],
+            ],
+        ]),
+    ]);
+
+    $provider = new GeminiProvider(
+        model: 'gemini-3.1-flash-lite-preview',
+        apiKey: 'test-key',
+        httpClient: $mockClient,
+    );
+
+    $response = $provider->chat([new UserMessage('Weather?')]);
+
+    expect($response->toolCalls)->toHaveCount(1)
+        ->and($response->toolCalls[0]->metadata)->toBe(['thoughtSignature' => 'gs:abc123signature']);
+});
+
+test('parseResponse without thoughtSignature has empty metadata', function () {
+    $mockClient = new MockHttpClient([
+        mockGeminiResponse([
+            'candidates' => [
+                [
+                    'content' => [
+                        'role' => 'model',
+                        'parts' => [
+                            [
+                                'functionCall' => [
+                                    'name' => 'get_weather',
+                                    'args' => ['city' => 'London'],
+                                ],
+                            ],
+                        ],
+                    ],
+                    'finishReason' => 'STOP',
+                ],
+            ],
+        ]),
+    ]);
+
+    $provider = new GeminiProvider(
+        model: 'gemini-2.5-flash',
+        apiKey: 'test-key',
+        httpClient: $mockClient,
+    );
+
+    $response = $provider->chat([new UserMessage('Weather?')]);
+
+    expect($response->toolCalls)->toHaveCount(1)
+        ->and($response->toolCalls[0]->metadata)->toBe([]);
+});
+
+test('thoughtSignature roundtrip: captured and echoed back in conversation history', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $signature = 'gs:roundtrip_test_signature_xyz';
+    $provider->chat([
+        new UserMessage('Do something'),
+        new AssistantMessage('', [
+            new ToolCall('g00000000', 'read_file', ['path' => '/tmp/test'], ['thoughtSignature' => $signature]),
+        ]),
+        new ToolResultMessage(ToolResult::success('file contents')->withCallId('g00000000')),
+    ]);
+
+    // Find the model content with functionCall parts
+    $functionCallPart = null;
+    foreach ($requestPayload['contents'] as $content) {
+        if ($content['role'] === 'model') {
+            foreach ($content['parts'] ?? [] as $part) {
+                if (isset($part['functionCall'])) {
+                    $functionCallPart = $part;
+                    break 2;
+                }
+            }
+        }
+    }
+
+    expect($functionCallPart)->not->toBeNull()
+        ->and($functionCallPart['functionCall']['name'])->toBe('read_file')
+        ->and($functionCallPart['thoughtSignature'])->toBe($signature);
+});
+
+test('thoughtSignature only on first parallel functionCall part', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    // Per Gemini docs, only the first functionCall part in a parallel call has the signature
+    $provider->chat([
+        new UserMessage('Do two things'),
+        new AssistantMessage('', [
+            new ToolCall('g00000000', 'read_file', ['path' => '/a'], ['thoughtSignature' => 'gs:parallel_sig']),
+            new ToolCall('g00000001', 'exec', ['cmd' => 'ls']),
+        ]),
+        new ToolResultMessage(ToolResult::success('content a')->withCallId('g00000000')),
+        new ToolResultMessage(ToolResult::success('ls output')->withCallId('g00000001')),
+    ]);
+
+    // Collect all functionCall parts from model messages
+    $functionCallParts = [];
+    foreach ($requestPayload['contents'] as $content) {
+        if ($content['role'] === 'model') {
+            foreach ($content['parts'] ?? [] as $part) {
+                if (isset($part['functionCall'])) {
+                    $functionCallParts[] = $part;
+                }
+            }
+        }
+    }
+
+    expect($functionCallParts)->toHaveCount(2)
+        ->and($functionCallParts[0]['thoughtSignature'])->toBe('gs:parallel_sig')
+        ->and($functionCallParts[1]['thoughtSignature'])->toBe('skip_thought_signature_validator');
+});
+
+test('dummy thoughtSignature emitted when metadata is empty', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $provider->chat([
+        new UserMessage('Do something'),
+        new AssistantMessage('', [
+            new ToolCall('g00000000', 'read_file', ['path' => '/tmp/test']),
+        ]),
+        new ToolResultMessage(ToolResult::success('file contents')->withCallId('g00000000')),
+    ]);
+
+    // Find the model content with functionCall parts
+    $functionCallPart = null;
+    foreach ($requestPayload['contents'] as $content) {
+        if ($content['role'] === 'model') {
+            foreach ($content['parts'] ?? [] as $part) {
+                if (isset($part['functionCall'])) {
+                    $functionCallPart = $part;
+                    break 2;
+                }
+            }
+        }
+    }
+
+    expect($functionCallPart)->not->toBeNull()
+        ->and($functionCallPart['thoughtSignature'])->toBe('skip_thought_signature_validator');
+});
