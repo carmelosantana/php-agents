@@ -11,7 +11,7 @@
     "keywords": ["php-agents", "ai-agent", "llm", "tools", "function-calling"],
     "require": {
         "php": "^8.4",
-        "symfony/http-client": "^7.0",
+        "symfony/http-client": "^8.0",
         "psr/log": "^3.0"
     },
     "suggest": {
@@ -19,7 +19,7 @@
         "hkulekci/qdrant": "Vector similarity search for persistent agent memory"
     },
     "require-dev": {
-        "pestphp/pest": "^3.0",
+        "pestphp/pest": "^4.0",
         "phpstan/phpstan": "^2.0"
     },
     "autoload": {
