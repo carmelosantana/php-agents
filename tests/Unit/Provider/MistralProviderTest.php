@@ -3,11 +3,14 @@
 declare(strict_types=1);
 
 use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
+use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\MistralProvider;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
+use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
@@ -334,4 +337,192 @@ test('parseResponse Magistral usage is extracted correctly', function () {
         ->and($response->usage->promptTokens)->toBe(100)
         ->and($response->usage->completionTokens)->toBe(50)
         ->and($response->usage->totalTokens)->toBe(150);
+});
+
+// --- Tool Call ID Normalization ---
+
+test('OpenAI-format tool call IDs are normalized to 9-char alphanumeric', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockMistralResponse();
+    });
+
+    $provider = new MistralProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $provider->chat([
+        new SystemMessage('You are helpful.'),
+        new UserMessage('Do something'),
+        new AssistantMessage('', [new ToolCall('call_abc123def456ghi789xyz', 'read_file', ['path' => '/tmp/test'])]),
+        new ToolResultMessage(ToolResult::success('file contents here')->withCallId('call_abc123def456ghi789xyz')),
+        new UserMessage('Thanks'),
+    ]);
+
+    $messages = $requestPayload['messages'];
+
+    // Assistant tool_calls[0].id must be exactly 9 alphanumeric chars
+    $normalizedId = $messages[2]['tool_calls'][0]['id'];
+    expect($normalizedId)->toMatch('/^[a-zA-Z0-9]{9}$/')
+        ->and($normalizedId)->not->toBe('call_abc123def456ghi789xyz');
+
+    // Tool result tool_call_id must match the normalized assistant ID
+    expect($messages[3]['tool_call_id'])->toBe($normalizedId);
+});
+
+test('Anthropic-format tool call IDs are normalized to 9-char alphanumeric', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockMistralResponse();
+    });
+
+    $provider = new MistralProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $provider->chat([
+        new UserMessage('Do something'),
+        new AssistantMessage('', [new ToolCall('toolu_01ABC123DEF456', 'read_file', ['path' => '/tmp/test'])]),
+        new ToolResultMessage(ToolResult::success('result')->withCallId('toolu_01ABC123DEF456')),
+    ]);
+
+    $messages = $requestPayload['messages'];
+    $normalizedId = $messages[1]['tool_calls'][0]['id'];
+
+    expect($normalizedId)->toMatch('/^[a-zA-Z0-9]{9}$/')
+        ->and($messages[2]['tool_call_id'])->toBe($normalizedId);
+});
+
+test('Gemini-format synthetic tool call IDs are normalized', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockMistralResponse();
+    });
+
+    $provider = new MistralProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $provider->chat([
+        new UserMessage('Do something'),
+        new AssistantMessage('', [new ToolCall('g00000000', 'exec', ['cmd' => 'ls'])]),
+        new ToolResultMessage(ToolResult::success('output')->withCallId('g00000000')),
+    ]);
+
+    $messages = $requestPayload['messages'];
+    $normalizedId = $messages[1]['tool_calls'][0]['id'];
+
+    // g00000000 is already 9 chars alphanumeric — should pass through unchanged
+    expect($normalizedId)->toBe('g00000000')
+        ->and($messages[2]['tool_call_id'])->toBe('g00000000');
+});
+
+test('already-valid 9-char alphanumeric IDs pass through unchanged', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockMistralResponse();
+    });
+
+    $provider = new MistralProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $provider->chat([
+        new UserMessage('Do something'),
+        new AssistantMessage('', [new ToolCall('AbCdEf123', 'read_file', ['path' => '/tmp'])]),
+        new ToolResultMessage(ToolResult::success('contents')->withCallId('AbCdEf123')),
+    ]);
+
+    $messages = $requestPayload['messages'];
+
+    expect($messages[1]['tool_calls'][0]['id'])->toBe('AbCdEf123')
+        ->and($messages[2]['tool_call_id'])->toBe('AbCdEf123');
+});
+
+test('multiple tool calls in one assistant message are each normalized', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockMistralResponse();
+    });
+
+    $provider = new MistralProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $id1 = 'call_longid_first_one_here';
+    $id2 = 'call_longid_second_one_here';
+
+    $provider->chat([
+        new UserMessage('Do two things'),
+        new AssistantMessage('', [
+            new ToolCall($id1, 'read_file', ['path' => '/a']),
+            new ToolCall($id2, 'write_file', ['path' => '/b']),
+        ]),
+        new ToolResultMessage(ToolResult::success('result a')->withCallId($id1)),
+        new ToolResultMessage(ToolResult::success('result b')->withCallId($id2)),
+    ]);
+
+    $messages = $requestPayload['messages'];
+    $normId1 = $messages[1]['tool_calls'][0]['id'];
+    $normId2 = $messages[1]['tool_calls'][1]['id'];
+
+    // Both must be valid format
+    expect($normId1)->toMatch('/^[a-zA-Z0-9]{9}$/')
+        ->and($normId2)->toMatch('/^[a-zA-Z0-9]{9}$/');
+
+    // They must be different from each other
+    expect($normId1)->not->toBe($normId2);
+
+    // Tool results must use the matching normalized IDs
+    expect($messages[2]['tool_call_id'])->toBe($normId1)
+        ->and($messages[3]['tool_call_id'])->toBe($normId2);
+});
+
+test('normalization is deterministic — same input produces same output', function () {
+    $payloads = [];
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$payloads): MockResponse {
+        $payloads[] = json_decode($options['body'], true);
+        return mockMistralResponse();
+    });
+
+    $provider = new MistralProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $messages = [
+        new UserMessage('Do something'),
+        new AssistantMessage('', [new ToolCall('call_abc123def456ghi789xyz', 'read_file', ['path' => '/tmp'])]),
+        new ToolResultMessage(ToolResult::success('result')->withCallId('call_abc123def456ghi789xyz')),
+    ];
+
+    // Call twice with the same messages
+    $provider->chat($messages);
+    $provider->chat($messages);
+
+    // Both should produce identical normalized IDs
+    $id1 = $payloads[0]['messages'][1]['tool_calls'][0]['id'];
+    $id2 = $payloads[1]['messages'][1]['tool_calls'][0]['id'];
+
+    expect($id1)->toBe($id2);
+});
+
+test('messages without tool calls pass through unchanged', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockMistralResponse();
+    });
+
+    $provider = new MistralProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $provider->chat([
+        new SystemMessage('You are helpful.'),
+        new UserMessage('Hello'),
+        new AssistantMessage('Hi there!'),
+        new UserMessage('How are you?'),
+    ]);
+
+    $messages = $requestPayload['messages'];
+
+    expect($messages[0]['role'])->toBe('system')
+        ->and($messages[0]['content'])->toBe('You are helpful.')
+        ->and($messages[1]['role'])->toBe('user')
+        ->and($messages[1]['content'])->toBe('Hello')
+        ->and($messages[2]['role'])->toBe('assistant')
+        ->and($messages[2]['content'])->toBe('Hi there!')
+        ->and($messages[3]['role'])->toBe('user')
+        ->and($messages[3]['content'])->toBe('How are you?');
 });

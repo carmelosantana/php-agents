@@ -332,6 +332,10 @@ $provider = new GeminiProvider(
 | `baseUrl` | `string` | `'https://generativelanguage.googleapis.com/v1beta'` | API base URL |
 | `httpClient` | `?HttpClientInterface` | `null` | Custom HTTP client |
 
+### Tool Calling
+
+Gemini uses `functionCall`/`functionResponse` parts within the Content format. The provider generates compact 9-character alphanumeric synthetic IDs (e.g. `g00000000`) for tool calls since Gemini's API doesn't return call IDs natively. The `functionResponse` name field uses the actual function name resolved from the preceding assistant message's tool calls.
+
 ### Image Support
 
 Gemini uses `inlineData` parts with base64-encoded image data. The provider automatically converts OpenAI-format `image_url` blocks:
@@ -441,7 +445,7 @@ Both URL and base64 data URI images are supported.
 
 ## MistralProvider
 
-Provider for Mistral AI models. Extends `OpenAICompatibleProvider` with Mistral-specific image format normalization.
+Provider for Mistral AI models. Extends `OpenAICompatibleProvider` with Mistral-specific normalizations for image format and tool call IDs.
 
 ```php
 use CarmeloSantana\PHPAgents\Provider\MistralProvider;
@@ -462,6 +466,12 @@ Mistral accepts `image_url` as a flat string instead of a nested object. The pro
 ```
 
 Both URL and base64 data URI images are supported.
+
+### Tool Call ID Normalization
+
+Mistral requires `tool_call_id` to be exactly 9 alphanumeric characters (`[a-zA-Z0-9]{9}`). When conversation history contains tool call IDs from other providers (OpenAI's `call_*`, Anthropic's `toolu_*`, Gemini's synthetic IDs), the provider normalizes them to compliant 9-character alphanumeric IDs during `formatMessages()`.
+
+The normalization is deterministic (SHA-256 hash-based), so the same conversation replayed produces identical IDs. IDs already in Mistral's format pass through unchanged. The mapping is applied consistently to both assistant message `tool_calls[].id` and tool result `tool_call_id` fields to maintain correct pairing.
 
 ### Environment Variables
 

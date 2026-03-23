@@ -115,7 +115,7 @@ final class GeminiProvider extends AbstractProvider
                 } elseif (isset($part['functionCall'])) {
                     $name = $part['functionCall']['name'];
                     $toolCalls[] = new ToolCall(
-                        id: 'call_gemini_' . $name . '_' . $toolCallCounter++,
+                        id: sprintf('g%08x', $toolCallCounter++),
                         name: $name,
                         arguments: $part['functionCall']['args'] ?? [],
                     );
@@ -302,6 +302,8 @@ final class GeminiProvider extends AbstractProvider
     {
         $systemInstruction = null;
         $contents = [];
+        /** @var array<string, string> $callIdToName Maps tool call ID → function name */
+        $callIdToName = [];
 
         foreach ($messages as $message) {
             if ($message->role() === Role::System) {
@@ -313,7 +315,14 @@ final class GeminiProvider extends AbstractProvider
                 continue;
             }
 
-            $contents[] = $this->formatGeminiContent($message);
+            // Track tool call IDs → function names from assistant messages
+            if ($message->role() === Role::Assistant && !empty($message->toolCalls())) {
+                foreach ($message->toolCalls() as $toolCall) {
+                    $callIdToName[$toolCall->id] = $toolCall->name;
+                }
+            }
+
+            $contents[] = $this->formatGeminiContent($message, $callIdToName);
         }
 
         // Merge consecutive same-role contents (Gemini requires role alternation)
@@ -340,9 +349,10 @@ final class GeminiProvider extends AbstractProvider
     /**
      * Convert a single MessageInterface to Gemini Content format.
      *
+     * @param array<string, string> $callIdToName Maps tool call ID → function name
      * @return array{role: string, parts: array<array<string, mixed>>}
      */
-    private function formatGeminiContent(MessageInterface $message): array
+    private function formatGeminiContent(MessageInterface $message, array $callIdToName = []): array
     {
         $role = match ($message->role()) {
             Role::User => 'user',
@@ -354,6 +364,8 @@ final class GeminiProvider extends AbstractProvider
         // Tool result messages → functionResponse parts
         if ($message->role() === Role::Tool) {
             $toolCallId = $message->toolCallId() ?? '';
+            // Gemini expects the actual function name, not the call ID
+            $functionName = $callIdToName[$toolCallId] ?? $toolCallId;
             $content = $message->content();
             $responseData = is_string($content) ? ['result' => $content] : $content;
 
@@ -362,7 +374,7 @@ final class GeminiProvider extends AbstractProvider
                 'parts' => [
                     [
                         'functionResponse' => [
-                            'name' => $toolCallId,
+                            'name' => $functionName,
                             'response' => $responseData,
                         ],
                     ],
@@ -648,7 +660,7 @@ final class GeminiProvider extends AbstractProvider
             } elseif (isset($part['functionCall'])) {
                 $name = $part['functionCall']['name'];
                 $toolCalls[] = new ToolCall(
-                    id: 'call_gemini_' . $name . '_' . $callIndex++,
+                    id: sprintf('g%08x', $callIndex++),
                     name: $name,
                     arguments: $part['functionCall']['args'] ?? [],
                 );

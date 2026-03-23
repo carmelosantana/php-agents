@@ -13,16 +13,29 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 /**
  * Provider for Mistral AI models.
  *
- * Mistral's API is OpenAI-compatible with one notable divergence for vision:
- * image_url can be a flat string instead of a nested {url: "..."} object.
- * This provider normalizes OpenAI-format nested image_url objects to Mistral's
- * flat string format for maximum compatibility.
+ * Mistral's API is OpenAI-compatible with two notable divergences:
+ *
+ * 1. **Vision**: image_url can be a flat string instead of a nested {url: "..."} object.
+ *    This provider normalizes OpenAI-format nested image_url objects to Mistral's
+ *    flat string format for maximum compatibility.
+ *
+ * 2. **Tool call IDs**: Mistral requires tool_call_id to be exactly 9 alphanumeric
+ *    characters ([a-zA-Z0-9]{9}). IDs from other providers (OpenAI's `call_*`,
+ *    Anthropic's `toolu_*`, Gemini's synthetic IDs) are normalized to compliant
+ *    9-character alphanumeric IDs during formatMessages(). The mapping is
+ *    deterministic (hash-based) so retries produce identical IDs.
  *
  * All other functionality (chat, streaming, tools, structured output) uses
  * the standard OpenAI Chat Completions protocol unchanged.
  */
 final class MistralProvider extends OpenAICompatibleProvider
 {
+    /** Mistral requires tool call IDs to match this pattern exactly. */
+    private const TOOL_CALL_ID_PATTERN = '/^[a-zA-Z0-9]{9}$/';
+
+    /** Characters used for generating compliant tool call IDs. */
+    private const ID_CHARSET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+
     public function __construct(
         string $model = 'mistral-large-latest',
         string $baseUrl = 'https://api.mistral.ai/v1',
@@ -40,12 +53,16 @@ final class MistralProvider extends OpenAICompatibleProvider
     }
 
     /**
-     * Format messages with Mistral-compatible image_url format.
+     * Format messages with Mistral-compatible image_url and tool call ID formats.
      *
-     * Walks each message's content blocks and flattens nested image_url objects:
-     *   {type: "image_url", image_url: {url: "..."}} → {type: "image_url", image_url: "..."}
+     * Applies two normalizations:
+     * 1. Flattens nested image_url objects to Mistral's flat string format
+     * 2. Normalizes tool call IDs to Mistral's required 9-character alphanumeric format
      *
-     * Already-flat image_url strings and text blocks pass through unchanged.
+     * Tool call ID normalization builds a mapping from original IDs to compliant IDs
+     * while processing messages in order. Assistant messages with tool_calls have their
+     * IDs remapped first, then tool result messages use the same mapping to maintain
+     * correct pairing.
      *
      * @param MessageInterface[] $messages
      * @return array<array<string, mixed>>
@@ -53,20 +70,41 @@ final class MistralProvider extends OpenAICompatibleProvider
     #[\Override]
     protected function formatMessages(array $messages): array
     {
-        return array_map(function (MessageInterface $msg): array {
+        /** @var array<string, string> $idMap original ID → Mistral-compliant ID */
+        $idMap = [];
+
+        $formatted = [];
+
+        foreach ($messages as $msg) {
             $data = $msg->toArray();
 
-            if (!isset($data['content']) || !is_array($data['content'])) {
-                return $data;
+            // Normalize image blocks in array content
+            if (isset($data['content']) && is_array($data['content'])) {
+                $data['content'] = array_map(
+                    fn(array $block): array => $this->normalizeImageBlock($block),
+                    $data['content'],
+                );
             }
 
-            $data['content'] = array_map(
-                fn(array $block): array => $this->normalizeImageBlock($block),
-                $data['content'],
-            );
+            // Normalize tool call IDs on assistant messages
+            if (isset($data['tool_calls']) && is_array($data['tool_calls'])) {
+                foreach ($data['tool_calls'] as &$tc) {
+                    $originalId = $tc['id'] ?? '';
+                    $tc['id'] = $this->normalizeToolCallId($originalId, $idMap);
+                }
+                unset($tc);
+            }
 
-            return $data;
-        }, $messages);
+            // Normalize tool_call_id on tool result messages
+            if (isset($data['tool_call_id']) && is_string($data['tool_call_id'])) {
+                $originalId = $data['tool_call_id'];
+                $data['tool_call_id'] = $idMap[$originalId] ?? $this->normalizeToolCallId($originalId, $idMap);
+            }
+
+            $formatted[] = $data;
+        }
+
+        return $formatted;
     }
 
     /**
@@ -137,6 +175,47 @@ final class MistralProvider extends OpenAICompatibleProvider
             usage: $usage,
             reasoning: $reasoning,
         );
+    }
+
+    /**
+     * Normalize a tool call ID to Mistral's required 9-character alphanumeric format.
+     *
+     * IDs already matching the format pass through unchanged. Non-conforming IDs
+     * are deterministically mapped to a 9-character string derived from a hash
+     * of the original ID. The mapping is stored in $idMap for consistent
+     * remapping of assistant→tool result pairs.
+     *
+     * @param array<string, string> $idMap Mapping of original → normalized IDs (modified by reference)
+     */
+    private function normalizeToolCallId(string $originalId, array &$idMap): string
+    {
+        // Already mapped in a previous pass
+        if (isset($idMap[$originalId])) {
+            return $idMap[$originalId];
+        }
+
+        // Already compliant — pass through
+        if (preg_match(self::TOOL_CALL_ID_PATTERN, $originalId) === 1) {
+            $idMap[$originalId] = $originalId;
+
+            return $originalId;
+        }
+
+        // Generate a deterministic 9-char alphanumeric ID from the original
+        $hash = hash('sha256', $originalId);
+        $charset = self::ID_CHARSET;
+        $charsetLen = strlen($charset);
+        $id = '';
+
+        for ($i = 0; $i < 9; $i++) {
+            // Use 2 hex chars (1 byte) per output character for good distribution
+            $byte = hexdec(substr($hash, $i * 2, 2));
+            $id .= $charset[$byte % $charsetLen];
+        }
+
+        $idMap[$originalId] = $id;
+
+        return $id;
     }
 
     /**

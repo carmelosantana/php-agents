@@ -9,6 +9,7 @@ use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
 use CarmeloSantana\PHPAgents\Tool\Tool;
+use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Symfony\Component\HttpClient\MockHttpClient;
@@ -729,4 +730,111 @@ test('stream does not yield reasoning Response when no thought parts', function 
     $reasoningChunks = array_filter($chunks, fn($r) => $r->reasoning !== '');
 
     expect($reasoningChunks)->toBeEmpty();
+});
+
+// --- Tool Call ID Format & functionResponse.name ---
+
+test('synthetic tool call IDs use compact 9-char alphanumeric format', function () {
+    $mockClient = new MockHttpClient([
+        mockGeminiResponse([
+            'candidates' => [
+                [
+                    'content' => [
+                        'role' => 'model',
+                        'parts' => [
+                            ['functionCall' => ['name' => 'read_file', 'args' => ['path' => '/tmp/test']]],
+                            ['functionCall' => ['name' => 'write_file', 'args' => ['path' => '/tmp/out']]],
+                        ],
+                    ],
+                    'finishReason' => 'STOP',
+                ],
+            ],
+        ]),
+    ]);
+
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('Do things')]);
+
+    expect($response->toolCalls)->toHaveCount(2);
+
+    // IDs should be 9-char alphanumeric (g + 8 hex digits)
+    expect($response->toolCalls[0]->id)->toMatch('/^[a-zA-Z0-9]{9}$/')
+        ->and($response->toolCalls[0]->id)->toBe('g00000000');
+    expect($response->toolCalls[1]->id)->toMatch('/^[a-zA-Z0-9]{9}$/')
+        ->and($response->toolCalls[1]->id)->toBe('g00000001');
+
+    // Names are still correct
+    expect($response->toolCalls[0]->name)->toBe('read_file')
+        ->and($response->toolCalls[1]->name)->toBe('write_file');
+});
+
+test('functionResponse uses actual function name not call ID', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $callId = 'g00000000';
+    $provider->chat([
+        new UserMessage('Read that file'),
+        new AssistantMessage('', [
+            new ToolCall($callId, 'read_file', ['path' => '/tmp/test']),
+        ]),
+        new ToolResultMessage(ToolResult::success('file contents')->withCallId($callId)),
+    ]);
+
+    // The tool result should appear as a functionResponse with the actual function name
+    $contents = $requestPayload['contents'];
+
+    // Find the user content that has a functionResponse part (tool results are 'user' role in Gemini)
+    $functionResponseContent = null;
+    foreach ($contents as $content) {
+        foreach ($content['parts'] ?? [] as $part) {
+            if (isset($part['functionResponse'])) {
+                $functionResponseContent = $part['functionResponse'];
+                break 2;
+            }
+        }
+    }
+
+    expect($functionResponseContent)->not->toBeNull()
+        ->and($functionResponseContent['name'])->toBe('read_file')
+        ->and($functionResponseContent['response'])->toBe(['result' => 'file contents']);
+});
+
+test('functionResponse maps multiple tool results to correct function names', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $provider->chat([
+        new UserMessage('Do two things'),
+        new AssistantMessage('', [
+            new ToolCall('g00000000', 'read_file', ['path' => '/a']),
+            new ToolCall('g00000001', 'exec', ['cmd' => 'ls']),
+        ]),
+        new ToolResultMessage(ToolResult::success('file a contents')->withCallId('g00000000')),
+        new ToolResultMessage(ToolResult::success('ls output')->withCallId('g00000001')),
+    ]);
+
+    // Collect all functionResponse parts
+    $functionResponses = [];
+    foreach ($requestPayload['contents'] as $content) {
+        foreach ($content['parts'] ?? [] as $part) {
+            if (isset($part['functionResponse'])) {
+                $functionResponses[] = $part['functionResponse'];
+            }
+        }
+    }
+
+    expect($functionResponses)->toHaveCount(2)
+        ->and($functionResponses[0]['name'])->toBe('read_file')
+        ->and($functionResponses[1]['name'])->toBe('exec');
 });
