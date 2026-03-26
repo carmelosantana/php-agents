@@ -21,20 +21,25 @@ final class DefaultBudgetPruningStrategy implements BudgetPruningStrategyInterfa
     {
         $result = clone $conversation;
 
+        // Single token estimate — reuse for both Step 1 and Step 2
+        $currentTokens = $result->estimateTokens();
+
         // Step 1: Soft-trim tool results if over budget
-        if ($result->estimateTokens() > $budgetTokens) {
+        if ($currentTokens > $budgetTokens) {
             $result = $result->trimToolResults(500, 100);
+            $currentTokens = $result->estimateTokens();
         }
 
         // Step 2: Progressively drop oldest turns if still over budget
         $userCount = count($result->filter(Role::User));
-        while ($result->estimateTokens() > $budgetTokens && $userCount > 1) {
+        while ($currentTokens > $budgetTokens && $userCount > 1) {
             $userCount--;
             $result = $result->dropOldestTurns($userCount);
+            $currentTokens = $result->estimateTokens();
         }
 
         // Step 3: More aggressive tool trimming if still over budget
-        if ($result->estimateTokens() > $budgetTokens) {
+        if ($currentTokens > $budgetTokens) {
             $result = $result->trimToolResults(200, 50);
         }
 
