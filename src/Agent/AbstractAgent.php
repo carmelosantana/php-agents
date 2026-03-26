@@ -64,6 +64,7 @@ abstract class AbstractAgent implements AgentInterface
         private readonly ?PendingInputProviderInterface $pendingInputProvider = null,
         private readonly ?ContextWindowInterface $contextWindow = null,
         private readonly ?BudgetPruningStrategyInterface $pruningStrategy = null,
+        private readonly int $safetyMarginPercent = 20,
     ) {}
 
     abstract public function instructions(): string;
@@ -117,8 +118,9 @@ abstract class AbstractAgent implements AgentInterface
         // Executable tools are the full uncapped set — used by findTool() so
         // that tools discovered via tool_search can still be executed even
         // when not in the provider's tool schema payload.
+        // executableToolIndex is name-keyed for O(1) lookup in findTool().
         $advertisedTools = $this->allTools();
-        $executableTools = $this->fullToolSet();
+        $executableToolIndex = $this->collectAllToolsIndexed();
         $systemPrompt = $this->buildSystemPrompt($advertisedTools);
 
         $conversation = new Conversation();
@@ -149,14 +151,20 @@ abstract class AbstractAgent implements AgentInterface
             $this->notify('agent.warning', 'Unlimited iterations enabled (max_iterations=0). The agent will run until the task is complete.');
         }
 
+        // Seed the context window with a conversation estimate so monitoring
+        // (usagePercent, isWarning, isCritical) is accurate from iteration 1.
+        $this->contextWindow?->estimate($conversation->estimateTokens());
+
         for ($i = 0; $i < $effectiveMax; $i++) {
             // Apply context window pruning when a budget is configured.
-            // This prevents unbounded conversation growth that would cause
-            // provider context-length errors.
+            // Use the full input window (maxTokens - reservedTokens) as the
+            // budget target. availableTokens() is unsuitable here because after
+            // report(totalTokens), usedTokens reflects the last call's total
+            // (prompt + completion), effectively double-counting the conversation.
             if ($this->contextWindow !== null) {
-                $budget = $this->contextWindow->availableTokens();
+                $budget = $this->contextWindow->maxTokens() - $this->contextWindow->reservedTokens();
                 if ($budget > 0) {
-                    $conversation = $conversation->fitWithinBudget($budget, strategy: $this->pruningStrategy);
+                    $conversation = $conversation->fitWithinBudget($budget, $this->safetyMarginPercent, $this->pruningStrategy);
                 }
             }
 
@@ -183,7 +191,7 @@ abstract class AbstractAgent implements AgentInterface
             $this->notify('agent.iteration', $i + 1);
 
             try {
-                $content = '';
+                $contentParts = [];
                 $toolCalls = [];
                 $streamUsage = null;
                 $streamModel = '';
@@ -200,7 +208,7 @@ abstract class AbstractAgent implements AgentInterface
                     }
 
                     if ($chunk->content !== '') {
-                        $content .= $chunk->content;
+                        $contentParts[] = $chunk->content;
                         $this->notify('agent.text_delta', $chunk->content);
                     }
 
@@ -233,6 +241,8 @@ abstract class AbstractAgent implements AgentInterface
                         $streamModel = $chunk->model;
                     }
                 }
+
+                $content = implode('', $contentParts);
 
                 $response = new Response(
                     content: $content,
@@ -334,7 +344,7 @@ abstract class AbstractAgent implements AgentInterface
                     }
 
                     try {
-                        $tool = $this->findTool($toolCall->name, $executableTools);
+                        $tool = $this->findTool($toolCall->name, $executableToolIndex);
                         $result = $tool->execute($toolCall->arguments);
                         $result = $result->withCallId($toolCall->id);
                     } catch (TerminationException $e) {
@@ -429,20 +439,6 @@ abstract class AbstractAgent implements AgentInterface
     }
 
     /**
-     * Return the full uncapped tool set for execution.
-     *
-     * Used by findTool() so tools discovered via tool_search (or called by
-     * name by the LLM) can be executed even when they are not in the
-     * capped set sent to the provider's tools parameter.
-     *
-     * @return ToolInterface[]
-     */
-    private function fullToolSet(): array
-    {
-        return array_values($this->collectAllToolsIndexed());
-    }
-
-    /**
      * Collect all tools into a name-indexed map (no cap applied).
      *
      * @return array<string, ToolInterface>
@@ -482,17 +478,11 @@ abstract class AbstractAgent implements AgentInterface
     }
 
     /**
-     * @param ToolInterface[] $tools
+     * @param array<string, ToolInterface> $toolIndex Name-indexed tool map for O(1) lookup.
      */
-    private function findTool(string $name, array $tools): ToolInterface
+    private function findTool(string $name, array $toolIndex): ToolInterface
     {
-        foreach ($tools as $tool) {
-            if ($tool->name() === $name) {
-                return $tool;
-            }
-        }
-
-        throw ToolNotFoundException::forName($name);
+        return $toolIndex[$name] ?? throw ToolNotFoundException::forName($name);
     }
 
     public function attach(SplObserver $observer): void
