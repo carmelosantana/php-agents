@@ -70,11 +70,13 @@ final class ShellToolkit implements ToolkitInterface
             description: 'Execute a shell command.',
             parameters: [
                 new StringParameter('command', 'The shell command to execute'),
+                new StringParameter('cwd', 'Working directory to run the command in. Relative paths are resolved from the default working directory. Defaults to project root.', required: false),
                 new NumberParameter('timeout', 'Timeout in seconds', required: false, integer: true),
             ],
             callback: function (array $input): ToolResult {
                 $command = $input['command'] ?? '';
                 $timeout = (int) ($input['timeout'] ?? $this->timeout);
+                $cwd = $input['cwd'] ?? null;
 
                 if ($command === '') {
                     return ToolResult::error('Command is required');
@@ -104,6 +106,12 @@ final class ShellToolkit implements ToolkitInterface
                     }
                 }
 
+                // Resolve working directory
+                $effectiveCwd = $this->resolveCwd($cwd);
+                if ($effectiveCwd === null) {
+                    return ToolResult::error("Invalid working directory: {$cwd}");
+                }
+
                 $descriptorSpec = [
                     0 => ['pipe', 'r'],
                     1 => ['pipe', 'w'],
@@ -114,7 +122,7 @@ final class ShellToolkit implements ToolkitInterface
                     $command,
                     $descriptorSpec,
                     $pipes,
-                    $this->workDir,
+                    $effectiveCwd,
                 );
 
                 if (!is_resource($process)) {
@@ -227,5 +235,25 @@ final class ShellToolkit implements ToolkitInterface
         }
 
         return false;
+    }
+
+    private function resolveCwd(?string $cwd): ?string
+    {
+        if ($cwd === null || $cwd === '') {
+            return $this->workDir;
+        }
+
+        // Resolve relative paths against the default working directory
+        if (!str_starts_with($cwd, '/')) {
+            $cwd = $this->workDir . '/' . $cwd;
+        }
+
+        $resolved = realpath($cwd);
+
+        if ($resolved === false || !is_dir($resolved)) {
+            return null;
+        }
+
+        return $resolved;
     }
 }
