@@ -40,6 +40,7 @@ final class ShellToolkit implements ToolkitInterface
         private readonly array $allowedCommands = [],
         private readonly array $deniedCommands = ['sudo', 'chmod 777'],
         private readonly int $timeout = 30,
+        private readonly bool $unsafe = false,
     ) {}
 
     public function tools(): array
@@ -49,7 +50,9 @@ final class ShellToolkit implements ToolkitInterface
 
     public function guidelines(): string
     {
-        $allowed = empty($this->allowedCommands) ? 'all (except denied)' : implode(', ', $this->allowedCommands);
+        $allowed = $this->unsafe
+            ? 'all (unsafe mode — only catastrophic patterns blocked at policy layer)'
+            : (empty($this->allowedCommands) ? 'all (except denied)' : implode(', ', $this->allowedCommands));
 
         return <<<GUIDELINES
         <SHELL-GUIDELINES>
@@ -82,27 +85,32 @@ final class ShellToolkit implements ToolkitInterface
                     return ToolResult::error('Command is required');
                 }
 
-                if (!$this->isCommandAllowed($command)) {
-                    return ToolResult::error("Command not allowed: {$command}");
-                }
-
-                // When an allowlist is active, also check for shell injection
-                // patterns that could bypass the allowlist.
-                if (!empty($this->allowedCommands) && $this->hasShellInjection($command)) {
-                    return ToolResult::error('Denied: command contains shell metacharacters that could bypass the allowlist.');
-                }
-
-                // Check configurable denylist (substring match)
-                foreach ($this->deniedCommands as $denied) {
-                    if (str_contains($command, $denied)) {
-                        return ToolResult::error("Denied command pattern detected: {$denied}");
+                // In unsafe mode, skip all command validation — only basic sanity
+                // and working directory resolution apply. Catastrophic commands are
+                // blocked at the execution policy layer (CatastrophicBlacklist).
+                if (!$this->unsafe) {
+                    if (!$this->isCommandAllowed($command)) {
+                        return ToolResult::error("Command not allowed: {$command}");
                     }
-                }
 
-                // Check built-in regex deny patterns
-                foreach (self::DENIED_PATTERNS as $pattern) {
-                    if (preg_match($pattern, $command)) {
-                        return ToolResult::error("Denied: command matches a blocked security pattern.");
+                    // When an allowlist is active, also check for shell injection
+                    // patterns that could bypass the allowlist.
+                    if (!empty($this->allowedCommands) && $this->hasShellInjection($command)) {
+                        return ToolResult::error('Denied: command contains shell metacharacters that could bypass the allowlist.');
+                    }
+
+                    // Check configurable denylist (substring match)
+                    foreach ($this->deniedCommands as $denied) {
+                        if (str_contains($command, $denied)) {
+                            return ToolResult::error("Denied command pattern detected: {$denied}");
+                        }
+                    }
+
+                    // Check built-in regex deny patterns
+                    foreach (self::DENIED_PATTERNS as $pattern) {
+                        if (preg_match($pattern, $command)) {
+                            return ToolResult::error("Denied: command matches a blocked security pattern.");
+                        }
                     }
                 }
 
