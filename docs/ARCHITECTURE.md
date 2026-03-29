@@ -13,12 +13,6 @@ graph TB
     subgraph "php-agents Framework"
         subgraph "Agent Layer"
             AA[AbstractAgent]
-            FA[FileAgent<br/><i>deprecated</i>]
-            WA[WebAgent<br/><i>deprecated</i>]
-            CA[CodeAgent<br/><i>deprecated</i>]
-            FA --> AA
-            WA --> AA
-            CA --> AA
         end
 
         subgraph "Provider Layer"
@@ -35,15 +29,9 @@ graph TB
             TI[ToolInterface]
             TK[ToolkitInterface]
             T[Tool]
-            FST[FilesystemToolkit]
-            WT[WebToolkit]
-            ST[ShellToolkit]
-            MT[MemoryToolkit<br/><i>deprecated</i>]
+            DT[DoneTool]
             T --> TI
-            FST --> TK
-            WT --> TK
-            ST --> TK
-            MT --> TK
+            DT --> TI
         end
 
         subgraph "Message Layer"
@@ -148,12 +136,11 @@ Every major component has an interface contract. You can replace any layer:
 |-----------|---------|------------------------|
 | `ProviderInterface` | LLM communication | OpenAI, Anthropic, Ollama |
 | `ToolInterface` | Tool definitions | `Tool` (closure-based) |
-| `ToolkitInterface` | Tool groups + guidelines | Filesystem, Shell, Web, Memory |
+| `ToolkitInterface` | Tool groups + guidelines | (none — implement your own) |
 | `ToolExecutionPolicyInterface` | Pre-execution gating | (none — implement your own) |
 | `CancellationTokenInterface` | Cooperative cancellation | `NullCancellationToken` |
 | `PendingInputProviderInterface` | External input injection | `NullPendingInputProvider` |
 | `ContextWindowInterface` | Token budget tracking | `ContextWindow` |
-| `MemoryInterface` | Persistent memory | `FileMemory` *(deprecated)* |
 | `VectorStoreInterface` | Similarity search | `InMemoryVectorStore` |
 | `EmbeddingProviderInterface` | Text → vector | Ollama, OpenAI |
 | `TokenCounterInterface` | Token counting | `HeuristicCounter`, `TiktokenCounter` |
@@ -377,19 +364,10 @@ flowchart LR
     CW --> FIT
 ```
 
-## Memory Architecture
+## Embedding & Vector Store Architecture
 
 ```mermaid
 graph TB
-    subgraph "Agent-Facing"
-        MTK[MemoryToolkit<br/><i>deprecated</i>]
-    end
-
-    subgraph "Storage Layer"
-        MI[MemoryInterface]
-        FM[FileMemory<br/><i>deprecated</i>]
-    end
-
     subgraph "Vector Search"
         VSI[VectorStoreInterface]
         IMVS[InMemoryVectorStore]
@@ -401,8 +379,6 @@ graph TB
         OAEP[OpenAIEmbeddingProvider]
     end
 
-    MTK --> MI
-    MI --> FM
     EPI --> OEP
     EPI --> OAEP
     EPI --> VSI
@@ -453,4 +429,4 @@ graph TB
     SS -->|persists| CONV
 ```
 
-**Key difference:** php-agents is a **library** (agent loop, providers, tools, messages). Coqui is a **product** (REPL, API server, session persistence, multi-agent orchestration, security policies, credential management). Coqui adds ~75 files of product logic on top of php-agents' ~74 files of framework code, with zero duplication.
+**Key difference:** php-agents is a **library** (agent loop, providers, tools, messages). Coqui is a **product** (REPL, API server, session persistence, multi-agent orchestration, security policies, credential management). Coqui provides its own filesystem, shell, memory, and other toolkits as product-layer code. php-agents supplies the framework primitives.

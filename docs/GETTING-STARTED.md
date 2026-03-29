@@ -20,7 +20,7 @@ composer require carmelosantana/php-agents
 # Accurate token counting for OpenAI models
 composer require yethee/tiktoken-php
 
-# Vector similarity search for persistent agent memory
+# Vector similarity search
 composer require hkulekci/qdrant
 ```
 
@@ -44,15 +44,26 @@ composer require hkulekci/qdrant
    use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
    use CarmeloSantana\PHPAgents\Message\UserMessage;
    use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
-   use CarmeloSantana\PHPAgents\Toolkit\FilesystemToolkit;
+   use CarmeloSantana\PHPAgents\Tool\Tool;
+   use CarmeloSantana\PHPAgents\Tool\ToolResult;
+   use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
 
    $agent = new class(provider: new OllamaProvider(model: 'llama3.2')) extends AbstractAgent {
-       public function name(): string { return 'File Agent'; }
-       public function instructions(): string { return 'You manage files in the workspace.'; }
+       public function name(): string { return 'Greeter'; }
+       public function instructions(): string { return 'You greet people using the greet tool.'; }
    };
-   $agent->addToolkit(new FilesystemToolkit(__DIR__));
+   $agent->addTool(new Tool(
+       name: 'greet',
+       description: 'Greet someone by name',
+       parameters: [
+           new StringParameter('name', 'The person to greet', required: true),
+       ],
+       callback: fn(array $args): ToolResult => ToolResult::success(
+           "Hello, {$args['name']}!",
+       ),
+   ));
 
-   $output = $agent->run(new UserMessage('List the files in the current directory'));
+   $output = $agent->run(new UserMessage('Greet the user Alice'));
    echo $output->content;
    ```
 
@@ -106,26 +117,38 @@ require __DIR__ . '/vendor/autoload.php';
 use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
-use CarmeloSantana\PHPAgents\Toolkit\FilesystemToolkit;
+use CarmeloSantana\PHPAgents\Tool\Tool;
+use CarmeloSantana\PHPAgents\Tool\ToolResult;
+use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
 
 $agent = new class(provider: new OllamaProvider(model: 'llama3.2'), maxIterations: 15) extends AbstractAgent {
-    public function name(): string { return 'File Agent'; }
-    public function instructions(): string { return 'You manage files in the workspace.'; }
+    public function name(): string { return 'Note Agent'; }
+    public function instructions(): string { return 'You help users manage notes using tools.'; }
 };
-$agent->addToolkit(new FilesystemToolkit(__DIR__));
+
+$agent->addTool(new Tool(
+    name: 'save_note',
+    description: 'Save a note with a title and body',
+    parameters: [
+        new StringParameter('title', 'Note title', required: true),
+        new StringParameter('body', 'Note content', required: true),
+    ],
+    callback: fn(array $args): ToolResult => ToolResult::success(
+        sprintf('Saved note "%s"', $args['title']),
+    ),
+));
 
 $output = $agent->run(
-    new UserMessage('Create a file called hello.txt with the contents "Hello, World!"'),
+    new UserMessage('Save a note titled "reminder" with body "Buy groceries"'),
 );
 
 echo $output->content;
-// Agent creates the file using FilesystemToolkit tools, then responds
 ```
 
-The agent is pre-loaded with `FilesystemToolkit` (file read/write/list/search/delete) tools. The agent loop works like this:
+The agent loop works like this:
 
 1. Your message is sent to the LLM with tool definitions
-2. The LLM decides which tool to call (e.g., `write_file`)
+2. The LLM decides which tool to call (e.g., `save_note`)
 3. php-agents executes the tool and feeds the result back
 4. The LLM decides if it's done or needs more tool calls
 5. When done, it returns a natural language response
@@ -326,4 +349,4 @@ php-agents can load settings from an `openclaw.json` configuration file:
 - [Providers](providers.md) — provider feature matrix and configuration
 - [Tools & Toolkits](tools-and-toolkits.md) — parameter types, execution policies, publishing packages
 - [Agents](agents.md) — extending AbstractAgent, the run loop, observers, cancellation
-- [Memory](memory.md) — persistent memory, vector stores, embedding providers
+- [Memory](memory.md) — vector stores, embedding providers

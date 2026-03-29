@@ -10,13 +10,13 @@
 
 PHP 8.4+ framework for building AI agents with tool-use loops, provider abstraction, and composable toolkits.
 
-Build agents that can read files, browse the web, execute code, and use custom tools — powered by any OpenAI-compatible API, Anthropic, or local models via Ollama.
+Build agents that reason, use tools, and iterate autonomously — powered by any OpenAI-compatible API, Anthropic, or local models via Ollama. You provide the toolkits; php-agents provides the agent loop.
 
 ```mermaid
 graph LR
     APP[Your App] --> AGENT[Agent]
     AGENT --> PROVIDER[Provider<br/>OpenAI / Anthropic / Ollama]
-    AGENT --> TOOLS[Tools & Toolkits<br/>Files / Web / Shell / Memory]
+    AGENT --> TOOLS[Tools & Toolkits<br/>Custom Toolkits]
     AGENT --> OBSERVER[Observers<br/>Logging / Streaming / Metrics]
     PROVIDER --> LLM[LLM]
     LLM -->|tool calls| AGENT
@@ -30,11 +30,10 @@ graph LR
 - **Streaming + tool calls** — all providers support streaming with assembled tool call deltas
 - **Structured output** — extract typed data from LLMs via JSON mode (OpenAI) or tool-use trick (Anthropic)
 - **Image input** — send images to vision models via base64, URL, or file path (auto-converts between provider formats; URLs pre-downloaded for providers that don't support them natively)
-- **Bundled agents** — `FileAgent`, `WebAgent`, `CodeAgent` for quick prototyping *(deprecated — use `AbstractAgent` with toolkits for production)*
-- **Composable toolkits** — filesystem, web, shell, and memory toolkits that snap onto any agent
+- **Composable toolkits** — implement `ToolkitInterface` to give agents any capability; no built-in toolkit implementations
 - **Context window management** — automatic conversation pruning when approaching token limits
 - **Observer pattern** — attach `SplObserver` to watch agent lifecycle events in real time
-- **Security by default** — path traversal protection, SSRF blocking, shell injection detection
+- **Embedding & vector stores** — `EmbeddingProviderInterface` and `VectorStoreInterface` for semantic search
 - **OpenClaw config** — centralized model routing with aliases, fallbacks, and per-provider settings
 - **PSR-3 logging** — optional `LoggerInterface` on all providers for diagnostic visibility
 - **Zero framework coupling** — depends only on `symfony/http-client` and `psr/log`
@@ -70,7 +69,7 @@ composer require carmelosantana/php-agents
 
 ## Quick Start
 
-Create an agent that can read files and answer questions about them:
+Create an agent with a custom tool:
 
 ```php
 <?php
@@ -80,49 +79,41 @@ declare(strict_types=1);
 require 'vendor/autoload.php';
 
 use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
-use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
-use CarmeloSantana\PHPAgents\Toolkit\FilesystemToolkit;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
+use CarmeloSantana\PHPAgents\Tool\Tool;
+use CarmeloSantana\PHPAgents\Tool\ToolResult;
+use CarmeloSantana\PHPAgents\Tool\Parameter\NumberParameter;
 
-// Create a simple file agent using AbstractAgent + FilesystemToolkit
-final class MyFileAgent extends AbstractAgent
-{
-    public function __construct(ProviderInterface $provider, string $rootPath)
-    {
-        parent::__construct($provider);
-        $this->addToolkit(new FilesystemToolkit($rootPath, readOnly: true));
-    }
-
+$agent = new class(provider: new OllamaProvider(model: 'llama3.2')) extends AbstractAgent {
     public function instructions(): string
     {
-        return 'You are a helpful file assistant. Read and summarize files when asked.';
+        return 'You are a calculator. Use tools to answer math questions.';
     }
 
     public function name(): string
     {
-        return 'FileAgent';
+        return 'Calculator';
     }
-}
+};
 
-$provider = new OllamaProvider(model: 'llama3.2');
-$agent = new MyFileAgent($provider, getcwd());
-$output = $agent->run(new UserMessage('Summarize the README.md file.'));
+$agent->addTool(new Tool(
+    name: 'add',
+    description: 'Add two numbers',
+    parameters: [
+        new NumberParameter('a', 'First number', required: true),
+        new NumberParameter('b', 'Second number', required: true),
+    ],
+    callback: fn(array $args): ToolResult => ToolResult::success(
+        (string) ($args['a'] + $args['b']),
+    ),
+));
 
+$output = $agent->run(new UserMessage('What is 42 + 58?'));
 echo $output->content . "\n";
 ```
 
 > Make sure Ollama is running: `ollama serve` and a model is pulled: `ollama pull llama3.2`
-
-## Bundled Agents (Deprecated)
-
-> **Note:** Bundled agents are deprecated and will be removed in 1.0. Use `AbstractAgent` with composable toolkits instead (see [Creating Custom Agents](#creating-custom-agents)).
-
-| Agent       | Description                                                        | Toolkits                             |
-| ----------- | ------------------------------------------------------------------ | ------------------------------------ |
-| `FileAgent` | Read, write, search, and manage files within a sandboxed root path | `FilesystemToolkit`                  |
-| `WebAgent`  | Make HTTP requests and optionally search the web                   | `WebToolkit`                         |
-| `CodeAgent` | Filesystem access + shell command execution with an allowlist      | `FilesystemToolkit` + `ShellToolkit` |
 
 ## Providers
 
@@ -276,7 +267,7 @@ Publish your toolkit as a Composer package with auto-discovery:
 | [Providers](docs/providers.md)                 | Feature matrix, streaming, structured output, images     |
 | [Tools & Toolkits](docs/tools-and-toolkits.md) | Parameter types, execution policies, publishing packages |
 | [Agents](docs/agents.md)                       | Agent loop, observers, cancellation, context window      |
-| [Memory](docs/memory.md)                       | Persistent storage, vector search, embeddings            |
+| [Embeddings & Vector Stores](docs/memory.md)    | Vector similarity search, embedding providers            |
 
 ## Examples
 
@@ -285,13 +276,13 @@ Working examples live in the [`examples/`](examples/) directory:
 | Example                                       | Description                                               | Run                                                 |
 | --------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------- |
 | [CLI Chat](examples/cli-chat.php)             | Interactive terminal conversation with an LLM             | `php examples/cli-chat.php`                         |
-| [README Summarizer](examples/web-summarizer/) | Web UI that auto-summarizes this README using a FileAgent | `php -S localhost:8080 -t examples/web-summarizer/` |
+| [README Summarizer](examples/web-summarizer/) | Web UI that auto-summarizes this README using an agent     | `php -S localhost:8080 -t examples/web-summarizer/` |
 
 ## `php-agents` In The Wild
 
 [Coqui](https://github.com/AgentCoqui/coqui) is a full AI assistant product built on php-agents. It demonstrates the framework's extensibility:
 
-- **php-agents** is the **library** — agent loop, providers, tools, messages, memory
+- **php-agents** is the **library** — agent loop, providers, tools, messages, embeddings
 - **Coqui** is the **product** — REPL, API server, session persistence, multi-agent orchestration, credential management, security policies, toolkit discovery
 
 Coqui adds product logic on top of `php-agents` framework code, with zero code duplication. Each Coqui agent (`OrchestratorAgent`, `ChildAgent`) extends `AbstractAgent` — they are purely configuration layers.

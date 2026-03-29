@@ -1,29 +1,18 @@
-# Memory
+# Embeddings & Vector Stores
 
-> **Deprecated.** `FileMemory`, `MemoryToolkit`, and the `MemoryInterface` in php-agents will be removed in 1.0. For production use, implement a database-backed memory store (e.g. Coqui's SQLite-backed `MemoryStore`). The vector store layer (`VectorStoreInterface`, `InMemoryVectorStore`, embedding providers) is **not** deprecated.
-
-php-agents provides a layered memory system: simple key-value storage, persistent file-backed memory, and vector similarity search for semantic retrieval.
+php-agents provides embedding providers and vector stores for semantic similarity search. These are framework primitives — your application decides how to integrate them with agent toolkits and storage.
 
 ## Architecture
 
 ```mermaid
 graph TB
-    subgraph "Agent-Facing"
-        MTK[MemoryToolkit]
-        MTK -->|store/recall/search/delete| MI
-    end
-
-    subgraph "Storage Layer"
-        MI[MemoryInterface]
-        FM[FileMemory]
-        MI --> FM
-    end
-
-    subgraph "Vector Search (Optional)"
+    subgraph "Vector Search"
         VSI[VectorStoreInterface]
         IMVS[InMemoryVectorStore]
         VSI --> IMVS
+    end
 
+    subgraph "Embeddings"
         EPI[EmbeddingProviderInterface]
         OEP[OllamaEmbeddingProvider]
         OAEP[OpenAIEmbeddingProvider]
@@ -31,127 +20,8 @@ graph TB
         EPI --> OAEP
     end
 
-    FM -->|file I/O| MD[memory.md<br/>Markdown file]
-    MTK -.->|optional| VSI
-    VSI --> EPI
+    EPI --> VSI
 ```
-
-## MemoryInterface
-
-The base contract for all memory implementations:
-
-```php
-interface MemoryInterface
-{
-    /** Store a value with a key and optional metadata. */
-    public function store(string $key, string $value, array $metadata = []): void;
-
-    /** Retrieve a value by key. Returns null if not found. */
-    public function recall(string $key): ?string;
-
-    /** Search memories matching a query string. */
-    public function search(string $query, int $limit = 5): array;
-
-    /** Delete a memory entry by key. */
-    public function delete(string $key): bool;
-
-    /** Get all stored memories. */
-    public function all(): array;
-}
-```
-
-## FileMemory (Deprecated)
-
-> **Deprecated.** Use a database-backed implementation instead. Will be removed in 1.0.
-
-Persists memories to a Markdown file. Each entry is a third-level heading with the key as the title and the value as the body:
-
-```php
-use CarmeloSantana\PHPAgents\Memory\FileMemory;
-
-$memory = new FileMemory('/path/to/memory.md');
-
-$memory->store('project-goal', 'Build an AI-powered code reviewer');
-$memory->store('tech-stack', 'PHP 8.4, SQLite, ReactPHP');
-
-echo $memory->recall('project-goal');
-// "Build an AI-powered code reviewer"
-```
-
-### File Format
-
-The Markdown file looks like this:
-
-```markdown
-# Agent Memory
-
-### [project-goal]
-
-Build an AI-powered code reviewer
-
-### [tech-stack]
-
-PHP 8.4, SQLite, ReactPHP
-```
-
-### Concurrency Safety
-
-`FileMemory::persist()` uses exclusive file locking (`flock(LOCK_EX)`) to prevent data corruption when multiple processes write simultaneously:
-
-```mermaid
-sequenceDiagram
-    participant P1 as Process 1
-    participant P2 as Process 2
-    participant File as memory.md
-
-    P1->>File: fopen('c') + flock(LOCK_EX)
-    Note over File: Locked by P1
-    P2->>File: fopen('c') + flock(LOCK_EX)
-    Note over P2: Blocks, waiting...
-
-    P1->>File: ftruncate + fwrite
-    P1->>File: flock(LOCK_UN) + fclose
-
-    Note over P2: Lock acquired
-    P2->>File: ftruncate + fwrite
-    P2->>File: flock(LOCK_UN) + fclose
-```
-
-### Search Behavior
-
-`FileMemory::search()` performs simple substring matching on keys and values. For semantic search, use a vector store.
-
-## MemoryToolkit (Deprecated)
-
-> **Deprecated.** Use a database-backed memory toolkit instead. Will be removed in 1.0.
-
-Exposes memory operations as tools the agent can use:
-
-```php
-use CarmeloSantana\PHPAgents\Toolkit\MemoryToolkit;
-use CarmeloSantana\PHPAgents\Memory\FileMemory;
-
-$toolkit = new MemoryToolkit(
-    memory: new FileMemory('/path/to/memory.md'),
-);
-
-$agent->addToolkit($toolkit);
-```
-
-### Tools Provided
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `memory_store` | `key` (string), `value` (string) | Store a key-value pair |
-| `memory_recall` | `key` (string) | Retrieve a value by key |
-| `memory_search` | `query` (string), `limit` (number, optional) | Search memories |
-| `memory_delete` | `key` (string) | Delete a memory entry |
-
-### Guidelines
-
-The toolkit injects guidelines instructing the LLM when to use memory:
-
-> Use memory tools to persist important information across conversations. Store key decisions, user preferences, project context, and any information that should be remembered. Always check memory before asking the user for information they may have already provided.
 
 ## Vector Stores
 
@@ -237,31 +107,8 @@ interface EmbeddingProviderInterface
 }
 ```
 
-## Combining Memory Layers
+## Using with Agents
 
-For production use, combine FileMemory for simple key-value storage with a vector store for semantic search:
+Vector stores and embedding providers are framework primitives. Your application decides how to expose them to agents — for example, by building a custom toolkit that wraps vector store operations as agent-facing tools.
 
-```php
-use CarmeloSantana\PHPAgents\Memory\FileMemory;
-use CarmeloSantana\PHPAgents\Memory\InMemoryVectorStore;
-use CarmeloSantana\PHPAgents\Embedding\OllamaEmbeddingProvider;
-use CarmeloSantana\PHPAgents\Toolkit\MemoryToolkit;
-
-// Simple persistent storage
-$memory = new FileMemory('/data/agent-memory.md');
-
-// Semantic search layer
-$embedder = new OllamaEmbeddingProvider(model: 'nomic-embed-text');
-$vectorStore = new InMemoryVectorStore();
-
-// The toolkit uses FileMemory for CRUD
-$toolkit = new MemoryToolkit(memory: $memory);
-$agent->addToolkit($toolkit);
-
-// You can build a custom tool that combines both:
-// 1. Store in FileMemory for persistence
-// 2. Store embedding in vector store for semantic search
-// 3. On search, query vector store first, fall back to FileMemory
-```
-
-For persistent vector storage at scale, consider the suggested `hkulekci/qdrant` package which provides a Qdrant vector database client.
+For persistent vector storage at scale, consider the `hkulekci/qdrant` package which provides a Qdrant vector database client.

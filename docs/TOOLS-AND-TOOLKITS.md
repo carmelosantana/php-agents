@@ -210,7 +210,9 @@ final class DatabaseQueryTool implements ToolInterface
 
 ## Toolkits
 
-Toolkits group related tools and provide guidelines that are injected into the system prompt:
+Toolkits group related tools and provide guidelines that are injected into the system prompt.
+
+php-agents does not ship built-in toolkit implementations. It provides `ToolkitInterface` as the contract — your application supplies the implementations. Downstream products like [Coqui](https://github.com/AgentCoqui/coqui) provide filesystem, shell, memory, and other toolkits as separate packages.
 
 ```mermaid
 classDiagram
@@ -220,117 +222,12 @@ classDiagram
         +guidelines() string
     }
 
-    class FilesystemToolkit {
-        -rootDir: string
-        +tools() 7 tools
-        +guidelines() "File operations..."
+    class YourCustomToolkit {
+        +tools() ToolInterface[]
+        +guidelines() string
     }
 
-    class WebToolkit {
-        +tools() 2 tools
-        +guidelines() "Web requests..."
-    }
-
-    class ShellToolkit {
-        -allowedCommands: string[]
-        +tools() 1 tool
-        +guidelines() "Shell execution..."
-    }
-
-    class MemoryToolkit {
-        <<deprecated>>
-        -memory: MemoryInterface
-        +tools() 4 tools
-        +guidelines() "Memory operations..."
-    }
-
-    ToolkitInterface <|.. FilesystemToolkit
-    ToolkitInterface <|.. WebToolkit
-    ToolkitInterface <|.. ShellToolkit
-    ToolkitInterface <|.. MemoryToolkit
-```
-
-### Built-in Toolkits
-
-#### FilesystemToolkit
-
-File CRUD operations sandboxed to a root directory.
-
-| Tool | Description |
-|------|-------------|
-| `read_file` | Read file contents |
-| `write_file` | Write content to a file |
-| `list_directory` | List directory entries |
-| `search_files` | Search for files by pattern |
-| `file_info` | Get file metadata |
-| `create_directory` | Create a directory |
-| `delete_file` | Delete a file |
-
-```php
-use CarmeloSantana\PHPAgents\Toolkit\FilesystemToolkit;
-
-$toolkit = new FilesystemToolkit(rootDir: '/path/to/sandbox');
-```
-
-**Security:** All paths are resolved relative to `rootDir`. Path traversal attempts (e.g., `../../etc/passwd`) are blocked even for non-existent files.
-
-#### WebToolkit
-
-HTTP requests and web search.
-
-| Tool | Description |
-|------|-------------|
-| `http_request` | Make HTTP requests (GET, POST, etc.) |
-| `web_search` | Search the web |
-
-```php
-use CarmeloSantana\PHPAgents\Toolkit\WebToolkit;
-
-$toolkit = new WebToolkit();
-```
-
-**Security:** SSRF protection blocks requests to private networks, loopback addresses, link-local ranges, and cloud metadata endpoints (169.254.169.254, metadata.google.internal). Disable with `allowPrivateNetworks: true` only in trusted environments.
-
-#### ShellToolkit
-
-Shell command execution with an allowlist.
-
-| Tool | Description |
-|------|-------------|
-| `execute_command` | Execute a shell command |
-
-```php
-use CarmeloSantana\PHPAgents\Toolkit\ShellToolkit;
-
-$toolkit = new ShellToolkit(
-    allowedCommands: ['ls', 'cat', 'grep', 'find', 'wc'],
-    workingDirectory: '/path/to/sandbox',
-);
-```
-
-**Security:** Only commands in the allowlist can execute. Shell injection patterns (`;`, `&&`, `|`, `$(...)`, backticks) are detected and blocked.
-
-#### MemoryToolkit (Deprecated)
-
-> **Deprecated.** Use a database-backed memory implementation instead. Will be removed in 1.0.
-
-Persistent memory operations.
-
-| Tool | Description |
-|------|-------------|
-| `memory_store` | Store a key-value pair |
-| `memory_recall` | Retrieve a value by key |
-| `memory_search` | Search memories by query |
-| `memory_delete` | Delete a memory entry |
-
-```php
-// DEPRECATED — prefer a database-backed implementation
-use CarmeloSantana\PHPAgents\Toolkit\MemoryToolkit;
-use CarmeloSantana\PHPAgents\Memory\FileMemory;
-
-$toolkit = new MemoryToolkit(
-    memory: new FileMemory('/path/to/memory.md'),
-);
+    ToolkitInterface <|.. YourCustomToolkit
 ```
 
 ### Creating a Toolkit
@@ -432,7 +329,6 @@ final class ReadOnlyPolicy implements ToolExecutionPolicyInterface
 {
     private const WRITE_TOOLS = [
         'write_file', 'delete_file', 'create_directory',
-        'execute_command',
     ];
 
     public function shouldExecute(ToolInterface $tool, ToolCall $toolCall): bool
