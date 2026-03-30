@@ -102,44 +102,6 @@ flowchart TD
     LOOP --> NOTIFY_DONE[notify: agent.done]
 ```
 
-## Built-in Agents (Deprecated)
-
-> **Deprecated.** `FileAgent`, `WebAgent`, and `CodeAgent` will be removed in 1.0. Use `AbstractAgent` with explicit toolkits instead — this gives you full control over which tools are available.
-
-### FileAgent
-
-```php
-// DEPRECATED — use AbstractAgent + FilesystemToolkit instead:
-$agent = new class($provider) extends AbstractAgent {
-    public function name(): string { return 'File Agent'; }
-    public function instructions(): string { return 'You manage files.'; }
-};
-$agent->addToolkit(new FilesystemToolkit('/path/to/root'));
-```
-
-### WebAgent
-
-```php
-// DEPRECATED — use AbstractAgent + WebToolkit instead:
-$agent = new class($provider) extends AbstractAgent {
-    public function name(): string { return 'Web Agent'; }
-    public function instructions(): string { return 'You research the web.'; }
-};
-$agent->addToolkit(new WebToolkit());
-```
-
-### CodeAgent
-
-```php
-// DEPRECATED — use AbstractAgent + FilesystemToolkit + ShellToolkit instead:
-$agent = new class($provider) extends AbstractAgent {
-    public function name(): string { return 'Code Agent'; }
-    public function instructions(): string { return 'You write and execute code.'; }
-};
-$agent->addToolkit(new FilesystemToolkit('/path/to/root'));
-$agent->addToolkit(new ShellToolkit());
-```
-
 ## Adding Tools and Toolkits
 
 ```php
@@ -147,11 +109,12 @@ $agent->addToolkit(new ShellToolkit());
 $agent->addTool($myTool);
 
 // Add a toolkit (registers all its tools + injects guidelines)
-$agent->addToolkit(new WebToolkit());
-$agent->addToolkit(new MemoryToolkit(memory: $memory)); // Note: MemoryToolkit is deprecated — use a database-backed implementation
+$agent->addToolkit(new MyCustomToolkit());
 ```
 
 Tools from toolkits are merged with directly-added tools. Guidelines from all toolkits are concatenated and appended to the system prompt.
+
+php-agents does not ship built-in toolkit implementations. Your application provides toolkits by implementing `ToolkitInterface`. See [Tools & Toolkits](tools-and-toolkits.md) for details on creating and publishing toolkits.
 
 ## Observer Pattern
 
