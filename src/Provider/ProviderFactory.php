@@ -6,6 +6,7 @@ namespace CarmeloSantana\PHPAgents\Provider;
 
 use CarmeloSantana\PHPAgents\Contract\ConfigInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
+use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
  * Creates provider instances from OpenClaw-style model strings.
@@ -36,6 +37,7 @@ final class ProviderFactory
 
     public function __construct(
         private readonly ?ConfigInterface $config = null,
+        private readonly ?HttpClientInterface $httpClient = null,
     ) {}
 
     /**
@@ -46,7 +48,7 @@ final class ProviderFactory
      */
     public function create(string $modelString): ProviderInterface
     {
-        return self::fromModelString($modelString, $this->config);
+        return self::fromModelString($modelString, $this->config, $this->httpClient);
     }
 
     /**
@@ -59,6 +61,7 @@ final class ProviderFactory
     public static function fromModelString(
         string $modelString,
         ?ConfigInterface $config = null,
+        ?HttpClientInterface $httpClient = null,
     ): ProviderInterface {
         [$providerName, $model] = self::parseModelString($modelString);
 
@@ -69,42 +72,49 @@ final class ProviderFactory
         $api = $providerConfig['api'] ?? null;
 
         return match ($providerName) {
-            'ollama' => self::makeOllamaProvider($model, $baseUrl, $config),
+            'ollama' => self::makeOllamaProvider($model, $baseUrl, $config, $httpClient),
             'anthropic' => new AnthropicProvider(
                 model: $model,
                 baseUrl: $baseUrl,
                 apiKey: $apiKey,
+                httpClient: $httpClient,
             ),
             'gemini', 'google' => new GeminiProvider(
                 model: $model,
                 baseUrl: $baseUrl,
                 apiKey: $apiKey,
+                httpClient: $httpClient,
             ),
             'xai' => new XAIProvider(
                 model: $model,
                 baseUrl: $baseUrl,
                 apiKey: $apiKey,
+                httpClient: $httpClient,
             ),
             'mistral' => new MistralProvider(
                 model: $model,
                 baseUrl: $baseUrl,
                 apiKey: $apiKey,
+                httpClient: $httpClient,
             ),
             default => match (true) {
                 $api === 'openai-responses' => new OpenAIResponsesProvider(
                     model: $model,
                     baseUrl: $baseUrl,
                     apiKey: $apiKey,
+                    httpClient: $httpClient,
                 ),
                 self::requiresResponsesApi($model) => new OpenAIResponsesProvider(
                     model: $model,
                     baseUrl: $baseUrl,
                     apiKey: $apiKey,
+                    httpClient: $httpClient,
                 ),
                 default => new OpenAICompatibleProvider(
                     model: $model,
                     baseUrl: $baseUrl,
                     apiKey: $apiKey,
+                    httpClient: $httpClient,
                 ),
             },
         };
@@ -121,6 +131,7 @@ final class ProviderFactory
         string $model,
         string $baseUrl,
         ?ConfigInterface $config,
+        ?HttpClientInterface $httpClient = null,
     ): OllamaProvider {
         $modelDef = $config?->getModelDefinition($model);
         $numCtx = $modelDef?->numCtx;
@@ -132,6 +143,10 @@ final class ProviderFactory
 
         if ($numCtx !== null) {
             $args['numCtx'] = $numCtx;
+        }
+
+        if ($httpClient !== null) {
+            $args['httpClient'] = $httpClient;
         }
 
         return new OllamaProvider(...$args);

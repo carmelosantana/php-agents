@@ -11,7 +11,9 @@ use CarmeloSantana\PHPAgents\Contract\ContextWindowInterface;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\PendingInputProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
+use CarmeloSantana\PHPAgents\Contract\TickCallbackInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface;
+use CarmeloSantana\PHPAgents\Contract\ToolExecutorInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolkitInterface;
 use CarmeloSantana\PHPAgents\Enum\FinishReason;
@@ -51,6 +53,10 @@ abstract class AbstractAgent implements AgentInterface
      */
     protected int $maxTools = 0;
 
+    private readonly ToolExecutorInterface $toolExecutor;
+
+    private readonly TickCallbackInterface $tickCallback;
+
     public function setMaxTools(int $max): void
     {
         $this->maxTools = $max;
@@ -65,7 +71,12 @@ abstract class AbstractAgent implements AgentInterface
         private readonly ?ContextWindowInterface $contextWindow = null,
         private readonly ?BudgetPruningStrategyInterface $pruningStrategy = null,
         private readonly int $safetyMarginPercent = 20,
-    ) {}
+        ?ToolExecutorInterface $toolExecutor = null,
+        ?TickCallbackInterface $tickCallback = null,
+    ) {
+        $this->toolExecutor = $toolExecutor ?? new SynchronousToolExecutor();
+        $this->tickCallback = $tickCallback ?? new NullTickCallback();
+    }
 
     abstract public function instructions(): string;
 
@@ -197,6 +208,8 @@ abstract class AbstractAgent implements AgentInterface
                 $streamModel = '';
 
                 foreach ($this->provider->stream($conversation->messages(), $advertisedTools) as $chunk) {
+                    $this->tickCallback->tick();
+
                     // Check cancellation between stream chunks so ESC/Ctrl+C returns
                     // to the prompt immediately without waiting for the full response.
                     if ($this->cancellationToken?->isCancelled()) {
@@ -241,6 +254,8 @@ abstract class AbstractAgent implements AgentInterface
                         $streamModel = $chunk->model;
                     }
                 }
+
+                $this->tickCallback->tick();
 
                 $content = implode('', $contentParts);
 
@@ -315,6 +330,8 @@ abstract class AbstractAgent implements AgentInterface
                 $conversation->add(new AssistantMessage($response->content, $response->toolCalls));
 
                 foreach ($response->toolCalls as $toolCall) {
+                    $this->tickCallback->tick();
+
                     // Check cancellation between individual tool calls so the
                     // caller can interrupt mid-iteration without waiting for
                     // all queued tools to finish. The outer loop re-checks
@@ -345,7 +362,7 @@ abstract class AbstractAgent implements AgentInterface
 
                     try {
                         $tool = $this->findTool($toolCall->name, $executableToolIndex);
-                        $result = $tool->execute($toolCall->arguments);
+                        $result = $this->toolExecutor->execute($tool, $toolCall->arguments);
                         $result = $result->withCallId($toolCall->id);
                     } catch (TerminationException $e) {
                         // Tool requested immediate loop termination (e.g. restart)
