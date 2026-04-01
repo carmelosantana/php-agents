@@ -13,9 +13,13 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  * interface AND the provider returned multiple tool calls, it delegates
  * to executeBatch() instead of looping execute() serially.
  *
- * Implementations decide the concurrency strategy:
- * - SynchronousToolExecutor: serial loop (baseline)
+ * This interface signals concurrent execution capability. Only executors
+ * that can meaningfully parallelize I/O should implement it:
  * - ConcurrentToolExecutor (Coqui): Fiber-per-tool via ReactPHP
+ *
+ * The default SynchronousToolExecutor does NOT implement this interface.
+ * When no batch executor is injected, AbstractAgent uses the serial path
+ * with cancellation checks between each tool call.
  *
  * Results MUST be returned in the same order as the input batch,
  * regardless of completion order. This preserves conversation history

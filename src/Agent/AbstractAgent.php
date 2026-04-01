@@ -492,8 +492,10 @@ abstract class AbstractAgent implements AgentInterface
                 }
             } catch (TerminationException $e) {
                 $terminationException = $e;
-                // Partial results may have been set before the exception.
-                // Map any results that were returned.
+                // parallel() rejects the entire batch when any task throws
+                // TerminationException, so $batchResults is never assigned.
+                // In practice only RestartTool throws this, which is never
+                // called alongside other tools.
             }
 
             $this->notify('agent.batch_end', [
