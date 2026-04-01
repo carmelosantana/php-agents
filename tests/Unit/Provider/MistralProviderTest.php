@@ -205,6 +205,27 @@ test('tool calls in response are parsed', function () {
         ->and($response->toolCalls[0]->arguments)->toBe(['city' => 'Paris']);
 });
 
+test('stream payload omits OpenAI stream_options extension', function () {
+    $requestPayload = null;
+    $sseData = implode("\n", [
+        'data: ' . json_encode(['choices' => [['delta' => [], 'finish_reason' => 'stop']]]),
+        'data: [DONE]',
+        '',
+    ]);
+
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload, $sseData): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return new MockResponse($sseData, ['http_code' => 200]);
+    });
+
+    $provider = new MistralProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    iterator_to_array($provider->stream([new UserMessage('Hello')], [], ['stream_options' => ['include_usage' => true]]));
+
+    expect($requestPayload['stream'])->toBeTrue()
+        ->and($requestPayload)->not->toHaveKey('stream_options');
+});
+
 test('mixed content with multiple images converts correctly', function () {
     $requestPayload = null;
     $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {

@@ -80,11 +80,9 @@ final class Tool implements ToolInterface
         $schema = [
             'type' => 'object',
             'properties' => empty($properties) ? new \stdClass() : $properties,
+            'required' => $required,
+            'additionalProperties' => false,
         ];
-
-        if (!empty($required)) {
-            $schema['required'] = $required;
-        }
 
         return [
             'type' => 'function',

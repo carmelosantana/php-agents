@@ -41,6 +41,8 @@ final class OpenAIResponsesProvider extends AbstractProvider
 
     public function chat(array $messages, array $tools = [], array $options = []): Response
     {
+        $tools = $this->trimToolsToLimit($tools, self::OPENAI_MAX_TOOLS, 'openai-responses', '/responses');
+
         $payload = [
             'model' => $this->model,
             'input' => $this->formatMessages($messages),
@@ -61,6 +63,8 @@ final class OpenAIResponsesProvider extends AbstractProvider
 
     public function stream(array $messages, array $tools = [], array $options = []): iterable
     {
+        $tools = $this->trimToolsToLimit($tools, self::OPENAI_MAX_TOOLS, 'openai-responses', '/responses');
+
         $payload = [
             'model' => $this->model,
             'input' => $this->formatMessages($messages),

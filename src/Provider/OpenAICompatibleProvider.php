@@ -26,6 +26,8 @@ class OpenAICompatibleProvider extends AbstractProvider
 
     public function chat(array $messages, array $tools = [], array $options = []): Response
     {
+        $tools = $this->trimToolsToLimit($tools, self::OPENAI_MAX_TOOLS, 'openai-compatible', '/chat/completions');
+
         // chat() is never a streaming call — stream_options is a streaming-only
         // OpenAI extension. Remove it if a caller (e.g. OllamaProvider) sets it
         // to null to suppress it from the stream() path as well.
@@ -52,6 +54,8 @@ class OpenAICompatibleProvider extends AbstractProvider
 
     public function stream(array $messages, array $tools = [], array $options = []): iterable
     {
+        $tools = $this->trimToolsToLimit($tools, self::OPENAI_MAX_TOOLS, 'openai-compatible', '/chat/completions');
+
         // Allow callers to suppress stream_options by passing null (e.g. OllamaProvider).
         // Default to include_usage so OpenAI-compatible providers return token counts.
         $streamOptions = array_key_exists('stream_options', $options)
