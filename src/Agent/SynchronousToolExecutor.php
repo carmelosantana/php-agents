@@ -21,6 +21,9 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  */
 final readonly class SynchronousToolExecutor implements ToolExecutorInterface
 {
+    /**
+     * @param array<string, mixed> $arguments
+     */
     #[\Override]
     public function execute(ToolInterface $tool, array $arguments): ToolResult
     {

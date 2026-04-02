@@ -267,7 +267,16 @@ class OpenAICompatibleProvider extends AbstractProvider
 
     protected function formatTools(array $tools): array
     {
-        return array_map(fn(ToolInterface $tool) => $tool->toFunctionSchema(), $tools);
+        return array_map(function (ToolInterface $tool) {
+            $schema = $tool->toFunctionSchema();
+
+            // OpenAI requires 'required' to always be present, even for zero-parameter tools
+            if (!isset($schema['function']['parameters']['required'])) {
+                $schema['function']['parameters']['required'] = [];
+            }
+
+            return $schema;
+        }, $tools);
     }
 
     protected function formatMessages(array $messages): array

@@ -22,5 +22,8 @@ interface ToolExecutorInterface
      * wrapped in a Fiber, or run in a subprocess — AbstractAgent
      * only cares about the returned ToolResult.
      */
+    /**
+     * @param array<string, mixed> $arguments
+     */
     public function execute(ToolInterface $tool, array $arguments): ToolResult;
 }

@@ -318,6 +318,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
     {
         if (!isset($schema['properties']) || !is_array($schema['properties'])) {
             $schema['additionalProperties'] = false;
+            $schema['required'] = $schema['required'] ?? [];
 
             return $schema;
         }
