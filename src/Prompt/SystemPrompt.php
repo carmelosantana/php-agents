@@ -128,7 +128,8 @@ final class SystemPrompt
         }
 
         if ($prompt->tools !== '') {
-            $sections[] = "# TOOLS\n\n{$prompt->tools}";
+            $sections[] = "# TOOLS\n\n{$prompt->tools}\n"
+                . "**When multiple tools can be called independently, call them all in the same response rather than one per iteration.**";
         }
 
         if ($prompt->iterationBudget !== '') {

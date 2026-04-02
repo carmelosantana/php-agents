@@ -5,13 +5,16 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Agent;
 
 use CarmeloSantana\PHPAgents\Contract\AgentInterface;
+use CarmeloSantana\PHPAgents\Contract\BatchToolExecutorInterface;
 use CarmeloSantana\PHPAgents\Contract\BudgetPruningStrategyInterface;
 use CarmeloSantana\PHPAgents\Contract\CancellationTokenInterface;
 use CarmeloSantana\PHPAgents\Contract\ContextWindowInterface;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\PendingInputProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
+use CarmeloSantana\PHPAgents\Contract\TickCallbackInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface;
+use CarmeloSantana\PHPAgents\Contract\ToolExecutorInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolkitInterface;
 use CarmeloSantana\PHPAgents\Enum\FinishReason;
@@ -26,6 +29,7 @@ use CarmeloSantana\PHPAgents\Prompt\SystemPrompt;
 use CarmeloSantana\PHPAgents\Provider\Response;
 use CarmeloSantana\PHPAgents\Provider\Usage;
 use CarmeloSantana\PHPAgents\Tool\DoneTool;
+use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use SplObserver;
 use Symfony\Contracts\HttpClient\Exception\ClientExceptionInterface;
@@ -51,6 +55,10 @@ abstract class AbstractAgent implements AgentInterface
      */
     protected int $maxTools = 0;
 
+    private readonly ToolExecutorInterface $toolExecutor;
+
+    private readonly TickCallbackInterface $tickCallback;
+
     public function setMaxTools(int $max): void
     {
         $this->maxTools = $max;
@@ -65,7 +73,12 @@ abstract class AbstractAgent implements AgentInterface
         private readonly ?ContextWindowInterface $contextWindow = null,
         private readonly ?BudgetPruningStrategyInterface $pruningStrategy = null,
         private readonly int $safetyMarginPercent = 20,
-    ) {}
+        ?ToolExecutorInterface $toolExecutor = null,
+        ?TickCallbackInterface $tickCallback = null,
+    ) {
+        $this->toolExecutor = $toolExecutor ?? new SynchronousToolExecutor();
+        $this->tickCallback = $tickCallback ?? new NullTickCallback();
+    }
 
     abstract public function instructions(): string;
 
@@ -197,6 +210,8 @@ abstract class AbstractAgent implements AgentInterface
                 $streamModel = '';
 
                 foreach ($this->provider->stream($conversation->messages(), $advertisedTools) as $chunk) {
+                    $this->tickCallback->tick();
+
                     // Check cancellation between stream chunks so ESC/Ctrl+C returns
                     // to the prompt immediately without waiting for the full response.
                     if ($this->cancellationToken?->isCancelled()) {
@@ -241,6 +256,8 @@ abstract class AbstractAgent implements AgentInterface
                         $streamModel = $chunk->model;
                     }
                 }
+
+                $this->tickCallback->tick();
 
                 $content = implode('', $contentParts);
 
@@ -314,61 +331,21 @@ abstract class AbstractAgent implements AgentInterface
             if (!empty($response->toolCalls)) {
                 $conversation->add(new AssistantMessage($response->content, $response->toolCalls));
 
-                foreach ($response->toolCalls as $toolCall) {
-                    // Check cancellation between individual tool calls so the
-                    // caller can interrupt mid-iteration without waiting for
-                    // all queued tools to finish. The outer loop re-checks
-                    // isCancelled() and returns a graceful Output.
-                    if ($this->cancellationToken?->isCancelled()) {
-                        break;
-                    }
+                $executionResult = $this->executeToolCalls(
+                    $response->toolCalls,
+                    $executableToolIndex,
+                    $conversation,
+                    $allToolResults,
+                );
 
-                    $this->notify('agent.tool_call', $toolCall);
-
-                    // Check execution policy before running the tool
-                    if ($this->executionPolicy !== null) {
-                        $policyResult = $this->executionPolicy->shouldExecute(
-                            $toolCall->name,
-                            $toolCall->arguments,
-                        );
-
-                        if ($policyResult !== true) {
-                            $result = ToolResult::error(
-                                "Denied by policy: {$policyResult}",
-                            )->withCallId($toolCall->id);
-                            $allToolResults[] = $result;
-                            $conversation->add(new ToolResultMessage($result));
-                            $this->notify('agent.tool_result', $result);
-                            continue;
-                        }
-                    }
-
-                    try {
-                        $tool = $this->findTool($toolCall->name, $executableToolIndex);
-                        $result = $tool->execute($toolCall->arguments);
-                        $result = $result->withCallId($toolCall->id);
-                    } catch (TerminationException $e) {
-                        // Tool requested immediate loop termination (e.g. restart)
-                        $result = ToolResult::success($e->getMessage())->withCallId($toolCall->id);
-                        $allToolResults[] = $result;
-                        $conversation->add(new ToolResultMessage($result));
-                        $this->notify('agent.tool_result', $result);
-
-                        return new Output(
-                            content: $e->getMessage(),
-                            toolResults: $allToolResults,
-                            usage: $totalUsage,
-                            iterations: $i + 1,
-                            conversation: $conversation,
-                        );
-                    } catch (\Throwable $e) {
-                        $this->notify('agent.tool_error', $e->getMessage());
-                        $result = ToolResult::error($e->getMessage())->withCallId($toolCall->id);
-                    }
-
-                    $allToolResults[] = $result;
-                    $conversation->add(new ToolResultMessage($result));
-                    $this->notify('agent.tool_result', $result);
+                if ($executionResult !== null) {
+                    return new Output(
+                        content: $executionResult->getMessage(),
+                        toolResults: $allToolResults,
+                        usage: $totalUsage,
+                        iterations: $i + 1,
+                        conversation: $conversation,
+                    );
                 }
 
                 continue;
@@ -403,6 +380,166 @@ abstract class AbstractAgent implements AgentInterface
             iterations: $this->maxIterations(),
             conversation: $conversation,
         );
+    }
+
+    /**
+     * Execute tool calls from a provider response in three phases:
+     *
+     * 1. Pre-flight (serial): tick, cancellation check, emit agent.tool_call,
+     *    check execution policy, resolve tool. Collects approved tools into
+     *    a batch and immediately handles denied/missing tools.
+     * 2. Execution (batch or serial): if the executor supports batch execution
+     *    and multiple approved tools exist, delegates to executeBatch().
+     *    Otherwise executes each tool serially.
+     * 3. Post-flight (serial): adds ToolResultMessages to conversation in call
+     *    order, emits agent.tool_result events.
+     *
+     * Returns null on normal completion, or TerminationException if a tool
+     * requested immediate loop termination (e.g. restart_coqui).
+     *
+     * @param ToolCall[] $toolCalls
+     * @param array<string, ToolInterface> $executableToolIndex
+     * @param ToolResult[] $allToolResults Accumulated results (modified by reference)
+     */
+    private function executeToolCalls(
+        array $toolCalls,
+        array $executableToolIndex,
+        Conversation $conversation,
+        array &$allToolResults,
+    ): ?TerminationException {
+        // === Phase 1: Pre-flight (serial) ===
+        // Process each tool call: emit events, check policy, resolve tool.
+        // Denied or unresolvable tools get immediate results.
+        // Approved tools are collected for execution.
+
+        /** @var array<int, array{toolCall: ToolCall, tool: ToolInterface}> */
+        $approved = [];
+
+        /** @var array<int, ToolResult> Pre-resolved results (denied, not found) keyed by position */
+        $preResolved = [];
+
+        foreach ($toolCalls as $position => $toolCall) {
+            $this->tickCallback->tick();
+
+            if ($this->cancellationToken?->isCancelled()) {
+                break;
+            }
+
+            $this->notify('agent.tool_call', $toolCall);
+
+            // Check execution policy
+            if ($this->executionPolicy !== null) {
+                $policyResult = $this->executionPolicy->shouldExecute(
+                    $toolCall->name,
+                    $toolCall->arguments,
+                );
+
+                if ($policyResult !== true) {
+                    $preResolved[$position] = ToolResult::error(
+                        "Denied by policy: {$policyResult}",
+                    )->withCallId($toolCall->id);
+                    continue;
+                }
+            }
+
+            // Resolve tool
+            try {
+                $tool = $this->findTool($toolCall->name, $executableToolIndex);
+            } catch (ToolNotFoundException $e) {
+                $this->notify('agent.tool_error', $e->getMessage());
+                $preResolved[$position] = ToolResult::error($e->getMessage())->withCallId($toolCall->id);
+                continue;
+            }
+
+            $approved[$position] = ['toolCall' => $toolCall, 'tool' => $tool];
+        }
+
+        // === Phase 2: Execution ===
+        $useBatch = $this->toolExecutor instanceof BatchToolExecutorInterface
+            && count($approved) > 1;
+
+        /** @var array<int, ToolResult> Execution results keyed by original position */
+        $executedResults = [];
+        $terminationException = null;
+
+        if ($useBatch) {
+            // Build ordered batch from approved tools
+            $batchEntries = [];
+            $positionMap = []; // batch index → original position
+            foreach ($approved as $position => $entry) {
+                $positionMap[] = $position;
+                $batchEntries[] = [
+                    'tool' => $entry['tool'],
+                    'arguments' => $entry['toolCall']->arguments,
+                ];
+            }
+
+            $this->notify('agent.batch_start', [
+                'count' => count($batchEntries),
+                'tools' => array_map(
+                    fn(array $e) => $e['toolCall']->name,
+                    $approved,
+                ),
+            ]);
+
+            try {
+                $batchResults = $this->toolExecutor->executeBatch($batchEntries);
+
+                foreach ($batchResults as $batchIndex => $batchResult) {
+                    $originalPosition = $positionMap[$batchIndex];
+                    $callId = $approved[$originalPosition]['toolCall']->id;
+                    $executedResults[$originalPosition] = $batchResult->withCallId($callId);
+                }
+            } catch (TerminationException $e) {
+                $terminationException = $e;
+                // parallel() rejects the entire batch when any task throws
+                // TerminationException, so $batchResults is never assigned.
+                // In practice only RestartTool throws this, which is never
+                // called alongside other tools.
+            }
+
+            $this->notify('agent.batch_end', [
+                'count' => count($batchEntries),
+            ]);
+        } else {
+            // Serial execution (single tool or non-batch executor)
+            foreach ($approved as $position => $entry) {
+                if ($this->cancellationToken?->isCancelled()) {
+                    break;
+                }
+
+                try {
+                    $result = $this->toolExecutor->execute($entry['tool'], $entry['toolCall']->arguments);
+                    $executedResults[$position] = $result->withCallId($entry['toolCall']->id);
+                } catch (TerminationException $e) {
+                    $executedResults[$position] = ToolResult::success($e->getMessage())
+                        ->withCallId($entry['toolCall']->id);
+                    $terminationException = $e;
+                    break;
+                } catch (\Throwable $e) {
+                    $this->notify('agent.tool_error', $e->getMessage());
+                    $executedResults[$position] = ToolResult::error($e->getMessage())
+                        ->withCallId($entry['toolCall']->id);
+                }
+            }
+        }
+
+        // === Phase 3: Post-flight (serial, in call order) ===
+        // Merge pre-resolved and executed results, emit events in original order.
+        foreach ($toolCalls as $position => $toolCall) {
+            $result = $preResolved[$position] ?? $executedResults[$position] ?? null;
+
+            if ($result === null) {
+                // Tool was skipped (cancellation during pre-flight)
+                continue;
+            }
+
+            $allToolResults[] = $result;
+            $conversation->add(new ToolResultMessage($result));
+            $this->notify('agent.tool_result', $result);
+        }
+
+        return $terminationException;
     }
 
     /**

@@ -53,6 +53,18 @@ final class MistralProvider extends OpenAICompatibleProvider
     }
 
     /**
+     * Mistral's chat completions endpoint does not document OpenAI's
+     * stream_options extension, so suppress it on inherited streaming calls.
+     */
+    #[\Override]
+    public function stream(array $messages, array $tools = [], array $options = []): iterable
+    {
+        $options['stream_options'] = null;
+
+        return parent::stream($messages, $tools, $options);
+    }
+
+    /**
      * Format messages with Mistral-compatible image_url and tool call ID formats.
      *
      * Applies two normalizations:

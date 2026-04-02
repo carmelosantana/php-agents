@@ -10,6 +10,7 @@ use CarmeloSantana\PHPAgents\Provider\OpenAIResponsesProvider;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
+use Psr\Log\AbstractLogger;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 
@@ -161,6 +162,104 @@ test('chat incomplete status maps to MaxTokens finish reason', function () {
     $response = $provider->chat([new UserMessage('hi')]);
 
     expect($response->finishReason)->toBe(FinishReason::MaxTokens);
+});
+
+test('responses tool payload normalizes empty schemas for strict mode', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockResponsesApiResponse();
+    });
+
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
+
+    $tool = new Tool(
+        name: 'ping',
+        description: 'Health check',
+        parameters: [],
+        callback: fn(array $args): ToolResult => ToolResult::success('pong'),
+    );
+
+    $provider->chat([new UserMessage('Ping')], [$tool]);
+
+    expect($requestPayload['tools'][0]['parameters'])
+        ->toMatchArray([
+            'type' => 'object',
+            'required' => [],
+            'additionalProperties' => false,
+        ])
+        ->and($requestPayload['tools'][0]['parameters']['properties'])->toBe([])
+        ->and($requestPayload['tools'][0]['strict'])->toBeTrue();
+});
+
+test('responses chat trims oversized tool payloads and logs warning', function () {
+    $requestPayload = null;
+    $records = new ArrayObject();
+    $logger = new class ($records) extends AbstractLogger {
+        public function __construct(private readonly ArrayObject $records) {}
+
+        public function log($level, string|\Stringable $message, array $context = []): void
+        {
+            $this->records[] = [
+                'level' => $level,
+                'message' => (string) $message,
+                'context' => $context,
+            ];
+        }
+    };
+
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockResponsesApiResponse();
+    });
+
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient, logger: $logger);
+
+    $tools = [];
+    for ($i = 0; $i < 135; $i++) {
+        $tools[] = new Tool(
+            name: sprintf('tool_%03d', $i),
+            description: 'Test tool',
+            parameters: [],
+            callback: fn(array $args): ToolResult => ToolResult::success('ok'),
+        );
+    }
+
+    $provider->chat([new UserMessage('Use tools')], $tools);
+
+    expect($requestPayload['tools'])->toHaveCount(128)
+        ->and($requestPayload['tools'][127]['name'])->toBe('tool_127')
+        ->and($records)->toHaveCount(1)
+        ->and($records[0]['level'])->toBe('warning');
+});
+
+test('responses stream trims oversized tool payloads', function () {
+    $requestPayload = null;
+    $sseData = implode('', [
+        "data: " . json_encode(['type' => 'response.completed', 'response' => ['model' => 'gpt-4o', 'status' => 'completed']]) . "\n\n",
+    ]);
+
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload, $sseData): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return new MockResponse($sseData, ['http_code' => 200]);
+    });
+
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
+
+    $tools = [];
+    for ($i = 0; $i < 135; $i++) {
+        $tools[] = new Tool(
+            name: sprintf('tool_%03d', $i),
+            description: 'Test tool',
+            parameters: [],
+            callback: fn(array $args): ToolResult => ToolResult::success('ok'),
+        );
+    }
+
+    iterator_to_array($provider->stream([new UserMessage('Use tools')], $tools));
+
+    expect($requestPayload['tools'])->toHaveCount(128)
+        ->and($requestPayload['tools'][127]['name'])->toBe('tool_127');
 });
 
 // --- Reasoning ---

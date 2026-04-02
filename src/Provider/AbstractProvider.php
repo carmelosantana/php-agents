@@ -13,6 +13,8 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 abstract class AbstractProvider implements ProviderInterface
 {
+    protected const int OPENAI_MAX_TOOLS = 128;
+
     protected string $model;
     protected string $baseUrl;
     protected string $apiKey;
@@ -60,6 +62,34 @@ abstract class AbstractProvider implements ProviderInterface
         }
 
         return $headers;
+    }
+
+    /**
+     * Trim a provider tool list to a supported maximum and emit warning telemetry.
+     *
+     * @param ToolInterface[] $tools
+     * @return ToolInterface[]
+     */
+    protected function trimToolsToLimit(array $tools, int $maxTools, string $provider, string $endpoint): array
+    {
+        if (count($tools) <= $maxTools) {
+            return $tools;
+        }
+
+        $trimmed = array_slice($tools, 0, $maxTools);
+
+        $this->logger?->warning(
+            '{provider} tool list exceeded the maximum supported size for {endpoint}; trimming tools before sending the request.',
+            [
+                'provider' => $provider,
+                'endpoint' => $endpoint,
+                'tool_count' => count($tools),
+                'tool_limit' => $maxTools,
+                'trimmed_count' => count($trimmed),
+            ],
+        );
+
+        return $trimmed;
     }
 
     /**
