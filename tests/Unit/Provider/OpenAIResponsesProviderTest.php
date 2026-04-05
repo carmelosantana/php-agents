@@ -8,6 +8,7 @@ use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Provider\OpenAIResponsesProvider;
 use CarmeloSantana\PHPAgents\Tool\Tool;
+use CarmeloSantana\PHPAgents\Tool\Parameter\MapParameter;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Psr\Log\AbstractLogger;
@@ -190,6 +191,33 @@ test('responses tool payload normalizes empty schemas for strict mode', function
         ])
         ->and($requestPayload['tools'][0]['parameters']['properties'])->toBe([])
         ->and($requestPayload['tools'][0]['strict'])->toBeTrue();
+});
+
+test('responses tool payload disables strict mode for open map parameters', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockResponsesApiResponse();
+    });
+
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
+
+    $tool = new Tool(
+        name: 'request',
+        description: 'HTTP request',
+        parameters: [
+            new MapParameter('headers', 'Headers to send', required: false),
+        ],
+        callback: fn(array $args): ToolResult => ToolResult::success('ok'),
+    );
+
+    $provider->chat([new UserMessage('Call the API')], [$tool]);
+
+    expect($requestPayload['tools'][0]['parameters']['properties']['headers'])->toBe([
+        'type' => 'object',
+        'description' => 'Headers to send',
+        'additionalProperties' => true,
+    ])->and($requestPayload['tools'][0]['strict'])->toBeFalse();
 });
 
 test('responses chat trims oversized tool payloads and logs warning', function () {
