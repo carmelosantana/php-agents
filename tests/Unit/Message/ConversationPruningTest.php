@@ -470,6 +470,32 @@ test('fitWithinBudget uses DefaultBudgetPruningStrategy when no strategy provide
     expect($result->count())->toBe(3);
 });
 
+test('fitWithinBudget applies the safety margin before invoking the pruning strategy', function () {
+    $conversation = new Conversation();
+    $conversation->add(new UserMessage('hello'));
+
+    $capturedBudget = null;
+    $strategy = new class ($capturedBudget) implements BudgetPruningStrategyInterface {
+        public ?int $capturedBudget = null;
+
+        public function __construct(?int $capturedBudget)
+        {
+            $this->capturedBudget = $capturedBudget;
+        }
+
+        public function prune(Conversation $conversation, int $budgetTokens): Conversation
+        {
+            $this->capturedBudget = $budgetTokens;
+
+            return $conversation;
+        }
+    };
+
+    $conversation->fitWithinBudget(1000, 20, $strategy);
+
+    expect($strategy->capturedBudget)->toBe(800);
+});
+
 test('DefaultBudgetPruningStrategy prunes over-budget conversations', function () {
     $conversation = new Conversation();
     $conversation->add(new SystemMessage('system'));
@@ -485,4 +511,20 @@ test('DefaultBudgetPruningStrategy prunes over-budget conversations', function (
     $userMessages = $result->filter(Role::User);
     expect(count($userMessages))->toBeLessThan(20);
     expect(count($userMessages))->toBeGreaterThanOrEqual(1);
+});
+
+test('DefaultBudgetPruningStrategy falls back to aggressive tool trimming when one turn still exceeds budget', function () {
+    $conversation = new Conversation();
+    $conversation->add(new SystemMessage('system'));
+    $conversation->add(new UserMessage('keep the only turn'));
+    $conversation->add(new AssistantMessage('', [new ToolCall('c1', 'read', [])]));
+    $conversation->add(new ToolResultMessage(
+        (new ToolResult(ToolResultStatus::Success, str_repeat('x', 10000)))->withCallId('c1'),
+    ));
+
+    $result = (new DefaultBudgetPruningStrategy())->prune($conversation, 10);
+
+    $toolMessages = array_values($result->filter(Role::Tool));
+    expect($toolMessages)->toHaveCount(1)
+        ->and($toolMessages[0]->content())->toContain('to 200');
 });

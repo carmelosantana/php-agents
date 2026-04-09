@@ -44,22 +44,28 @@ final class ResearchAgent extends AbstractAgent
 ```php
 $agent = new ResearchAgent(
     provider: $provider,                    // Required: ProviderInterface
-    maxIterations: 25,                      // Max tool-use loops (default: 50)
+    maxIterations: 25,                      // Max tool-use loops (default: 25)
     executionPolicy: new MyPolicy(),        // Optional: tool gating
     cancellationToken: $token,              // Optional: cooperative cancellation
-    pendingInputProvider: $inputProvider,    // Optional: external input injection
+    pendingInputProvider: $inputProvider,   // Optional: external input injection
     contextWindow: new ContextWindow(...),  // Optional: token budget tracking
+    safetyMarginPercent: 20,                // Optional: pruning safety margin
+    budgetExitThreshold: 0.85,              // Optional: graceful wrap-up threshold
+    budgetExitWrapUpIterations: 2,          // Optional: extra iterations after warning
 );
 ```
 
 | Parameter | Type | Default | Purpose |
 |-----------|------|---------|---------|
 | `provider` | `ProviderInterface` | — | LLM to use for reasoning |
-| `maxIterations` | `int` | `50` | Safety limit on tool-use loops |
+| `maxIterations` | `int` | `25` | Safety limit on tool-use loops |
 | `executionPolicy` | `?ToolExecutionPolicyInterface` | `null` | Pre-execution tool gating |
 | `cancellationToken` | `?CancellationTokenInterface` | `null` | Cooperative cancellation |
 | `pendingInputProvider` | `?PendingInputProviderInterface` | `null` | Inject messages mid-loop |
 | `contextWindow` | `?ContextWindowInterface` | `null` | Token budget tracking + auto-pruning |
+| `safetyMarginPercent` | `int` | `20` | Headroom applied before pruning to absorb token-estimation drift |
+| `budgetExitThreshold` | `float` | `0.0` | Optional ratio `0.0`-`1.0`; emits `agent.budget_warning` once when the current iteration crosses the threshold |
+| `budgetExitWrapUpIterations` | `int` | `2` | Extra iterations allowed after a budget warning before the loop returns `BudgetExhausted` |
 
 ## The Run Loop in Detail
 
@@ -80,11 +86,14 @@ flowchart TD
         CHECK_CANCEL{cancelled?} -->|Yes| RETURN_CANCEL[Output: cancelled]
         CHECK_CANCEL -->|No| INJECT[Inject pending inputs]
         INJECT --> NOTIFY_ITER[notify: agent.iteration]
-        NOTIFY_ITER --> CHAT[provider.chat]
+        NOTIFY_ITER --> CHAT[provider.stream]
 
         CHAT -->|Error| RETURN_ERR[Output: error]
         CHAT -->|OK| TRACK[Track usage + report to contextWindow]
-        TRACK --> ADD_ASST[Add AssistantMessage to conversation]
+        TRACK --> BUDGET_WARN{budgetExitThreshold crossed?}
+        BUDGET_WARN -->|Yes| WARN[notify: agent.budget_warning]
+        BUDGET_WARN -->|No| ADD_ASST[Add AssistantMessage to conversation]
+        WARN --> ADD_ASST
 
         ADD_ASST --> CHECK_DONE{DoneTool called?}
         CHECK_DONE -->|Yes| RETURN_DONE[Output: done response]
@@ -105,14 +114,24 @@ flowchart TD
 ## Adding Tools and Toolkits
 
 ```php
-// Add individual tools
-$agent->addTool($myTool);
+final class MyAgent extends AbstractAgent
+{
+    public function instructions(): string
+    {
+        return 'You are a helpful assistant.';
+    }
+
+    public function tools(): array
+    {
+        return [$myTool];
+    }
+}
 
 // Add a toolkit (registers all its tools + injects guidelines)
 $agent->addToolkit(new MyCustomToolkit());
 ```
 
-Tools from toolkits are merged with directly-added tools. Guidelines from all toolkits are concatenated and appended to the system prompt.
+Tools returned by `tools()` are merged with toolkit tools. Guidelines from all toolkits are concatenated and appended to the system prompt.
 
 php-agents does not ship built-in toolkit implementations. Your application provides toolkits by implementing `ToolkitInterface`. See [Tools & Toolkits](tools-and-toolkits.md) for details on creating and publishing toolkits.
 
@@ -129,9 +148,13 @@ final class MetricsObserver implements SplObserver
     private int $toolCalls = 0;
     private int $iterations = 0;
 
-    public function update(SplSubject $subject, ?string $event = null, mixed $data = null): void
+    public function update(SplSubject $subject): void
     {
-        match ($event) {
+        if (!method_exists($subject, 'lastEvent')) {
+            return;
+        }
+
+        match ($subject->lastEvent()) {
             'agent.iteration' => $this->iterations++,
             'agent.tool_call' => $this->toolCalls++,
             default => null,
@@ -160,6 +183,7 @@ echo $metrics->summary();
 | `agent.tool_result` | `ToolResult` | After successful tool execution |
 | `agent.tool_error` | `string` | When a tool throws an exception |
 | `agent.done` | `array` | Agent completed (contains response data) |
+| `agent.budget_warning` | `array{usagePercent: float, threshold: float, wrapUpIterations: int}` | Budget threshold was crossed for the current iteration |
 | `agent.error` | `string` | Unrecoverable error in agent loop |
 
 ## Cooperative Cancellation
@@ -211,7 +235,7 @@ final class QueuedInputProvider implements PendingInputProviderInterface
         $this->queue[] = $message;
     }
 
-    public function getPendingInputs(): array
+    public function consumePendingInputs(): array
     {
         $inputs = $this->queue;
         $this->queue = [];
@@ -235,12 +259,9 @@ Prevent conversations from exceeding model token limits:
 
 ```php
 use CarmeloSantana\PHPAgents\Context\ContextWindow;
-use CarmeloSantana\PHPAgents\Context\TokenCounterFactory;
-
 $contextWindow = new ContextWindow(
-    tokenCounter: TokenCounterFactory::create(),
-    maxTokens: 128_000, // Model's context limit
-    reservedTokens: 4_000, // Space for the response
+    maxTok: 128_000,   // Model's context limit
+    reservedTok: 4_000 // Space reserved for the response
 );
 
 $agent = new MyAgent(
@@ -253,8 +274,11 @@ When the conversation approaches the token budget, the agent loop automatically:
 
 1. Trims long tool results
 2. Drops oldest conversation turns
-3. Repairs orphaned tool-result/assistant-message pairs
-4. Merges consecutive same-role messages
+3. Re-trims tool results more aggressively if one turn still exceeds budget
+4. Repairs orphaned tool-result/assistant-message pairs
+5. Merges consecutive same-role messages
+
+If `budgetExitThreshold` is configured and a `ContextWindow` is present, the agent also emits `agent.budget_warning` once when the latest provider-reported usage for the current iteration crosses the configured threshold. The loop then allows `budgetExitWrapUpIterations` additional iterations before returning `FinishReason::BudgetExhausted`.
 
 ## The Output Value Object
 
@@ -264,18 +288,21 @@ When the conversation approaches the token budget, the agent loop automatically:
 $output = $agent->run(new UserMessage('...'));
 
 $output->content;      // string — the final text response
+$output->toolResults;  // ToolResult[] — tool results accumulated across the run
 $output->usage;        // Usage — total token usage across all iterations
+$output->model;        // string — model name reported by the provider
+$output->iterations;   // int — iterations consumed by the loop
+$output->conversation; // Conversation|null — full in-memory conversation
 $output->finishReason; // FinishReason — why the agent stopped
-$output->toolCalls;    // ToolCall[] — tool calls from the final response (usually empty)
-$output->history;      // MessageInterface[] — full conversation history
 ```
 
 ### Finish Reasons
 
 | Reason | Meaning |
 |--------|---------|
-| `FinishReason::Stop` | LLM finished naturally or via DoneTool |
-| `FinishReason::ToolCalls` | LLM wants to call tools (internal, shouldn't appear in final output) |
-| `FinishReason::MaxTokens` | Response was truncated due to token limit |
+| `FinishReason::Stop` | Agent returned a text response without using `done()` |
+| `FinishReason::ToolUse` | Provider requested tool calls during an intermediate response |
+| `FinishReason::MaxTokens` | Agent loop exhausted its configured `maxIterations` budget |
 | `FinishReason::Error` | An error occurred |
-| `FinishReason::Cancelled` | Cancellation token triggered |
+| `FinishReason::Done` | Agent completed via the built-in `done()` tool |
+| `FinishReason::BudgetExhausted` | Budget wrap-up iterations were exhausted after a budget warning |
