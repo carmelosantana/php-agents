@@ -73,6 +73,8 @@ abstract class AbstractAgent implements AgentInterface
         private readonly ?ContextWindowInterface $contextWindow = null,
         private readonly ?BudgetPruningStrategyInterface $pruningStrategy = null,
         private readonly int $safetyMarginPercent = 20,
+        private readonly float $budgetExitThreshold = 0.0,
+        private readonly int $budgetExitWrapUpIterations = 2,
         ?ToolExecutorInterface $toolExecutor = null,
         ?TickCallbackInterface $tickCallback = null,
     ) {
@@ -160,6 +162,10 @@ abstract class AbstractAgent implements AgentInterface
 
         $effectiveMax = $this->effectiveMaxIterations();
 
+        // Budget-based exit state
+        $budgetExitTriggered = false;
+        $wrapUpIterationsRemaining = $this->budgetExitWrapUpIterations;
+
         if ($this->maxIter === 0) {
             $this->notify('agent.warning', 'Unlimited iterations enabled (max_iterations=0). The agent will run until the task is complete.');
         }
@@ -191,7 +197,27 @@ abstract class AbstractAgent implements AgentInterface
                     usage: $totalUsage,
                     iterations: $i + 1,
                     conversation: $conversation,
+                    finishReason: FinishReason::Error,
                 );
+            }
+
+            // Budget wrap-up countdown: after the threshold fires, the agent
+            // gets budgetExitWrapUpIterations to call done(). If it doesn't,
+            // force-exit here at the top of the next iteration.
+            if ($budgetExitTriggered) {
+                if ($wrapUpIterationsRemaining <= 0) {
+                    $this->notify('agent.warning', 'Budget wrap-up window exhausted — forcing exit');
+
+                    return new Output(
+                        content: 'Context budget exhausted. Agent was given wrap-up iterations but did not complete.',
+                        toolResults: $allToolResults,
+                        usage: $totalUsage,
+                        iterations: $i + 1,
+                        conversation: $conversation,
+                        finishReason: FinishReason::BudgetExhausted,
+                    );
+                }
+                $wrapUpIterationsRemaining--;
             }
 
             // Inject any pending external input into the conversation
@@ -299,6 +325,7 @@ abstract class AbstractAgent implements AgentInterface
                     usage: $totalUsage,
                     iterations: $i + 1,
                     conversation: $conversation,
+                    finishReason: FinishReason::Error,
                 );
             }
 
@@ -313,6 +340,24 @@ abstract class AbstractAgent implements AgentInterface
                 $this->contextWindow?->report($response->usage);
             }
 
+            // Budget threshold detection: fire once when usage crosses the
+            // configured threshold. Emit an event so external observers (e.g.
+            // Coqui's BudgetExitObserver) can inject wrap-up instructions via
+            // PendingInputProvider for the NEXT iteration.
+            if (
+                !$budgetExitTriggered
+                && $this->budgetExitThreshold > 0.0
+                && $this->contextWindow !== null
+                && $this->contextWindow->usagePercent() >= $this->budgetExitThreshold * 100
+            ) {
+                $budgetExitTriggered = true;
+                $this->notify('agent.budget_warning', [
+                    'usagePercent' => $this->contextWindow->usagePercent(),
+                    'threshold' => $this->budgetExitThreshold,
+                    'wrapUpIterations' => $this->budgetExitWrapUpIterations,
+                ]);
+            }
+
             foreach ($response->toolCalls as $toolCall) {
                 if ($toolCall->name === DoneTool::NAME) {
                     $this->notify('agent.done', $toolCall->arguments);
@@ -324,6 +369,7 @@ abstract class AbstractAgent implements AgentInterface
                         model: $response->model,
                         iterations: $i + 1,
                         conversation: $conversation,
+                        finishReason: FinishReason::Done,
                     );
                 }
             }
@@ -345,6 +391,7 @@ abstract class AbstractAgent implements AgentInterface
                         usage: $totalUsage,
                         iterations: $i + 1,
                         conversation: $conversation,
+                        finishReason: FinishReason::Error,
                     );
                 }
 
@@ -364,6 +411,7 @@ abstract class AbstractAgent implements AgentInterface
                     model: $response->model,
                     iterations: $i + 1,
                     conversation: $conversation,
+                    finishReason: FinishReason::Stop,
                 );
             }
 
@@ -379,6 +427,7 @@ abstract class AbstractAgent implements AgentInterface
             usage: $totalUsage,
             iterations: $this->maxIterations(),
             conversation: $conversation,
+            finishReason: FinishReason::MaxTokens,
         );
     }
 

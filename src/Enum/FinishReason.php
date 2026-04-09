@@ -11,4 +11,5 @@ enum FinishReason: string
     case MaxTokens = 'max_tokens';
     case Error = 'error';
     case Done = 'done';
+    case BudgetExhausted = 'budget_exhausted';
 }
