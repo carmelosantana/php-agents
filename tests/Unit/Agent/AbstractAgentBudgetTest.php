@@ -324,7 +324,7 @@ test('provider exceptions surface as error finish reason', function () {
         ->and($output->content)->toContain('Provider error: boom');
 });
 
-test('max iteration exhaustion keeps the existing max tokens finish reason contract', function () {
+test('max iteration exhaustion returns the max iterations finish reason', function () {
     $provider = new RecordingProvider([
         new Response(content: '', finishReason: FinishReason::Stop, model: 'test-model'),
     ]);
@@ -333,6 +333,6 @@ test('max iteration exhaustion keeps the existing max tokens finish reason contr
 
     $output = $agent->run(new UserMessage('Do nothing.'));
 
-    expect($output->finishReason)->toBe(FinishReason::MaxTokens)
+    expect($output->finishReason)->toBe(FinishReason::MaxIterations)
         ->and($output->content)->toContain('maximum iterations');
 });

@@ -6,6 +6,9 @@ namespace CarmeloSantana\PHPAgents\Tool\Parameter;
 
 final readonly class MapParameter extends Parameter
 {
+    /**
+     * @param bool|array<string, mixed> $additionalProperties
+     */
     public function __construct(
         string $name,
         string $description,

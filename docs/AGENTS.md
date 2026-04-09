@@ -302,7 +302,8 @@ $output->finishReason; // FinishReason — why the agent stopped
 |--------|---------|
 | `FinishReason::Stop` | Agent returned a text response without using `done()` |
 | `FinishReason::ToolUse` | Provider requested tool calls during an intermediate response |
-| `FinishReason::MaxTokens` | Agent loop exhausted its configured `maxIterations` budget |
+| `FinishReason::MaxTokens` | Provider response was truncated due to the model's token limit |
+| `FinishReason::MaxIterations` | Agent loop exhausted its configured `maxIterations` budget |
 | `FinishReason::Error` | An error occurred |
 | `FinishReason::Done` | Agent completed via the built-in `done()` tool |
 | `FinishReason::BudgetExhausted` | Budget wrap-up iterations were exhausted after a budget warning |

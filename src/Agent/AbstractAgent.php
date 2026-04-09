@@ -427,7 +427,7 @@ abstract class AbstractAgent implements AgentInterface
             usage: $totalUsage,
             iterations: $this->maxIterations(),
             conversation: $conversation,
-            finishReason: FinishReason::MaxTokens,
+            finishReason: FinishReason::MaxIterations,
         );
     }
 
@@ -532,7 +532,9 @@ abstract class AbstractAgent implements AgentInterface
             ]);
 
             try {
-                $batchResults = $this->toolExecutor->executeBatch($batchEntries);
+                /** @var BatchToolExecutorInterface $batchExecutor */
+                $batchExecutor = $this->toolExecutor;
+                $batchResults = $batchExecutor->executeBatch($batchEntries);
 
                 foreach ($batchResults as $batchIndex => $batchResult) {
                     $originalPosition = $positionMap[$batchIndex];
