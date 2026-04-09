@@ -7,7 +7,7 @@ namespace CarmeloSantana\PHPAgents\Provider;
 use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
@@ -131,7 +131,7 @@ final class GeminiProvider extends AbstractProvider
             if ($reasoning !== '') {
                 yield new Response(
                     content: '',
-                    finishReason: FinishReason::Stop,
+                    finishReason: ProviderFinishReason::Stop,
                     toolCalls: [],
                     model: $this->model,
                     reasoning: $reasoning,
@@ -141,7 +141,7 @@ final class GeminiProvider extends AbstractProvider
             if (!empty($toolCalls)) {
                 yield new Response(
                     content: $text,
-                    finishReason: FinishReason::ToolUse,
+                    finishReason: ProviderFinishReason::ToolUse,
                     toolCalls: $toolCalls,
                     model: $this->model,
                     usage: $this->parseUsageMetadata($json),
@@ -149,7 +149,7 @@ final class GeminiProvider extends AbstractProvider
                 continue;
             }
 
-            if ($text !== '' || $finishReason !== FinishReason::Stop) {
+            if ($text !== '' || $finishReason !== ProviderFinishReason::Stop) {
                 yield new Response(
                     content: $text,
                     finishReason: $finishReason,
@@ -689,7 +689,7 @@ final class GeminiProvider extends AbstractProvider
 
         // Override finish reason if tool calls are present
         if (!empty($toolCalls)) {
-            $finishReason = FinishReason::ToolUse;
+            $finishReason = ProviderFinishReason::ToolUse;
         }
 
         return new Response(
@@ -703,16 +703,16 @@ final class GeminiProvider extends AbstractProvider
     }
 
     /**
-     * Map Gemini finish reasons to FinishReason enum.
+     * Map Gemini finish reasons to ProviderFinishReason enum.
      */
-    private function mapGeminiFinishReason(?string $reason): FinishReason
+    private function mapGeminiFinishReason(?string $reason): ProviderFinishReason
     {
         return match ($reason) {
-            'STOP' => FinishReason::Stop,
-            'MAX_TOKENS' => FinishReason::MaxTokens,
-            'SAFETY' => FinishReason::Error,
-            'RECITATION' => FinishReason::Error,
-            default => FinishReason::Stop,
+            'STOP' => ProviderFinishReason::Stop,
+            'MAX_TOKENS' => ProviderFinishReason::MaxTokens,
+            'SAFETY' => ProviderFinishReason::Error,
+            'RECITATION' => ProviderFinishReason::Error,
+            default => ProviderFinishReason::Stop,
         };
     }
 

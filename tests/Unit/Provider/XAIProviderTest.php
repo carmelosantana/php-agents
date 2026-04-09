@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\XAIProvider;
@@ -61,7 +61,7 @@ test('chat sends correct payload and parses response', function () {
     expect($requestPayload)->not->toBeNull()
         ->and($requestPayload['model'])->toBe('grok-4')
         ->and($response->content)->toBe('Hello from Grok!')
-        ->and($response->finishReason)->toBe(FinishReason::Stop)
+        ->and($response->finishReason)->toBe(ProviderFinishReason::Stop)
         ->and($response->usage->totalTokens)->toBe(15);
 });
 
@@ -251,7 +251,7 @@ test('chat parses tool call response', function () {
 
     $response = $provider->chat([new UserMessage('Weather in Paris')]);
 
-    expect($response->finishReason)->toBe(FinishReason::ToolUse)
+    expect($response->finishReason)->toBe(ProviderFinishReason::ToolUse)
         ->and($response->toolCalls)->toHaveCount(1)
         ->and($response->toolCalls[0]->name)->toBe('get_weather')
         ->and($response->toolCalls[0]->arguments)->toBe(['city' => 'Paris']);

@@ -17,8 +17,9 @@ use CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolExecutorInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolkitInterface;
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\AgentFinishReason;
 use CarmeloSantana\PHPAgents\Enum\ModelCapability;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Exception\TerminationException;
 use CarmeloSantana\PHPAgents\Exception\ToolNotFoundException;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
@@ -197,7 +198,7 @@ abstract class AbstractAgent implements AgentInterface
                     usage: $totalUsage,
                     iterations: $i + 1,
                     conversation: $conversation,
-                    finishReason: FinishReason::Error,
+                    finishReason: AgentFinishReason::Error,
                 );
             }
 
@@ -214,7 +215,7 @@ abstract class AbstractAgent implements AgentInterface
                         usage: $totalUsage,
                         iterations: $i + 1,
                         conversation: $conversation,
-                        finishReason: FinishReason::BudgetExhausted,
+                        finishReason: AgentFinishReason::BudgetExhausted,
                     );
                 }
                 $wrapUpIterationsRemaining--;
@@ -289,7 +290,7 @@ abstract class AbstractAgent implements AgentInterface
 
                 $response = new Response(
                     content: $content,
-                    finishReason: !empty($toolCalls) ? FinishReason::ToolUse : FinishReason::Stop,
+                    finishReason: !empty($toolCalls) ? ProviderFinishReason::ToolUse : ProviderFinishReason::Stop,
                     toolCalls: $toolCalls,
                     model: $streamModel,
                     usage: $streamUsage,
@@ -325,7 +326,7 @@ abstract class AbstractAgent implements AgentInterface
                     usage: $totalUsage,
                     iterations: $i + 1,
                     conversation: $conversation,
-                    finishReason: FinishReason::Error,
+                    finishReason: AgentFinishReason::Error,
                 );
             }
 
@@ -369,7 +370,7 @@ abstract class AbstractAgent implements AgentInterface
                         model: $response->model,
                         iterations: $i + 1,
                         conversation: $conversation,
-                        finishReason: FinishReason::Done,
+                        finishReason: AgentFinishReason::Done,
                     );
                 }
             }
@@ -391,7 +392,7 @@ abstract class AbstractAgent implements AgentInterface
                         usage: $totalUsage,
                         iterations: $i + 1,
                         conversation: $conversation,
-                        finishReason: FinishReason::Error,
+                        finishReason: AgentFinishReason::Error,
                     );
                 }
 
@@ -411,7 +412,7 @@ abstract class AbstractAgent implements AgentInterface
                     model: $response->model,
                     iterations: $i + 1,
                     conversation: $conversation,
-                    finishReason: FinishReason::Stop,
+                    finishReason: AgentFinishReason::Stop,
                 );
             }
 
@@ -427,7 +428,7 @@ abstract class AbstractAgent implements AgentInterface
             usage: $totalUsage,
             iterations: $this->maxIterations(),
             conversation: $conversation,
-            finishReason: FinishReason::MaxIterations,
+            finishReason: AgentFinishReason::MaxIterations,
         );
     }
 

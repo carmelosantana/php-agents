@@ -7,7 +7,7 @@ namespace CarmeloSantana\PHPAgents\Provider;
 use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
@@ -142,7 +142,7 @@ final class AnthropicProvider extends AbstractProvider
                 } elseif ($deltaType === 'thinking_delta' && isset($delta['thinking'])) {
                     yield new Response(
                         content: '',
-                        finishReason: FinishReason::Stop,
+                        finishReason: ProviderFinishReason::Stop,
                         toolCalls: [],
                         model: $this->model,
                         reasoning: $delta['thinking'],
@@ -150,7 +150,7 @@ final class AnthropicProvider extends AbstractProvider
                 } elseif ($deltaType === 'text_delta' && isset($delta['text'])) {
                     yield new Response(
                         content: $delta['text'],
-                        finishReason: FinishReason::Stop,
+                        finishReason: ProviderFinishReason::Stop,
                         toolCalls: [],
                         model: $this->model,
                     );
@@ -180,7 +180,7 @@ final class AnthropicProvider extends AbstractProvider
 
                     yield new Response(
                         content: '',
-                        finishReason: FinishReason::ToolUse,
+                        finishReason: ProviderFinishReason::ToolUse,
                         toolCalls: $toolCalls,
                         model: $this->model,
                         usage: $usage,
@@ -188,7 +188,7 @@ final class AnthropicProvider extends AbstractProvider
                 } elseif ($stopReason === 'end_turn' || $stopReason === 'max_tokens') {
                     yield new Response(
                         content: '',
-                        finishReason: $stopReason === 'max_tokens' ? FinishReason::MaxTokens : FinishReason::Stop,
+                        finishReason: $stopReason === 'max_tokens' ? ProviderFinishReason::MaxTokens : ProviderFinishReason::Stop,
                         toolCalls: [],
                         model: $this->model,
                         usage: $usage,
@@ -198,7 +198,7 @@ final class AnthropicProvider extends AbstractProvider
                 // Initial usage data (input tokens)
                 yield new Response(
                     content: '',
-                    finishReason: FinishReason::Stop,
+                    finishReason: ProviderFinishReason::Stop,
                     toolCalls: [],
                     model: $json['message']['model'] ?? $this->model,
                     usage: new Usage(
@@ -533,10 +533,10 @@ final class AnthropicProvider extends AbstractProvider
         }
 
         $finishReason = match ($data['stop_reason'] ?? 'end_turn') {
-            'end_turn' => FinishReason::Stop,
-            'tool_use' => FinishReason::ToolUse,
-            'max_tokens' => FinishReason::MaxTokens,
-            default => FinishReason::Stop,
+            'end_turn' => ProviderFinishReason::Stop,
+            'tool_use' => ProviderFinishReason::ToolUse,
+            'max_tokens' => ProviderFinishReason::MaxTokens,
+            default => ProviderFinishReason::Stop,
         };
 
         $usage = null;

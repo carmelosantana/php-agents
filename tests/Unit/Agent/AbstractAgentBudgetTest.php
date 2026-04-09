@@ -9,8 +9,9 @@ use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\PendingInputProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\AgentFinishReason;
 use CarmeloSantana\PHPAgents\Enum\ModelCapability;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\Conversation;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\Response;
@@ -176,14 +177,14 @@ test('budget warning fires once and injects pending input on the next iteration'
     $provider = new RecordingProvider([
         new Response(
             content: '',
-            finishReason: FinishReason::ToolUse,
+            finishReason: ProviderFinishReason::ToolUse,
             toolCalls: [new ToolCall('call-1', 'noop', [])],
             model: 'test-model',
             usage: new Usage(promptTokens: 700, completionTokens: 150, totalTokens: 850),
         ),
         new Response(
             content: '',
-            finishReason: FinishReason::ToolUse,
+            finishReason: ProviderFinishReason::ToolUse,
             toolCalls: [new ToolCall('call-2', 'done', ['response' => 'Wrapped up'])],
             model: 'test-model',
             usage: new Usage(promptTokens: 650, completionTokens: 100, totalTokens: 750),
@@ -207,7 +208,7 @@ test('budget warning fires once and injects pending input on the next iteration'
         static fn(array $event): bool => $event['event'] === 'agent.budget_warning',
     ));
 
-    expect($output->finishReason)->toBe(FinishReason::Done)
+    expect($output->finishReason)->toBe(AgentFinishReason::Done)
         ->and($output->content)->toBe('Wrapped up')
         ->and($warningEvents)->toHaveCount(1)
         ->and($warningEvents[0]['data'])->toMatchArray([
@@ -222,14 +223,14 @@ test('agent exits with budget exhausted after the wrap-up window expires', funct
     $provider = new RecordingProvider([
         new Response(
             content: '',
-            finishReason: FinishReason::ToolUse,
+            finishReason: ProviderFinishReason::ToolUse,
             toolCalls: [new ToolCall('call-1', 'noop', [])],
             model: 'test-model',
             usage: new Usage(promptTokens: 700, completionTokens: 150, totalTokens: 850),
         ),
         new Response(
             content: '',
-            finishReason: FinishReason::ToolUse,
+            finishReason: ProviderFinishReason::ToolUse,
             toolCalls: [new ToolCall('call-2', 'noop', [])],
             model: 'test-model',
             usage: new Usage(promptTokens: 680, completionTokens: 120, totalTokens: 800),
@@ -245,7 +246,7 @@ test('agent exits with budget exhausted after the wrap-up window expires', funct
 
     $output = $agent->run(new UserMessage('Keep going.'));
 
-    expect($output->finishReason)->toBe(FinishReason::BudgetExhausted)
+    expect($output->finishReason)->toBe(AgentFinishReason::BudgetExhausted)
         ->and($output->content)->toContain('Context budget exhausted')
         ->and($output->iterations)->toBe(3)
         ->and($provider->streamCalls)->toHaveCount(2);
@@ -255,7 +256,7 @@ test('budget exit threshold is ignored when disabled', function () {
     $provider = new RecordingProvider([
         new Response(
             content: 'All done.',
-            finishReason: FinishReason::Stop,
+            finishReason: ProviderFinishReason::Stop,
             model: 'test-model',
             usage: new Usage(promptTokens: 700, completionTokens: 150, totalTokens: 850),
         ),
@@ -277,7 +278,7 @@ test('budget exit threshold is ignored when disabled', function () {
         static fn(array $event): bool => $event['event'] === 'agent.budget_warning',
     );
 
-    expect($output->finishReason)->toBe(FinishReason::Stop)
+    expect($output->finishReason)->toBe(AgentFinishReason::Stop)
         ->and($output->content)->toBe('All done.')
         ->and($warningEvents)->toBeEmpty();
 });
@@ -286,7 +287,7 @@ test('budget exit threshold requires a context window', function () {
     $provider = new RecordingProvider([
         new Response(
             content: 'No context window configured.',
-            finishReason: FinishReason::Stop,
+            finishReason: ProviderFinishReason::Stop,
             model: 'test-model',
             usage: new Usage(promptTokens: 700, completionTokens: 150, totalTokens: 850),
         ),
@@ -307,7 +308,7 @@ test('budget exit threshold requires a context window', function () {
         static fn(array $event): bool => $event['event'] === 'agent.budget_warning',
     );
 
-    expect($output->finishReason)->toBe(FinishReason::Stop)
+    expect($output->finishReason)->toBe(AgentFinishReason::Stop)
         ->and($warningEvents)->toBeEmpty();
 });
 
@@ -320,19 +321,19 @@ test('provider exceptions surface as error finish reason', function () {
 
     $output = $agent->run(new UserMessage('Trigger failure.'));
 
-    expect($output->finishReason)->toBe(FinishReason::Error)
+    expect($output->finishReason)->toBe(AgentFinishReason::Error)
         ->and($output->content)->toContain('Provider error: boom');
 });
 
 test('max iteration exhaustion returns the max iterations finish reason', function () {
     $provider = new RecordingProvider([
-        new Response(content: '', finishReason: FinishReason::Stop, model: 'test-model'),
+        new Response(content: '', finishReason: ProviderFinishReason::Stop, model: 'test-model'),
     ]);
 
     $agent = new BudgetTestAgent(provider: $provider, maxIter: 1);
 
     $output = $agent->run(new UserMessage('Do nothing.'));
 
-    expect($output->finishReason)->toBe(FinishReason::MaxIterations)
+    expect($output->finishReason)->toBe(AgentFinishReason::MaxIterations)
         ->and($output->content)->toContain('maximum iterations');
 });

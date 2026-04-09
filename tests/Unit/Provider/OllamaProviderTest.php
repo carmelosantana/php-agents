@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
 use CarmeloSantana\PHPAgents\Tool\Tool;
@@ -41,7 +41,7 @@ test('basic chat returns correct response', function () {
     $response = $provider->chat([new UserMessage('Hi')]);
 
     expect($response->content)->toBe('Hello from Ollama!')
-        ->and($response->finishReason)->toBe(FinishReason::Stop);
+        ->and($response->finishReason)->toBe(ProviderFinishReason::Stop);
 });
 
 test('num_ctx is injected when tools are present', function () {

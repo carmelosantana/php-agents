@@ -7,7 +7,7 @@ namespace CarmeloSantana\PHPAgents\Provider;
 use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
@@ -98,7 +98,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
                 if ($delta !== '') {
                     yield new Response(
                         content: $delta,
-                        finishReason: FinishReason::Stop,
+                        finishReason: ProviderFinishReason::Stop,
                         toolCalls: [],
                         model: $this->model,
                     );
@@ -109,7 +109,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
                 if ($delta !== '') {
                     yield new Response(
                         content: '',
-                        finishReason: FinishReason::Stop,
+                        finishReason: ProviderFinishReason::Stop,
                         toolCalls: [],
                         model: $this->model,
                         reasoning: $delta,
@@ -160,7 +160,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
 
                     yield new Response(
                         content: '',
-                        finishReason: FinishReason::ToolUse,
+                        finishReason: ProviderFinishReason::ToolUse,
                         toolCalls: $toolCalls,
                         model: $this->model,
                         usage: $usage,
@@ -168,7 +168,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
                 } else {
                     yield new Response(
                         content: '',
-                        finishReason: FinishReason::Stop,
+                        finishReason: ProviderFinishReason::Stop,
                         toolCalls: [],
                         model: $this->model,
                         usage: $usage,
@@ -182,7 +182,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
                 if (isset($responseData['usage'])) {
                     yield new Response(
                         content: '',
-                        finishReason: FinishReason::Stop,
+                        finishReason: ProviderFinishReason::Stop,
                         toolCalls: [],
                         model: $reportedModel !== '' ? $reportedModel : $this->model,
                         usage: $this->parseUsage($responseData),
@@ -454,9 +454,9 @@ final class OpenAIResponsesProvider extends AbstractProvider
         }
 
         $finishReason = match ($data['status'] ?? 'completed') {
-            'completed' => empty($toolCalls) ? FinishReason::Stop : FinishReason::ToolUse,
-            'incomplete' => FinishReason::MaxTokens,
-            default => FinishReason::Stop,
+            'completed' => empty($toolCalls) ? ProviderFinishReason::Stop : ProviderFinishReason::ToolUse,
+            'incomplete' => ProviderFinishReason::MaxTokens,
+            default => ProviderFinishReason::Stop,
         };
 
         return new Response(

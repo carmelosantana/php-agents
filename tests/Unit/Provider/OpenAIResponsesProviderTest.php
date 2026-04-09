@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
@@ -53,7 +53,7 @@ test('chat returns correct response structure', function () {
     $response = $provider->chat([new UserMessage('Hi')]);
 
     expect($response->content)->toBe('Hello from Responses API!')
-        ->and($response->finishReason)->toBe(FinishReason::Stop)
+        ->and($response->finishReason)->toBe(ProviderFinishReason::Stop)
         ->and($response->toolCalls)->toBeEmpty()
         ->and($response->model)->toBe('gpt-4o');
 });
@@ -147,7 +147,7 @@ test('chat parses function_call output items as tool calls', function () {
     $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
     $response = $provider->chat([new UserMessage('Weather?')]);
 
-    expect($response->finishReason)->toBe(FinishReason::ToolUse)
+    expect($response->finishReason)->toBe(ProviderFinishReason::ToolUse)
         ->and($response->toolCalls)->toHaveCount(1)
         ->and($response->toolCalls[0]->id)->toBe('call_abc123')
         ->and($response->toolCalls[0]->name)->toBe('get_weather')
@@ -162,7 +162,7 @@ test('chat incomplete status maps to MaxTokens finish reason', function () {
     $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
     $response = $provider->chat([new UserMessage('hi')]);
 
-    expect($response->finishReason)->toBe(FinishReason::MaxTokens);
+    expect($response->finishReason)->toBe(ProviderFinishReason::MaxTokens);
 });
 
 test('responses tool payload normalizes empty schemas for strict mode', function () {
@@ -426,7 +426,7 @@ test('stream yields tool call on response.completed when pending tool calls exis
 
     $chunks = iterator_to_array($provider->stream([new UserMessage('weather?')]));
 
-    $toolChunks = array_filter($chunks, fn($r) => $r->finishReason === FinishReason::ToolUse);
+    $toolChunks = array_filter($chunks, fn($r) => $r->finishReason === ProviderFinishReason::ToolUse);
     expect($toolChunks)->toHaveCount(1);
 
     $tc = array_values($toolChunks)[0];

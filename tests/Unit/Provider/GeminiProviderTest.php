@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
@@ -265,7 +265,7 @@ test('response parsing extracts text content', function () {
     $response = $provider->chat([new UserMessage('Tell me something')]);
 
     expect($response->content)->toBe('Part one. Part two.')
-        ->and($response->finishReason)->toBe(FinishReason::Stop);
+        ->and($response->finishReason)->toBe(ProviderFinishReason::Stop);
 });
 
 test('response parsing extracts tool calls from functionCall parts', function () {
@@ -298,7 +298,7 @@ test('response parsing extracts tool calls from functionCall parts', function ()
 
     $response = $provider->chat([new UserMessage('Weather in London?')]);
 
-    expect($response->finishReason)->toBe(FinishReason::ToolUse)
+    expect($response->finishReason)->toBe(ProviderFinishReason::ToolUse)
         ->and($response->toolCalls)->toHaveCount(1)
         ->and($response->toolCalls[0]->name)->toBe('get_weather')
         ->and($response->toolCalls[0]->arguments)->toBe(['city' => 'London']);
@@ -310,7 +310,7 @@ test('finish reason mapping: STOP', function () {
     ]);
 
     $response = (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat([new UserMessage('hi')]);
-    expect($response->finishReason)->toBe(FinishReason::Stop);
+    expect($response->finishReason)->toBe(ProviderFinishReason::Stop);
 });
 
 test('finish reason mapping: MAX_TOKENS', function () {
@@ -319,7 +319,7 @@ test('finish reason mapping: MAX_TOKENS', function () {
     ]);
 
     $response = (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat([new UserMessage('hi')]);
-    expect($response->finishReason)->toBe(FinishReason::MaxTokens);
+    expect($response->finishReason)->toBe(ProviderFinishReason::MaxTokens);
 });
 
 test('finish reason mapping: SAFETY', function () {
@@ -328,7 +328,7 @@ test('finish reason mapping: SAFETY', function () {
     ]);
 
     $response = (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat([new UserMessage('hi')]);
-    expect($response->finishReason)->toBe(FinishReason::Error);
+    expect($response->finishReason)->toBe(ProviderFinishReason::Error);
 });
 
 test('usage metadata is parsed correctly', function () {
@@ -474,7 +474,7 @@ test('multiple function calls in response are all parsed', function () {
     expect($response->toolCalls)->toHaveCount(2)
         ->and($response->toolCalls[0]->name)->toBe('tool_a')
         ->and($response->toolCalls[1]->name)->toBe('tool_b')
-        ->and($response->finishReason)->toBe(FinishReason::ToolUse);
+        ->and($response->finishReason)->toBe(ProviderFinishReason::ToolUse);
 });
 
 test('mixed text and functionCall parts in response', function () {
@@ -500,7 +500,7 @@ test('mixed text and functionCall parts in response', function () {
 
     expect($response->content)->toBe('Let me check... ')
         ->and($response->toolCalls)->toHaveCount(1)
-        ->and($response->finishReason)->toBe(FinishReason::ToolUse);
+        ->and($response->finishReason)->toBe(ProviderFinishReason::ToolUse);
 });
 
 test('three consecutive user messages are merged into one content block', function () {

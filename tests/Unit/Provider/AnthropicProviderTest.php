@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
@@ -135,7 +135,7 @@ test('chat parses response content and usage', function () {
     $response = $provider->chat([new UserMessage('What is the meaning of life?')]);
 
     expect($response->content)->toBe('The answer is 42.')
-        ->and($response->finishReason)->toBe(FinishReason::Stop)
+        ->and($response->finishReason)->toBe(ProviderFinishReason::Stop)
         ->and($response->usage)->not->toBeNull()
         ->and($response->usage->promptTokens)->toBe(15)
         ->and($response->usage->completionTokens)->toBe(8)
@@ -167,7 +167,7 @@ test('chat parses tool use response', function () {
     $response = $provider->chat([new UserMessage('Search for PHP 8.4 features')]);
 
     expect($response->content)->toBe('Let me search for that.')
-        ->and($response->finishReason)->toBe(FinishReason::ToolUse)
+        ->and($response->finishReason)->toBe(ProviderFinishReason::ToolUse)
         ->and($response->toolCalls)->toHaveCount(1)
         ->and($response->toolCalls[0]->name)->toBe('brave_search')
         ->and($response->toolCalls[0]->id)->toBe('toolu_123')
@@ -354,7 +354,7 @@ test('finish reason mapping: max_tokens', function () {
     $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
     $response = $provider->chat([new UserMessage('hi')]);
 
-    expect($response->finishReason)->toBe(FinishReason::MaxTokens);
+    expect($response->finishReason)->toBe(ProviderFinishReason::MaxTokens);
 });
 
 test('structured output uses tool_use trick', function () {

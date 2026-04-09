@@ -278,7 +278,7 @@ When the conversation approaches the token budget, the agent loop automatically:
 4. Repairs orphaned tool-result/assistant-message pairs
 5. Merges consecutive same-role messages
 
-If `budgetExitThreshold` is configured and a `ContextWindow` is present, the agent also emits `agent.budget_warning` once when the latest provider-reported usage for the current iteration crosses the configured threshold. The loop then allows `budgetExitWrapUpIterations` additional iterations before returning `FinishReason::BudgetExhausted`.
+If `budgetExitThreshold` is configured and a `ContextWindow` is present, the agent also emits `agent.budget_warning` once when the latest provider-reported usage for the current iteration crosses the configured threshold. The loop then allows `budgetExitWrapUpIterations` additional iterations before returning `AgentFinishReason::BudgetExhausted`.
 
 ## The Output Value Object
 
@@ -293,17 +293,17 @@ $output->usage;        // Usage — total token usage across all iterations
 $output->model;        // string — model name reported by the provider
 $output->iterations;   // int — iterations consumed by the loop
 $output->conversation; // Conversation|null — full in-memory conversation
-$output->finishReason; // FinishReason — why the agent stopped
+$output->finishReason; // AgentFinishReason — why the agent stopped
 ```
 
 ### Finish Reasons
 
 | Reason | Meaning |
 |--------|---------|
-| `FinishReason::Stop` | Agent returned a text response without using `done()` |
-| `FinishReason::ToolUse` | Provider requested tool calls during an intermediate response |
-| `FinishReason::MaxTokens` | Provider response was truncated due to the model's token limit |
-| `FinishReason::MaxIterations` | Agent loop exhausted its configured `maxIterations` budget |
-| `FinishReason::Error` | An error occurred |
-| `FinishReason::Done` | Agent completed via the built-in `done()` tool |
-| `FinishReason::BudgetExhausted` | Budget wrap-up iterations were exhausted after a budget warning |
+| `AgentFinishReason::Stop` | Agent returned a text response without using `done()` |
+| `AgentFinishReason::MaxIterations` | Agent loop exhausted its configured `maxIterations` budget |
+| `AgentFinishReason::Error` | An error occurred in the agent loop |
+| `AgentFinishReason::Done` | Agent completed via the built-in `done()` tool |
+| `AgentFinishReason::BudgetExhausted` | Budget wrap-up iterations were exhausted after a budget warning |
+
+Provider responses use `ProviderFinishReason` instead. That enum represents normalized model/API stop reasons such as `Stop`, `ToolUse`, `MaxTokens`, and provider-level `Error` states.
