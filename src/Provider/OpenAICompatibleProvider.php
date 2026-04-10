@@ -7,7 +7,7 @@ namespace CarmeloSantana\PHPAgents\Provider;
 use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -129,7 +129,7 @@ class OpenAICompatibleProvider extends AbstractProvider
                 $reasoningBuffer .= $reasoningDelta;
                 yield new Response(
                     content: '',
-                    finishReason: FinishReason::Stop,
+                    finishReason: ProviderFinishReason::Stop,
                     toolCalls: [],
                     model: $json['model'] ?? $this->model,
                     reasoning: $reasoningDelta,
@@ -150,7 +150,7 @@ class OpenAICompatibleProvider extends AbstractProvider
 
                 yield new Response(
                     content: $delta['content'] ?? '',
-                    finishReason: FinishReason::ToolUse,
+                    finishReason: ProviderFinishReason::ToolUse,
                     toolCalls: $toolCalls,
                     model: $json['model'] ?? $this->model,
                 );
@@ -166,7 +166,7 @@ class OpenAICompatibleProvider extends AbstractProvider
             if (empty($json['choices']) && isset($json['usage'])) {
                 yield new Response(
                     content: '',
-                    finishReason: FinishReason::Stop,
+                    finishReason: ProviderFinishReason::Stop,
                     toolCalls: [],
                     model: $json['model'] ?? $this->model,
                     usage: new Usage(
@@ -200,7 +200,7 @@ class OpenAICompatibleProvider extends AbstractProvider
 
                 yield new Response(
                     content: '',
-                    finishReason: FinishReason::Stop,
+                    finishReason: ProviderFinishReason::Stop,
                     toolCalls: [],
                     model: $json['model'] ?? $this->model,
                     usage: $usage,
@@ -323,13 +323,13 @@ class OpenAICompatibleProvider extends AbstractProvider
         );
     }
 
-    protected function mapFinishReason(?string $reason): FinishReason
+    protected function mapFinishReason(?string $reason): ProviderFinishReason
     {
         return match ($reason) {
-            'stop' => FinishReason::Stop,
-            'tool_calls', 'function_call' => FinishReason::ToolUse,
-            'length' => FinishReason::MaxTokens,
-            default => FinishReason::Stop,
+            'stop' => ProviderFinishReason::Stop,
+            'tool_calls', 'function_call' => ProviderFinishReason::ToolUse,
+            'length' => ProviderFinishReason::MaxTokens,
+            default => ProviderFinishReason::Stop,
         };
     }
 }

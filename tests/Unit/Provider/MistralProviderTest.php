@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
@@ -45,7 +45,7 @@ test('basic chat returns correct response', function () {
     $response = $provider->chat([new UserMessage('Hi')]);
 
     expect($response->content)->toBe('Hello from Mistral!')
-        ->and($response->finishReason)->toBe(FinishReason::Stop);
+        ->and($response->finishReason)->toBe(ProviderFinishReason::Stop);
 });
 
 test('default base URL is Mistral API', function () {
@@ -199,7 +199,7 @@ test('tool calls in response are parsed', function () {
     $provider = new MistralProvider(apiKey: 'test-key', httpClient: $mockClient);
     $response = $provider->chat([new UserMessage('Weather?')]);
 
-    expect($response->finishReason)->toBe(FinishReason::ToolUse)
+    expect($response->finishReason)->toBe(ProviderFinishReason::ToolUse)
         ->and($response->toolCalls)->toHaveCount(1)
         ->and($response->toolCalls[0]->name)->toBe('get_weather')
         ->and($response->toolCalls[0]->arguments)->toBe(['city' => 'Paris']);

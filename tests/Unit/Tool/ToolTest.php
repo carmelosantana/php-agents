@@ -5,6 +5,7 @@ declare(strict_types=1);
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
+use CarmeloSantana\PHPAgents\Tool\Parameter\MapParameter;
 use CarmeloSantana\PHPAgents\Enum\ToolResultStatus;
 
 test('tool returns name and description', function () {
@@ -92,4 +93,23 @@ test('toFunctionSchema omits required when no required parameters', function () 
 
     $schema = $tool->toFunctionSchema();
     expect($schema['function']['parameters'])->not->toHaveKey('required');
+});
+
+test('toFunctionSchema preserves open-ended map parameters', function () {
+    $tool = new Tool(
+        name: 'request',
+        description: 'HTTP request',
+        parameters: [
+            new MapParameter('headers', 'Headers to send', required: false),
+        ],
+        callback: fn(array $input) => '',
+    );
+
+    $schema = $tool->toFunctionSchema();
+
+    expect($schema['function']['parameters']['properties']['headers'])->toBe([
+        'type' => 'object',
+        'description' => 'Headers to send',
+        'additionalProperties' => true,
+    ]);
 });

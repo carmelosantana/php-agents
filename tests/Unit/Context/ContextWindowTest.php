@@ -64,3 +64,25 @@ test('toArray returns all fields', function () {
     expect($array['max'])->toBe(10000);
     expect($array['reserved'])->toBe(1000);
 });
+
+test('usagePercent uses effective budget after reserved tokens', function () {
+    $ctx = new ContextWindow(maxTok: 1000, reservedTok: 200);
+    $ctx->estimate(400);
+
+    expect($ctx->usagePercent())->toBe(50.0);
+});
+
+test('report replaces a prior estimate with provider-reported usage', function () {
+    $ctx = new ContextWindow(maxTok: 1000, reservedTok: 0);
+    $ctx->estimate(900);
+    $ctx->report(new Usage(promptTokens: 250, completionTokens: 50, totalTokens: 300));
+
+    expect($ctx->usedTokens())->toBe(300)
+        ->and($ctx->usagePercent())->toBe(30.0);
+});
+
+test('usagePercent returns 100 when effective budget is exhausted by reserved tokens', function () {
+    $ctx = new ContextWindow(maxTok: 1000, reservedTok: 1000);
+
+    expect($ctx->usagePercent())->toBe(100.0);
+});

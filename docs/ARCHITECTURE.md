@@ -89,7 +89,10 @@ flowchart TD
     CHAT -->|Error| ERR[Return: provider error]
 
     CHAT -->|Success| USAGE[Accumulate token usage]
-    USAGE --> DONE{DoneTool in<br/>tool_calls?}
+    USAGE --> BUDGET{Budget threshold<br/>crossed?}
+    BUDGET -->|Yes| WARN[notify: agent.budget_warning]
+    BUDGET -->|No| DONE{DoneTool in<br/>tool_calls?}
+    WARN --> DONE
 
     DONE -->|Yes| RETURN_DONE[Return: done response]
 
@@ -357,12 +360,15 @@ flowchart LR
         FIT[fitWithinBudget]
         FIT --> TRIM[trimToolResults]
         TRIM --> DROP[dropOldestTurns]
-        DROP --> REPAIR[repairToolPairing]
+        DROP --> RETRIM[trimToolResults<br/>aggressive pass]
+        RETRIM --> REPAIR[repairToolPairing]
         REPAIR --> MERGE[mergeConsecutiveRoles]
     end
 
     CW --> FIT
 ```
+
+When `budgetExitThreshold` is enabled, `AbstractAgent` treats it as a generic loop policy: once the latest provider-reported usage for an iteration crosses the configured threshold, it emits `agent.budget_warning` and allows a small wrap-up window before returning `AgentFinishReason::BudgetExhausted`. Product-specific reactions, such as Coqui's workflow-aware wrap-up prompt, remain outside php-agents and are implemented via observers plus `PendingInputProviderInterface`.
 
 ## Embedding & Vector Store Architecture
 

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
@@ -47,7 +47,7 @@ test('chat returns correct response structure', function () {
 
     expect($response)->toBeInstanceOf(Response::class)
         ->and($response->content)->toBe('Hello!')
-        ->and($response->finishReason)->toBe(FinishReason::Stop)
+        ->and($response->finishReason)->toBe(ProviderFinishReason::Stop)
         ->and($response->toolCalls)->toBeEmpty()
         ->and($response->model)->toBe('gpt-4o');
 });
@@ -236,7 +236,7 @@ test('response tool calls are parsed correctly', function () {
     $provider = new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient);
     $response = $provider->chat([new UserMessage('Weather?')]);
 
-    expect($response->finishReason)->toBe(FinishReason::ToolUse)
+    expect($response->finishReason)->toBe(ProviderFinishReason::ToolUse)
         ->and($response->toolCalls)->toHaveCount(1)
         ->and($response->toolCalls[0]->id)->toBe('call_abc')
         ->and($response->toolCalls[0]->name)->toBe('get_weather')
@@ -303,25 +303,25 @@ test('null usage when usage data missing', function () {
 test('finish reason mapping: stop', function () {
     $mockClient = new MockHttpClient([mockOpenAIResponse(['choices' => [['message' => ['content' => 'ok'], 'finish_reason' => 'stop']]])]);
     $response = (new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient))->chat([new UserMessage('hi')]);
-    expect($response->finishReason)->toBe(FinishReason::Stop);
+    expect($response->finishReason)->toBe(ProviderFinishReason::Stop);
 });
 
 test('finish reason mapping: length', function () {
     $mockClient = new MockHttpClient([mockOpenAIResponse(['choices' => [['message' => ['content' => 'truncat'], 'finish_reason' => 'length']]])]);
     $response = (new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient))->chat([new UserMessage('hi')]);
-    expect($response->finishReason)->toBe(FinishReason::MaxTokens);
+    expect($response->finishReason)->toBe(ProviderFinishReason::MaxTokens);
 });
 
 test('finish reason mapping: tool_calls', function () {
     $mockClient = new MockHttpClient([mockOpenAIResponse(['choices' => [['message' => ['content' => null, 'tool_calls' => [['id' => '1', 'type' => 'function', 'function' => ['name' => 't', 'arguments' => '{}']]]], 'finish_reason' => 'tool_calls']]])]);
     $response = (new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient))->chat([new UserMessage('hi')]);
-    expect($response->finishReason)->toBe(FinishReason::ToolUse);
+    expect($response->finishReason)->toBe(ProviderFinishReason::ToolUse);
 });
 
 test('finish reason mapping: function_call', function () {
     $mockClient = new MockHttpClient([mockOpenAIResponse(['choices' => [['message' => ['content' => null, 'tool_calls' => [['id' => '1', 'type' => 'function', 'function' => ['name' => 't', 'arguments' => '{}']]]], 'finish_reason' => 'function_call']]])]);
     $response = (new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient))->chat([new UserMessage('hi')]);
-    expect($response->finishReason)->toBe(FinishReason::ToolUse);
+    expect($response->finishReason)->toBe(ProviderFinishReason::ToolUse);
 });
 
 test('headers include Bearer auth', function () {
@@ -439,7 +439,7 @@ test('stream produces text deltas', function () {
     expect($chunks)->toHaveCount(4)
         ->and($chunks[0]->content)->toBe('He')
         ->and($chunks[1]->content)->toBe('llo')
-        ->and($chunks[2]->finishReason)->toBe(FinishReason::Stop)
+        ->and($chunks[2]->finishReason)->toBe(ProviderFinishReason::Stop)
         ->and($chunks[3]->usage)->not->toBeNull()
         ->and($chunks[3]->usage->totalTokens)->toBe(7);
 });
@@ -465,7 +465,7 @@ test('stream assembles tool call deltas', function () {
     }
 
     // Should get exactly one tool call response
-    $toolChunk = array_filter($chunks, fn(Response $r) => $r->finishReason === FinishReason::ToolUse);
+    $toolChunk = array_filter($chunks, fn(Response $r) => $r->finishReason === ProviderFinishReason::ToolUse);
     expect($toolChunk)->toHaveCount(1);
 
     $tc = array_values($toolChunk)[0];

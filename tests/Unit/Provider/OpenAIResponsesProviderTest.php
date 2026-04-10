@@ -2,12 +2,13 @@
 
 declare(strict_types=1);
 
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Provider\OpenAIResponsesProvider;
 use CarmeloSantana\PHPAgents\Tool\Tool;
+use CarmeloSantana\PHPAgents\Tool\Parameter\MapParameter;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Psr\Log\AbstractLogger;
@@ -52,7 +53,7 @@ test('chat returns correct response structure', function () {
     $response = $provider->chat([new UserMessage('Hi')]);
 
     expect($response->content)->toBe('Hello from Responses API!')
-        ->and($response->finishReason)->toBe(FinishReason::Stop)
+        ->and($response->finishReason)->toBe(ProviderFinishReason::Stop)
         ->and($response->toolCalls)->toBeEmpty()
         ->and($response->model)->toBe('gpt-4o');
 });
@@ -146,7 +147,7 @@ test('chat parses function_call output items as tool calls', function () {
     $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
     $response = $provider->chat([new UserMessage('Weather?')]);
 
-    expect($response->finishReason)->toBe(FinishReason::ToolUse)
+    expect($response->finishReason)->toBe(ProviderFinishReason::ToolUse)
         ->and($response->toolCalls)->toHaveCount(1)
         ->and($response->toolCalls[0]->id)->toBe('call_abc123')
         ->and($response->toolCalls[0]->name)->toBe('get_weather')
@@ -161,7 +162,7 @@ test('chat incomplete status maps to MaxTokens finish reason', function () {
     $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
     $response = $provider->chat([new UserMessage('hi')]);
 
-    expect($response->finishReason)->toBe(FinishReason::MaxTokens);
+    expect($response->finishReason)->toBe(ProviderFinishReason::MaxTokens);
 });
 
 test('responses tool payload normalizes empty schemas for strict mode', function () {
@@ -190,6 +191,33 @@ test('responses tool payload normalizes empty schemas for strict mode', function
         ])
         ->and($requestPayload['tools'][0]['parameters']['properties'])->toBe([])
         ->and($requestPayload['tools'][0]['strict'])->toBeTrue();
+});
+
+test('responses tool payload disables strict mode for open map parameters', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockResponsesApiResponse();
+    });
+
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
+
+    $tool = new Tool(
+        name: 'request',
+        description: 'HTTP request',
+        parameters: [
+            new MapParameter('headers', 'Headers to send', required: false),
+        ],
+        callback: fn(array $args): ToolResult => ToolResult::success('ok'),
+    );
+
+    $provider->chat([new UserMessage('Call the API')], [$tool]);
+
+    expect($requestPayload['tools'][0]['parameters']['properties']['headers'])->toBe([
+        'type' => 'object',
+        'description' => 'Headers to send',
+        'additionalProperties' => true,
+    ])->and($requestPayload['tools'][0]['strict'])->toBeFalse();
 });
 
 test('responses chat trims oversized tool payloads and logs warning', function () {
@@ -398,7 +426,7 @@ test('stream yields tool call on response.completed when pending tool calls exis
 
     $chunks = iterator_to_array($provider->stream([new UserMessage('weather?')]));
 
-    $toolChunks = array_filter($chunks, fn($r) => $r->finishReason === FinishReason::ToolUse);
+    $toolChunks = array_filter($chunks, fn($r) => $r->finishReason === ProviderFinishReason::ToolUse);
     expect($toolChunks)->toHaveCount(1);
 
     $tc = array_values($toolChunks)[0];

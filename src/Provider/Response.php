@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Provider;
 
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 
 final readonly class Response
@@ -14,7 +14,7 @@ final readonly class Response
      */
     public function __construct(
         public string $content,
-        public FinishReason $finishReason,
+        public ProviderFinishReason $finishReason,
         public array $toolCalls = [],
         public string $model = '',
         public ?Usage $usage = null,

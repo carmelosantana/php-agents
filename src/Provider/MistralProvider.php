@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Provider;
 
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
-use CarmeloSantana\PHPAgents\Enum\FinishReason;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;

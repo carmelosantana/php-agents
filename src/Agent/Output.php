@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Agent;
 
+use CarmeloSantana\PHPAgents\Enum\AgentFinishReason;
 use CarmeloSantana\PHPAgents\Message\Conversation;
 use CarmeloSantana\PHPAgents\Provider\Usage;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
@@ -20,5 +21,6 @@ final readonly class Output
         public string $model = '',
         public int $iterations = 0,
         public ?Conversation $conversation = null,
+        public AgentFinishReason $finishReason = AgentFinishReason::Stop,
     ) {}
 }

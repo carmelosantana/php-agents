@@ -355,7 +355,9 @@ final class Conversation
      * Strategy (inspired by OpenClaw):
      * 1. Soft-trim tool results (keep head + tail)
      * 2. Drop oldest turns if still over budget
-     * 3. Repair orphaned tool result pairing
+        * 3. Re-trim tool results more aggressively if one turn still exceeds budget
+        * 4. Repair orphaned tool result pairing
+        * 5. Merge consecutive same-role messages created by pruning
      *
      * A safety margin (default 20%) accounts for heuristic inaccuracy.
      * System messages and the most recent user turn are never dropped.
