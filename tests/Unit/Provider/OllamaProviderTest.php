@@ -12,6 +12,9 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 
+/**
+ * @param array<string, mixed> $overrides
+ */
 function mockOllamaResponse(array $overrides = []): MockResponse
 {
     $body = json_encode(array_merge([
@@ -25,7 +28,7 @@ function mockOllamaResponse(array $overrides = []): MockResponse
             ],
         ],
         'usage' => ['prompt_tokens' => 10, 'completion_tokens' => 5, 'total_tokens' => 15],
-    ], $overrides));
+    ], $overrides), JSON_THROW_ON_ERROR);
 
     return new MockResponse($body, ['http_code' => 200]);
 }
@@ -161,7 +164,7 @@ test('models() parses Ollama native API response', function () {
                 ['name' => 'llama3.2:latest'],
                 ['name' => 'codellama:7b'],
             ],
-        ]), ['http_code' => 200]),
+        ], JSON_THROW_ON_ERROR), ['http_code' => 200]),
     ]);
 
     $provider = new OllamaProvider(httpClient: $mockClient);
@@ -177,7 +180,7 @@ test('models() uses native API endpoint not OpenAI compat', function () {
     $capturedUrl = null;
     $mockClient = new MockHttpClient(function (string $method, string $url) use (&$capturedUrl): MockResponse {
         $capturedUrl = $url;
-        return new MockResponse(json_encode(['models' => []]), ['http_code' => 200]);
+        return new MockResponse(json_encode(['models' => []], JSON_THROW_ON_ERROR), ['http_code' => 200]);
     });
 
     $provider = new OllamaProvider(
@@ -194,7 +197,7 @@ test('isAvailable uses native API', function () {
     $capturedUrl = null;
     $mockClient = new MockHttpClient(function (string $method, string $url) use (&$capturedUrl): MockResponse {
         $capturedUrl = $url;
-        return new MockResponse(json_encode(['models' => []]), ['http_code' => 200]);
+        return new MockResponse(json_encode(['models' => []], JSON_THROW_ON_ERROR), ['http_code' => 200]);
     });
 
     $provider = new OllamaProvider(httpClient: $mockClient);
@@ -231,7 +234,7 @@ test('hasModel checks model list', function () {
                 ['name' => 'llama3.2:latest'],
                 ['name' => 'codellama:7b'],
             ],
-        ]), ['http_code' => 200]),
+        ], JSON_THROW_ON_ERROR), ['http_code' => 200]),
     ]);
 
     $provider = new OllamaProvider(httpClient: $mockClient);
@@ -239,18 +242,32 @@ test('hasModel checks model list', function () {
     expect($provider->hasModel('llama3.2:latest'))->toBeTrue();
 });
 
-test('hasModel matches prefix', function () {
+test('hasModel matches latest alias without broad prefix matching', function () {
     $mockClient = new MockHttpClient([
         new MockResponse(json_encode([
             'models' => [
                 ['name' => 'llama3.2:latest'],
             ],
-        ]), ['http_code' => 200]),
+        ], JSON_THROW_ON_ERROR), ['http_code' => 200]),
     ]);
 
     $provider = new OllamaProvider(httpClient: $mockClient);
 
     expect($provider->hasModel('llama3.2'))->toBeTrue();
+});
+
+test('hasModel does not match arbitrary prefixes', function () {
+    $mockClient = new MockHttpClient([
+        new MockResponse(json_encode([
+            'models' => [
+                ['name' => 'gpt-5.4-2026-03-25'],
+            ],
+        ], JSON_THROW_ON_ERROR), ['http_code' => 200]),
+    ]);
+
+    $provider = new OllamaProvider(httpClient: $mockClient);
+
+    expect($provider->hasModel('gpt-5.4'))->toBeFalse();
 });
 
 test('default apiKey is ollama-local', function () {

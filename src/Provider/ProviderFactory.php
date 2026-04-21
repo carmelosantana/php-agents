@@ -18,22 +18,64 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 final class ProviderFactory
 {
     /**
-     * Conventional environment variable names for provider API keys.
+     * Provider descriptors keyed by canonical provider name.
      *
-     * Checked via getenv() before falling back to openclaw.json config values.
-     * Coqui's CredentialResolver calls putenv() at boot, so workspace .env
-     * entries are automatically available here.
+     * Centralizes aliases, environment variable names, default base URLs,
+     * and construction strategy so provider routing lives in one place.
+     *
+     * @return array<string, array{
+     *     aliases?: list<string>,
+     *     apiKeyEnvVar?: string|null,
+     *     defaultBaseUrl: string,
+     *     type: 'anthropic'|'gemini'|'mistral'|'ollama'|'openai-compatible'|'xai'
+     * }>
      */
-    private const ENV_KEY_MAP = [
-        'openai' => 'OPENAI_API_KEY',
-        'anthropic' => 'ANTHROPIC_API_KEY',
-        'openrouter' => 'OPENROUTER_API_KEY',
-        'xai' => 'XAI_API_KEY',
-        'gemini' => 'GEMINI_API_KEY',
-        'google' => 'GEMINI_API_KEY',
-        'mistral' => 'MISTRAL_API_KEY',
-        'minimax' => 'MINIMAX_API_KEY',
-    ];
+    private static function providerDescriptors(): array
+    {
+        return [
+            'ollama' => [
+                'apiKeyEnvVar' => null,
+                'defaultBaseUrl' => 'http://localhost:11434/v1',
+                'type' => 'ollama',
+            ],
+            'openai' => [
+                'apiKeyEnvVar' => 'OPENAI_API_KEY',
+                'defaultBaseUrl' => 'https://api.openai.com/v1',
+                'type' => 'openai-compatible',
+            ],
+            'anthropic' => [
+                'apiKeyEnvVar' => 'ANTHROPIC_API_KEY',
+                'defaultBaseUrl' => 'https://api.anthropic.com/v1',
+                'type' => 'anthropic',
+            ],
+            'openrouter' => [
+                'apiKeyEnvVar' => 'OPENROUTER_API_KEY',
+                'defaultBaseUrl' => 'https://openrouter.ai/api/v1',
+                'type' => 'openai-compatible',
+            ],
+            'xai' => [
+                'apiKeyEnvVar' => 'XAI_API_KEY',
+                'defaultBaseUrl' => 'https://api.x.ai/v1',
+                'type' => 'xai',
+            ],
+            'gemini' => [
+                'aliases' => ['google'],
+                'apiKeyEnvVar' => 'GEMINI_API_KEY',
+                'defaultBaseUrl' => 'https://generativelanguage.googleapis.com/v1beta',
+                'type' => 'gemini',
+            ],
+            'mistral' => [
+                'apiKeyEnvVar' => 'MISTRAL_API_KEY',
+                'defaultBaseUrl' => 'https://api.mistral.ai/v1',
+                'type' => 'mistral',
+            ],
+            'minimax' => [
+                'apiKeyEnvVar' => 'MINIMAX_API_KEY',
+                'defaultBaseUrl' => 'https://api.minimaxi.com/v1',
+                'type' => 'openai-compatible',
+            ],
+        ];
+    }
 
     public function __construct(
         private readonly ?ConfigInterface $config = null,
@@ -63,15 +105,18 @@ final class ProviderFactory
         ?ConfigInterface $config = null,
         ?HttpClientInterface $httpClient = null,
     ): ProviderInterface {
-        [$providerName, $model] = self::parseModelString($modelString);
+        [$requestedProviderName, $model] = self::parseModelString($modelString);
 
-        $providerConfig = $config?->getProviderConfig($providerName) ?? [];
-        $baseUrl = self::resolveBaseUrl($providerName, $providerConfig);
-        $apiKey = self::resolveApiKey($providerName, $providerConfig);
+        $descriptor = self::resolveProviderDescriptor($requestedProviderName);
+        $providerName = $descriptor['name'];
 
-        $api = $providerConfig['api'] ?? null;
+        $providerConfig = self::resolveProviderConfig($config, $requestedProviderName, $providerName);
+        $baseUrl = self::resolveBaseUrl($descriptor, $providerConfig);
+        $apiKey = self::resolveApiKey($descriptor, $providerConfig);
 
-        return match ($providerName) {
+        $api = is_string($providerConfig['api'] ?? null) ? $providerConfig['api'] : null;
+
+        return match ($descriptor['type']) {
             'ollama' => self::makeOllamaProvider($model, $baseUrl, $config, $httpClient),
             'anthropic' => new AnthropicProvider(
                 model: $model,
@@ -79,7 +124,7 @@ final class ProviderFactory
                 apiKey: $apiKey,
                 httpClient: $httpClient,
             ),
-            'gemini', 'google' => new GeminiProvider(
+            'gemini' => new GeminiProvider(
                 model: $model,
                 baseUrl: $baseUrl,
                 apiKey: $apiKey,
@@ -97,27 +142,56 @@ final class ProviderFactory
                 apiKey: $apiKey,
                 httpClient: $httpClient,
             ),
-            default => match (true) {
-                $api === 'openai-responses' => new OpenAIResponsesProvider(
-                    model: $model,
-                    baseUrl: $baseUrl,
-                    apiKey: $apiKey,
-                    httpClient: $httpClient,
-                ),
-                self::requiresResponsesApi($model) => new OpenAIResponsesProvider(
-                    model: $model,
-                    baseUrl: $baseUrl,
-                    apiKey: $apiKey,
-                    httpClient: $httpClient,
-                ),
-                default => new OpenAICompatibleProvider(
-                    model: $model,
-                    baseUrl: $baseUrl,
-                    apiKey: $apiKey,
-                    httpClient: $httpClient,
-                ),
-            },
+            default => self::makeOpenAICompatibleProvider($model, $baseUrl, $apiKey, $api, $httpClient),
         };
+    }
+
+    /**
+     * Resolve a provider descriptor, applying aliases to canonical names.
+     *
+     * @return array{
+     *     name: string,
+     *     apiKeyEnvVar?: string|null,
+     *     defaultBaseUrl: string,
+     *     type: 'anthropic'|'gemini'|'mistral'|'ollama'|'openai-compatible'|'xai'
+     * }
+     */
+    private static function resolveProviderDescriptor(string $providerName): array
+    {
+        foreach (self::providerDescriptors() as $canonicalName => $descriptor) {
+            $aliases = $descriptor['aliases'] ?? [];
+            if ($providerName === $canonicalName || in_array($providerName, $aliases, true)) {
+                return ['name' => $canonicalName] + $descriptor;
+            }
+        }
+
+        return [
+            'name' => $providerName,
+            'apiKeyEnvVar' => strtoupper($providerName) . '_API_KEY',
+            'defaultBaseUrl' => '',
+            'type' => 'openai-compatible',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function resolveProviderConfig(
+        ?ConfigInterface $config,
+        string $requestedProviderName,
+        string $canonicalProviderName,
+    ): array {
+        $requestedConfig = $config?->getProviderConfig($requestedProviderName) ?? [];
+        if ($requestedConfig !== []) {
+            return $requestedConfig;
+        }
+
+        if ($canonicalProviderName !== $requestedProviderName) {
+            $canonicalConfig = $config?->getProviderConfig($canonicalProviderName) ?? [];
+            return $canonicalConfig;
+        }
+
+        return [];
     }
 
     /**
@@ -152,6 +226,35 @@ final class ProviderFactory
         return new OllamaProvider(...$args);
     }
 
+    private static function makeOpenAICompatibleProvider(
+        string $model,
+        string $baseUrl,
+        string $apiKey,
+        ?string $api,
+        ?HttpClientInterface $httpClient = null,
+    ): ProviderInterface {
+        return match (true) {
+            $api === 'openai-responses' => new OpenAIResponsesProvider(
+                model: $model,
+                baseUrl: $baseUrl,
+                apiKey: $apiKey,
+                httpClient: $httpClient,
+            ),
+            self::requiresResponsesApi($model) => new OpenAIResponsesProvider(
+                model: $model,
+                baseUrl: $baseUrl,
+                apiKey: $apiKey,
+                httpClient: $httpClient,
+            ),
+            default => new OpenAICompatibleProvider(
+                model: $model,
+                baseUrl: $baseUrl,
+                apiKey: $apiKey,
+                httpClient: $httpClient,
+            ),
+        };
+    }
+
     /**
      * Parse "provider/model-name" into [provider, model].
      *
@@ -176,10 +279,17 @@ final class ProviderFactory
      *
      * Supports OLLAMA_HOST env var for Docker/container environments.
      *
+    * @param array{
+    *     name: string,
+    *     apiKeyEnvVar?: string|null,
+    *     defaultBaseUrl: string,
+    *     type: 'anthropic'|'gemini'|'mistral'|'ollama'|'openai-compatible'|'xai'
+    * } $descriptor
      * @param array<string, mixed> $providerConfig
      */
-    private static function resolveBaseUrl(string $provider, array $providerConfig): string
+    private static function resolveBaseUrl(array $descriptor, array $providerConfig): string
     {
+        $provider = $descriptor['name'];
         if ($provider === 'ollama') {
             $envHost = getenv('OLLAMA_HOST');
             if ($envHost !== false && $envHost !== '') {
@@ -189,22 +299,7 @@ final class ProviderFactory
 
         $baseUrl = $providerConfig['baseUrl'] ?? null;
 
-        return is_string($baseUrl) ? $baseUrl : self::defaultBaseUrl($provider);
-    }
-
-    private static function defaultBaseUrl(string $provider): string
-    {
-        return match ($provider) {
-            'ollama' => 'http://localhost:11434/v1',
-            'openai' => 'https://api.openai.com/v1',
-            'anthropic' => 'https://api.anthropic.com/v1',
-            'openrouter' => 'https://openrouter.ai/api/v1',
-            'xai' => 'https://api.x.ai/v1',
-            'gemini', 'google' => 'https://generativelanguage.googleapis.com/v1beta',
-            'mistral' => 'https://api.mistral.ai/v1',
-            'minimax' => 'https://api.minimaxi.com/v1',
-            default => '',
-        };
+        return is_string($baseUrl) ? $baseUrl : $descriptor['defaultBaseUrl'];
     }
 
     /**
@@ -214,18 +309,25 @@ final class ProviderFactory
      * This allows .env files to override hardcoded config values, and
      * enables Coqui's CredentialTool to manage provider keys at runtime.
      *
+    * @param array{
+    *     name: string,
+    *     apiKeyEnvVar?: string|null,
+    *     defaultBaseUrl: string,
+    *     type: 'anthropic'|'gemini'|'mistral'|'ollama'|'openai-compatible'|'xai'
+    * } $descriptor
      * @param array<string, mixed> $providerConfig
      */
-    private static function resolveApiKey(string $provider, array $providerConfig): string
+    private static function resolveApiKey(array $descriptor, array $providerConfig): string
     {
-        // Check environment variable first (highest priority)
-        $envVar = self::ENV_KEY_MAP[$provider] ?? strtoupper($provider) . '_API_KEY';
-        $envValue = getenv($envVar);
-        if ($envValue !== false && $envValue !== '') {
-            return $envValue;
+        $envVar = $descriptor['apiKeyEnvVar'] ?? null;
+
+        if (is_string($envVar) && $envVar !== '') {
+            $envValue = getenv($envVar);
+            if ($envValue !== false && $envValue !== '') {
+                return $envValue;
+            }
         }
 
-        // Fall back to config value
         $configKey = $providerConfig['apiKey'] ?? '';
 
         return is_string($configKey) ? $configKey : '';

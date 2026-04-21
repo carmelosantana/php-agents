@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+use CarmeloSantana\PHPAgents\Config\ModelDefinition;
+use CarmeloSantana\PHPAgents\Contract\ConfigInterface;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
 use CarmeloSantana\PHPAgents\Provider\MistralProvider;
@@ -10,6 +12,61 @@ use CarmeloSantana\PHPAgents\Provider\OpenAICompatibleProvider;
 use CarmeloSantana\PHPAgents\Provider\OpenAIResponsesProvider;
 use CarmeloSantana\PHPAgents\Provider\ProviderFactory;
 use CarmeloSantana\PHPAgents\Provider\XAIProvider;
+use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Response\MockResponse;
+
+/**
+ * @param array<string, array<string, mixed>> $providers
+ * @param array<string, ModelDefinition> $models
+ */
+function makeProviderFactoryConfig(array $providers = [], array $models = []): ConfigInterface
+{
+    return new class($providers, $models) implements ConfigInterface {
+        /**
+         * @param array<string, array<string, mixed>> $providers
+         * @param array<string, ModelDefinition> $models
+         */
+        public function __construct(
+            private array $providers,
+            private array $models,
+        ) {}
+
+        public function get(string $key, mixed $default = null): mixed
+        {
+            return $default;
+        }
+
+        public function has(string $key): bool
+        {
+            return false;
+        }
+
+        public function resolveModel(string $modelOrAlias): string
+        {
+            return $modelOrAlias;
+        }
+
+        public function getPrimaryModel(): string
+        {
+            return 'ollama/llama3.2';
+        }
+
+        public function getImageModel(): ?string
+        {
+            return null;
+        }
+
+        public function getProviderConfig(string $provider): array
+        {
+            return $this->providers[$provider] ?? [];
+        }
+
+        public function getModelDefinition(string $model): ?ModelDefinition
+        {
+            return $this->models[$model] ?? null;
+        }
+    };
+}
 
 test('parseModelString splits provider and model', function () {
     expect(ProviderFactory::parseModelString('openai/gpt-4o'))
@@ -116,6 +173,42 @@ test('fromModelString routes minimax to OpenAICompatibleProvider', function () {
 
     expect($provider)->toBeInstanceOf(OpenAICompatibleProvider::class);
     expect($provider->getModel())->toBe('minimax-01');
+});
+
+test('google alias reuses gemini provider config', function () {
+    $capturedUrl = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url) use (&$capturedUrl): MockResponse {
+        $capturedUrl = $url;
+
+        return new MockResponse(json_encode(['models' => []], JSON_THROW_ON_ERROR), ['http_code' => 200]);
+    });
+
+    $config = makeProviderFactoryConfig([
+        'gemini' => [
+            'baseUrl' => 'https://example.test/v1beta',
+            'apiKey' => 'gemini-test-key',
+        ],
+    ]);
+
+    $provider = ProviderFactory::fromModelString('google/gemini-2.5-pro', $config, $mockClient);
+
+    expect($provider)->toBeInstanceOf(GeminiProvider::class);
+
+    $provider->models();
+
+    expect($capturedUrl)->toBe('https://example.test/v1beta/models');
+});
+
+test('explicit provider api override routes openai compatible providers to responses api', function () {
+    $config = makeProviderFactoryConfig([
+        'openai' => [
+            'api' => 'openai-responses',
+        ],
+    ]);
+
+    $provider = ProviderFactory::fromModelString('openai/gpt-4o', $config);
+
+    expect($provider)->toBeInstanceOf(OpenAIResponsesProvider::class);
 });
 
 test('gemini provider resolves GEMINI_API_KEY from environment', function () {
