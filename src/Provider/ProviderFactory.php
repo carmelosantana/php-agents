@@ -142,7 +142,7 @@ final class ProviderFactory
                 apiKey: $apiKey,
                 httpClient: $httpClient,
             ),
-            default => self::makeOpenAICompatibleProvider($model, $baseUrl, $apiKey, $api, $httpClient),
+            default => self::makeOpenAICompatibleProvider($model, $baseUrl, $apiKey, $api, $providerName, $httpClient),
         };
     }
 
@@ -231,6 +231,7 @@ final class ProviderFactory
         string $baseUrl,
         string $apiKey,
         ?string $api,
+        string $providerName,
         ?HttpClientInterface $httpClient = null,
     ): ProviderInterface {
         return match (true) {
@@ -239,18 +240,21 @@ final class ProviderFactory
                 baseUrl: $baseUrl,
                 apiKey: $apiKey,
                 httpClient: $httpClient,
+                discoveredProviderName: $providerName,
             ),
             self::requiresResponsesApi($model) => new OpenAIResponsesProvider(
                 model: $model,
                 baseUrl: $baseUrl,
                 apiKey: $apiKey,
                 httpClient: $httpClient,
+                discoveredProviderName: $providerName,
             ),
             default => new OpenAICompatibleProvider(
                 model: $model,
                 baseUrl: $baseUrl,
                 apiKey: $apiKey,
                 httpClient: $httpClient,
+                discoveredProviderName: $providerName,
             ),
         };
     }

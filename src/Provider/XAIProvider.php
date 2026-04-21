@@ -34,6 +34,7 @@ final class XAIProvider extends OpenAICompatibleProvider
             apiKey: $apiKey,
             httpClient: $httpClient,
             logger: $logger,
+            discoveredProviderName: 'xai',
         );
     }
 

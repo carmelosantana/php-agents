@@ -301,6 +301,13 @@ final class AnthropicProvider extends AbstractProvider
                     provider: 'anthropic',
                     contextWindow: $model['context_window'] ?? 200000,
                     maxTokens: $model['max_output'] ?? 4096,
+                    family: 'claude',
+                    toolCalls: true,
+                    metadataSource: 'provider-api',
+                    fieldSources: [
+                        'contextWindow' => 'provider-api',
+                        'maxTokens' => 'provider-api',
+                    ],
                 );
             }
 
@@ -314,12 +321,12 @@ final class AnthropicProvider extends AbstractProvider
 
         // Static fallback — kept up-to-date with major releases
         return [
-            new ModelDefinition(id: 'claude-opus-4-20250514', name: 'Claude Opus 4', provider: 'anthropic', contextWindow: 200000, maxTokens: 32000),
-            new ModelDefinition(id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', provider: 'anthropic', contextWindow: 200000, maxTokens: 16000),
-            new ModelDefinition(id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', provider: 'anthropic', contextWindow: 200000, maxTokens: 8192),
-            new ModelDefinition(id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', provider: 'anthropic', contextWindow: 200000, maxTokens: 8192),
-            new ModelDefinition(id: 'claude-3-opus-20240229', name: 'Claude 3 Opus', provider: 'anthropic', contextWindow: 200000, maxTokens: 4096),
-            new ModelDefinition(id: 'claude-3-haiku-20240307', name: 'Claude 3 Haiku', provider: 'anthropic', contextWindow: 200000, maxTokens: 4096),
+            new ModelDefinition(id: 'claude-opus-4-20250514', name: 'Claude Opus 4', provider: 'anthropic', contextWindow: 200000, maxTokens: 32000, family: 'claude', toolCalls: true, metadataSource: 'static-fallback', fieldSources: ['contextWindow' => 'static-fallback', 'maxTokens' => 'static-fallback']),
+            new ModelDefinition(id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', provider: 'anthropic', contextWindow: 200000, maxTokens: 16000, family: 'claude', toolCalls: true, metadataSource: 'static-fallback', fieldSources: ['contextWindow' => 'static-fallback', 'maxTokens' => 'static-fallback']),
+            new ModelDefinition(id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', provider: 'anthropic', contextWindow: 200000, maxTokens: 8192, family: 'claude', toolCalls: true, metadataSource: 'static-fallback', fieldSources: ['contextWindow' => 'static-fallback', 'maxTokens' => 'static-fallback']),
+            new ModelDefinition(id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', provider: 'anthropic', contextWindow: 200000, maxTokens: 8192, family: 'claude', toolCalls: true, metadataSource: 'static-fallback', fieldSources: ['contextWindow' => 'static-fallback', 'maxTokens' => 'static-fallback']),
+            new ModelDefinition(id: 'claude-3-opus-20240229', name: 'Claude 3 Opus', provider: 'anthropic', contextWindow: 200000, maxTokens: 4096, family: 'claude', toolCalls: true, metadataSource: 'static-fallback', fieldSources: ['contextWindow' => 'static-fallback', 'maxTokens' => 'static-fallback']),
+            new ModelDefinition(id: 'claude-3-haiku-20240307', name: 'Claude 3 Haiku', provider: 'anthropic', contextWindow: 200000, maxTokens: 4096, family: 'claude', toolCalls: true, metadataSource: 'static-fallback', fieldSources: ['contextWindow' => 'static-fallback', 'maxTokens' => 'static-fallback']),
         ];
     }
 

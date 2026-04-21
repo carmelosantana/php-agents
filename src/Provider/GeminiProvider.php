@@ -225,6 +225,12 @@ final class GeminiProvider extends AbstractProvider
                     provider: 'gemini',
                     contextWindow: $model['inputTokenLimit'] ?? 1048576,
                     maxTokens: $model['outputTokenLimit'] ?? 8192,
+                    family: 'gemini',
+                    metadataSource: 'provider-api',
+                    fieldSources: [
+                        'contextWindow' => 'provider-api',
+                        'maxTokens' => 'provider-api',
+                    ],
                 );
             }
 
