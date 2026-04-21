@@ -124,11 +124,20 @@ final class OllamaProvider extends OpenAICompatibleProvider
 
             $models = [];
             foreach ($data['models'] ?? [] as $model) {
-                $models[] = new ModelDefinition(
-                    id: $model['name'] ?? '',
-                    name: $model['name'] ?? '',
-                    provider: 'ollama',
-                );
+                if (!is_array($model)) {
+                    continue;
+                }
+
+                $id = $model['name'] ?? '';
+                if (!is_string($id) || $id === '') {
+                    continue;
+                }
+
+                $show = $this->fetchModelDetails($id);
+                $definition = $this->buildModelDefinition($model, $show);
+                if ($definition !== null) {
+                    $models[] = $definition;
+                }
             }
 
             return $models;
@@ -137,6 +146,74 @@ final class OllamaProvider extends OpenAICompatibleProvider
 
             return [];
         }
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function fetchModelDetails(string $model): ?array
+    {
+        try {
+            $ollamaBaseUrl = str_replace('/v1', '', $this->baseUrl);
+            $response = $this->httpClient->request('POST', "{$ollamaBaseUrl}/api/show", [
+                'json' => ['name' => $model],
+                'timeout' => 10,
+            ]);
+
+            return $response->toArray();
+        } catch (\Throwable $e) {
+            $this->logger?->debug('Failed to fetch Ollama model details: {model} {error}', [
+                'model' => $model,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $tagData
+     * @param array<string, mixed>|null $showData
+     */
+    private function buildModelDefinition(array $tagData, ?array $showData): ?ModelDefinition
+    {
+        $id = $tagData['name'] ?? '';
+        if (!is_string($id) || $id === '') {
+            return null;
+        }
+
+        $modelInfo = is_array($showData['model_info'] ?? null) ? $showData['model_info'] : [];
+        $architecture = $modelInfo['general.architecture'] ?? null;
+        $contextLength = null;
+        if (is_string($architecture) && isset($modelInfo[$architecture . '.context_length'])) {
+            $value = $modelInfo[$architecture . '.context_length'];
+            if (is_int($value) || (is_string($value) && is_numeric($value))) {
+                $contextLength = (int) $value;
+            }
+        }
+
+        $capabilities = is_array($showData['capabilities'] ?? null) ? $showData['capabilities'] : [];
+        $details = is_array($tagData['details'] ?? null)
+            ? $tagData['details']
+            : (is_array($showData['details'] ?? null) ? $showData['details'] : []);
+
+        return ModelDefinition::fromDiscovery('ollama', [
+            'id' => $id,
+            'name' => $modelInfo['general.basename'] ?? $showData['remote_model'] ?? $id,
+            'details' => $details,
+            'contextWindow' => $contextLength,
+            'maxTokens' => $contextLength !== null
+                ? ($contextLength < 4096 ? max(1024, (int) floor($contextLength / 2)) : 4096)
+                : null,
+            'vision' => in_array('vision', $capabilities, true),
+            'toolCalls' => in_array('tools', $capabilities, true),
+            'metadataSource' => $contextLength !== null ? 'provider-inspection' : 'heuristic',
+            'fieldSources' => [
+                'contextWindow' => $contextLength !== null ? 'provider-inspection' : 'heuristic',
+                'maxTokens' => $contextLength !== null ? 'heuristic' : 'heuristic',
+            ],
+            'numCtx' => $contextLength,
+        ]);
     }
 
     /**

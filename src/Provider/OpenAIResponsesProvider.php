@@ -35,6 +35,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
         ?LoggerInterface $logger = null,
+        private readonly string $discoveredProviderName = 'openai',
     ) {
         parent::__construct($model, $baseUrl, $apiKey, $httpClient, $logger);
     }
@@ -249,11 +250,14 @@ final class OpenAIResponsesProvider extends AbstractProvider
             $models = [];
 
             foreach ($data['data'] ?? [] as $model) {
-                $models[] = new ModelDefinition(
-                    id: $model['id'] ?? '',
-                    name: $model['id'] ?? '',
-                    provider: 'openai',
-                );
+                if (!is_array($model)) {
+                    continue;
+                }
+
+                $definition = ModelDefinition::fromDiscovery($this->discoveredProviderName, $model);
+                if ($definition !== null) {
+                    $models[] = $definition;
+                }
             }
 
             return $models;

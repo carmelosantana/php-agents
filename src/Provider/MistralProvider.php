@@ -48,6 +48,7 @@ final class MistralProvider extends OpenAICompatibleProvider
             apiKey: $apiKey,
             httpClient: $httpClient,
             logger: $logger,
+            discoveredProviderName: 'mistral',
         );
     }
 

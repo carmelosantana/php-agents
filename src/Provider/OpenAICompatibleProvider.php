@@ -20,6 +20,7 @@ class OpenAICompatibleProvider extends AbstractProvider
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
         ?LoggerInterface $logger = null,
+        protected readonly string $discoveredProviderName = 'openai',
     ) {
         parent::__construct($model, $baseUrl, $apiKey, $httpClient, $logger);
     }
@@ -233,12 +234,11 @@ class OpenAICompatibleProvider extends AbstractProvider
             $data = $response->toArray();
             $models = [];
 
-            foreach ($data['data'] ?? [] as $model) {
-                $models[] = new ModelDefinition(
-                    id: $model['id'] ?? '',
-                    name: $model['id'] ?? '',
-                    provider: 'openai',
-                );
+                foreach ($this->extractModelEntries($data) as $model) {
+                    $definition = $this->buildDiscoveredModelDefinition($model);
+                    if ($definition !== null) {
+                        $models[] = $definition;
+                    }
             }
 
             return $models;
@@ -247,6 +247,25 @@ class OpenAICompatibleProvider extends AbstractProvider
 
             return [];
         }
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return list<array<string, mixed>>
+     */
+    protected function extractModelEntries(array $data): array
+    {
+        $entries = $data['data'] ?? [];
+
+        return is_array($entries) ? array_values(array_filter($entries, 'is_array')) : [];
+    }
+
+    /**
+     * @param array<string, mixed> $model
+     */
+    protected function buildDiscoveredModelDefinition(array $model): ?ModelDefinition
+    {
+        return ModelDefinition::fromDiscovery($this->discoveredProviderName, $model);
     }
 
     public function isAvailable(): bool
