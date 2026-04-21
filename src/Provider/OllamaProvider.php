@@ -158,7 +158,7 @@ final class OllamaProvider extends OpenAICompatibleProvider
         $models = $this->models();
 
         foreach ($models as $m) {
-            if ($m->id === $model || str_starts_with($m->id, $model)) {
+            if (self::matchesModelId($m->id, $model)) {
                 return true;
             }
         }
@@ -204,6 +204,40 @@ final class OllamaProvider extends OpenAICompatibleProvider
         }
 
         return $options;
+    }
+
+    /**
+     * Match a requested model ID without broad prefix expansion.
+     *
+     * Ollama commonly treats an untagged model name as an alias for
+     * `:latest`, so preserve that compatibility case while rejecting
+     * arbitrary prefix matches such as `gpt-5.4` -> `gpt-5.4-2026-03-25`.
+     */
+    private static function matchesModelId(string $availableModelId, string $requestedModelId): bool
+    {
+        if ($availableModelId === $requestedModelId) {
+            return true;
+        }
+
+        [$availableBase, $availableTag] = self::splitModelId($availableModelId);
+        [$requestedBase, $requestedTag] = self::splitModelId($requestedModelId);
+
+        if ($availableBase !== $requestedBase) {
+            return false;
+        }
+
+        return ($availableTag === 'latest' && $requestedTag === null)
+            || ($requestedTag === 'latest' && $availableTag === null);
+    }
+
+    /**
+     * @return array{0: string, 1: string|null}
+     */
+    private static function splitModelId(string $modelId): array
+    {
+        $parts = explode(':', $modelId, 2);
+
+        return [$parts[0], $parts[1] ?? null];
     }
 
     /**
