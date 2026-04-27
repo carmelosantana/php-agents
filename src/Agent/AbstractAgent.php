@@ -663,7 +663,15 @@ abstract class AbstractAgent implements AgentInterface
             $prompt = SystemPrompt::withToolkits($this->toolkits, $prompt);
         }
 
-        return SystemPrompt::render($prompt);
+        return $this->finalizeSystemPrompt(SystemPrompt::render($prompt));
+    }
+
+    /**
+     * Allow subclasses to append turn-scoped sections after the standard system prompt.
+     */
+    protected function finalizeSystemPrompt(string $prompt): string
+    {
+        return $prompt;
     }
 
     /**
