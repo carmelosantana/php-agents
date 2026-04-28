@@ -106,6 +106,22 @@ test('tool execute passes normalized values from validation to callback', functi
     expect($result->content)->toBe('integer:2');
 });
 
+test('tool execute passes normalized structured values from JSON strings to callback', function () {
+    $tool = new Tool(
+        name: 'request',
+        description: 'Issue a structured request',
+        parameters: [
+            new MapParameter('headers', 'Headers to send', required: false),
+        ],
+        callback: fn(array $input) => json_encode($input['headers'], JSON_THROW_ON_ERROR),
+    );
+
+    $result = $tool->execute(['headers' => '{"Accept":"application/json"}']);
+
+    expect($result->status)->toBe(ToolResultStatus::Success);
+    expect(json_decode($result->content, true))->toBe(['Accept' => 'application/json']);
+});
+
 test('toFunctionSchema generates correct structure', function () {
     $tool = new Tool(
         name: 'search',

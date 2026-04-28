@@ -66,3 +66,24 @@ test('array, object, and map parameters validate nested structures', function ()
     expect($headers->validate(['Accept' => 'application/json'])->valid)->toBeTrue();
     expect($headers->validate('not-an-object')->error)->toContain('must be an object');
 });
+
+test('array, object, and map parameters accept JSON string payloads', function () {
+    $tags = new ArrayParameter('tags', 'Tags', items: new StringParameter('tag', 'Tag value', maxLength: 5));
+    $options = new ObjectParameter('options', 'Options', properties: [
+        new StringParameter('path', 'Path', required: true),
+        new BoolParameter('recursive', 'Recursive', required: false),
+    ]);
+    $headers = new MapParameter('headers', 'Headers', required: false);
+
+    $validatedTags = $tags->validate('["a","bb"]');
+    expect($validatedTags->valid)->toBeTrue();
+    expect($validatedTags->value)->toBe(['a', 'bb']);
+
+    $validatedOptions = $options->validate('{"path":"src","recursive":true}');
+    expect($validatedOptions->valid)->toBeTrue();
+    expect($validatedOptions->value)->toBe(['path' => 'src', 'recursive' => true]);
+
+    $validatedHeaders = $headers->validate('{"Accept":"application/json"}');
+    expect($validatedHeaders->valid)->toBeTrue();
+    expect($validatedHeaders->value)->toBe(['Accept' => 'application/json']);
+});
