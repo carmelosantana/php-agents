@@ -31,6 +31,18 @@ final readonly class ArrayParameter extends Parameter
 
     public function validate(mixed $value): ValidationResult
     {
+        if (is_string($value)) {
+            try {
+                $decoded = json_decode($value, true, 512, JSON_THROW_ON_ERROR);
+            } catch (\Throwable) {
+                $decoded = null;
+            }
+
+            if (is_array($decoded)) {
+                $value = $decoded;
+            }
+        }
+
         if (!is_array($value)) {
             return ValidationResult::failure(sprintf('Parameter "%s" must be an array.', $this->name));
         }
