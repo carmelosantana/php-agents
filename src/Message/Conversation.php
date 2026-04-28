@@ -132,6 +132,13 @@ final class Conversation
             $originalLen = strlen($content);
             $trimmedContent = "{$head}\n\n[... trimmed {$originalLen} chars to {$maxChars} ...]\n\n{$tail}";
 
+            if ($msg instanceof ToolResultMessage) {
+                $trimmed->add(new ToolResultMessage(
+                    $msg->result()->withContent($trimmedContent),
+                ));
+                continue;
+            }
+
             $trimmed->add(new ToolResultMessage(
                 (new \CarmeloSantana\PHPAgents\Tool\ToolResult(
                     \CarmeloSantana\PHPAgents\Enum\ToolResultStatus::Success,

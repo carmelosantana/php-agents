@@ -26,4 +26,13 @@ final readonly class MapParameter extends Parameter
             'additionalProperties' => $this->additionalProperties,
         ];
     }
+
+    public function validate(mixed $value): ValidationResult
+    {
+        if (!is_array($value)) {
+            return ValidationResult::failure(sprintf('Parameter "%s" must be an object.', $this->name));
+        }
+
+        return ValidationResult::success($value);
+    }
 }

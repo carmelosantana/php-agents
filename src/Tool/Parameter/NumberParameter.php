@@ -33,4 +33,45 @@ final readonly class NumberParameter extends Parameter
 
         return $schema;
     }
+
+    public function validate(mixed $value): ValidationResult
+    {
+        if (!is_int($value) && !is_float($value) && !is_string($value)) {
+            return ValidationResult::failure(sprintf('Parameter "%s" must be a number.', $this->name));
+        }
+
+        if (is_string($value)) {
+            if ($this->integer) {
+                if (!preg_match('/^-?\d+$/', $value)) {
+                    return ValidationResult::failure(sprintf('Parameter "%s" must be an integer.', $this->name));
+                }
+
+                $value = (int) $value;
+            } else {
+                if (!is_numeric($value)) {
+                    return ValidationResult::failure(sprintf('Parameter "%s" must be a number.', $this->name));
+                }
+
+                $value = (float) $value;
+            }
+        }
+
+        if ($this->integer) {
+            if (is_float($value) && floor($value) !== $value) {
+                return ValidationResult::failure(sprintf('Parameter "%s" must be an integer.', $this->name));
+            }
+
+            $value = (int) $value;
+        }
+
+        if ($this->minimum !== null && $value < $this->minimum) {
+            return ValidationResult::failure(sprintf('Parameter "%s" must be at least %s.', $this->name, (string) $this->minimum));
+        }
+
+        if ($this->maximum !== null && $value > $this->maximum) {
+            return ValidationResult::failure(sprintf('Parameter "%s" must be at most %s.', $this->name, (string) $this->maximum));
+        }
+
+        return ValidationResult::success($value);
+    }
 }

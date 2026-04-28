@@ -108,6 +108,32 @@ Required parameters are validated before the callback is invoked. If any require
 // ToolResult::error("Missing required parameters: name")
 ```
 
+Declared parameter constraints are also enforced at runtime before the callback runs.
+This means schema hints like string patterns, max length, enum values, numeric min/max,
+and nested array/object parameter rules now protect the callback from invalid input.
+
+```php
+$tool = new Tool(
+    name: 'create_project',
+    description: 'Create a project',
+    parameters: [
+        new StringParameter('slug', 'Lowercase slug', pattern: '/^[a-z-]+$/'),
+        new NumberParameter('count', 'Project count', required: false, integer: true, minimum: 1),
+    ],
+    callback: fn(array $args): ToolResult => ToolResult::success(
+        sprintf('Creating %s x%d', $args['slug'], $args['count'] ?? 1),
+    ),
+);
+
+// Invalid values fail before the callback executes:
+// ToolResult::error('Parameter validation failed: Parameter "slug" does not match the required pattern. ...')
+```
+
+Validation remains additive and backward-compatible:
+- Tools without extra constraints keep their current behavior
+- Valid inputs continue to reach the callback unchanged
+- Numeric parameters may be normalized before execution when the declared type allows it
+
 ### Tool Results
 
 Tools return `ToolResult` with a status and content:
@@ -122,12 +148,29 @@ ToolResult::success('File created at /path/to/file.txt');
 // Error
 ToolResult::error('Permission denied: /etc/passwd');
 
+// Structured JSON helper — still stored as string content for provider compatibility
+ToolResult::json([
+    'id' => 'artifact_123',
+    'status' => 'created',
+]);
+
 // With call ID (set automatically by the agent loop)
 new ToolResult(
     status: ToolResultStatus::Success,
     content: 'Done',
     callId: 'call_abc123',
 );
+```
+
+`ToolResult` now also supports additive metadata and display hints without changing the
+provider wire format. This is useful for internal inspection, UI hints, or future routing
+logic while keeping `content` as a plain string.
+
+```php
+$result = ToolResult::success('Finished')
+    ->withMetadata(['phase' => 'apply'])
+    ->withMimeType('text/plain')
+    ->withDisplayHint('plain-text');
 ```
 
 ### Custom Tool Classes
@@ -309,6 +352,36 @@ final class GitToolkit implements ToolkitInterface
     }
 }
 ```
+
+### Optional Rich Tool Documentation
+
+If a tool needs richer generic prompt documentation than its name, description, and
+parameter list, it can optionally implement `ToolDocumentationInterface`.
+
+```php
+use CarmeloSantana\PHPAgents\Contract\ToolDocumentationInterface;
+
+final class SearchTool implements ToolInterface, ToolDocumentationInterface
+{
+    public function useWhen(): ?string
+    {
+        return 'Use this when you know the capability you need but not the exact record ID.';
+    }
+
+    public function examples(): array
+    {
+        return [
+            'query: "recent invoices"',
+            'query: "customer by email"',
+        ];
+    }
+
+    // ... remaining ToolInterface methods ...
+}
+```
+
+`SystemPrompt::withTools()` uses this interface to render optional “Use when” guidance and
+examples in the generic tool docs. Provider tool schemas are unchanged.
 
 ## Tool Execution Policies
 

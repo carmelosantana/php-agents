@@ -24,6 +24,11 @@ final readonly class ToolResultMessage implements MessageInterface
         return $this->result->content;
     }
 
+    public function result(): ToolResult
+    {
+        return $this->result;
+    }
+
     public function toolCalls(): array
     {
         return [];

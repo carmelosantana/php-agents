@@ -28,4 +28,32 @@ final readonly class ArrayParameter extends Parameter
 
         return $schema;
     }
+
+    public function validate(mixed $value): ValidationResult
+    {
+        if (!is_array($value)) {
+            return ValidationResult::failure(sprintf('Parameter "%s" must be an array.', $this->name));
+        }
+
+        if ($this->items === null) {
+            return ValidationResult::success($value);
+        }
+
+        $validated = [];
+        foreach ($value as $index => $item) {
+            $result = $this->items->validate($item);
+            if (!$result->valid) {
+                return ValidationResult::failure(sprintf(
+                    'Parameter "%s" has an invalid item at index %d: %s',
+                    $this->name,
+                    $index,
+                    $result->error ?? 'Invalid value.',
+                ));
+            }
+
+            $validated[$index] = $result->value;
+        }
+
+        return ValidationResult::success($validated);
+    }
 }

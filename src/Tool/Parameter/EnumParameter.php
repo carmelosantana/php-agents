@@ -26,4 +26,21 @@ final readonly class EnumParameter extends Parameter
             'enum' => $this->values,
         ];
     }
+
+    public function validate(mixed $value): ValidationResult
+    {
+        if (!is_string($value)) {
+            return ValidationResult::failure(sprintf('Parameter "%s" must be a string.', $this->name));
+        }
+
+        if (!in_array($value, $this->values, true)) {
+            return ValidationResult::failure(sprintf(
+                'Parameter "%s" must be one of: %s.',
+                $this->name,
+                implode(', ', $this->values),
+            ));
+        }
+
+        return ValidationResult::success($value);
+    }
 }

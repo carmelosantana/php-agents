@@ -37,4 +37,47 @@ final readonly class ObjectParameter extends Parameter
             'required' => $required,
         ];
     }
+
+    public function validate(mixed $value): ValidationResult
+    {
+        if (!is_array($value)) {
+            return ValidationResult::failure(sprintf('Parameter "%s" must be an object.', $this->name));
+        }
+
+        $validated = $value;
+        $missing = [];
+
+        foreach ($this->properties as $param) {
+            if ($param->required && !array_key_exists($param->name, $value)) {
+                $missing[] = $param->name;
+                continue;
+            }
+
+            if (!array_key_exists($param->name, $value)) {
+                continue;
+            }
+
+            $result = $param->validate($value[$param->name]);
+            if (!$result->valid) {
+                return ValidationResult::failure(sprintf(
+                    'Parameter "%s.%s" is invalid: %s',
+                    $this->name,
+                    $param->name,
+                    $result->error ?? 'Invalid value.',
+                ));
+            }
+
+            $validated[$param->name] = $result->value;
+        }
+
+        if ($missing !== []) {
+            return ValidationResult::failure(sprintf(
+                'Parameter "%s" is missing required properties: %s.',
+                $this->name,
+                implode(', ', $missing),
+            ));
+        }
+
+        return ValidationResult::success($validated);
+    }
 }
