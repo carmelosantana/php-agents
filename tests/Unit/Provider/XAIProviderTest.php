@@ -3,9 +3,13 @@
 declare(strict_types=1);
 
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
+use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\XAIProvider;
+use CarmeloSantana\PHPAgents\Tool\ToolCall;
+use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 
@@ -215,6 +219,39 @@ test('empty content array passes through', function () {
 
     $content = $requestPayload['messages'][0]['content'];
     expect($content)->toBeArray()->and($content)->toBeEmpty();
+});
+
+test('tool result json helper stays string-only in xai payloads', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockXAIResponse();
+    });
+
+    $provider = new XAIProvider(
+        model: 'grok-4',
+        apiKey: 'test-key',
+        httpClient: $mockClient,
+    );
+
+    $provider->chat([
+        new UserMessage('Read the file'),
+        new AssistantMessage('', [new ToolCall('call_1', 'read_file', ['path' => '/tmp/test'])]),
+        new ToolResultMessage(
+            ToolResult::json(['status' => 'ok', 'path' => '/tmp/test'], ['phase' => 'read'])
+                ->withMimeType('application/json')
+                ->withCallId('call_1'),
+        ),
+    ]);
+
+    $toolMessage = $requestPayload['messages'][2];
+
+    expect($toolMessage['role'])->toBe('tool')
+        ->and($toolMessage['tool_call_id'])->toBe('call_1')
+        ->and($toolMessage['content'])->toContain('"status": "ok"')
+        ->and($toolMessage['content'])->toContain('"path": "/tmp/test"')
+        ->and($toolMessage)->not->toHaveKey('metadata')
+        ->and($toolMessage)->not->toHaveKey('mimeType');
 });
 
 test('chat parses tool call response', function () {

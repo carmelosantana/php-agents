@@ -4,8 +4,15 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Prompt;
 
+use CarmeloSantana\PHPAgents\Contract\ToolDocumentationInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolkitInterface;
+use CarmeloSantana\PHPAgents\Tool\Parameter\ArrayParameter;
+use CarmeloSantana\PHPAgents\Tool\Parameter\EnumParameter;
+use CarmeloSantana\PHPAgents\Tool\Parameter\NumberParameter;
+use CarmeloSantana\PHPAgents\Tool\Parameter\ObjectParameter;
+use CarmeloSantana\PHPAgents\Tool\Parameter\Parameter;
+use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
 
 final class SystemPrompt
 {
@@ -51,12 +58,28 @@ final class SystemPrompt
             $lines[] = "### {$tool->name()}";
             $lines[] = $tool->description();
 
+            if ($tool instanceof ToolDocumentationInterface) {
+                $useWhen = $tool->useWhen();
+                if ($useWhen !== null && trim($useWhen) !== '') {
+                    $lines[] = "Use when: {$useWhen}";
+                }
+
+                $examples = $tool->examples();
+                if ($examples !== []) {
+                    $lines[] = 'Examples:';
+                    foreach ($examples as $example) {
+                        $lines[] = "  - {$example}";
+                    }
+                }
+            }
+
             $params = $tool->parameters();
             if (!empty($params)) {
                 $lines[] = "Parameters:";
                 foreach ($params as $param) {
                     $req = $param->required ? '(required)' : '(optional)';
-                    $lines[] = "  - `{$param->name}` {$req}: {$param->description}";
+                    $constraintText = self::describeParameterConstraints($param);
+                    $lines[] = "  - `{$param->name}` {$req}: {$param->description}{$constraintText}";
                 }
             }
             $lines[] = '';
@@ -65,6 +88,68 @@ final class SystemPrompt
         $new->tools = implode("\n", $lines);
 
         return $new;
+    }
+
+    private static function describeParameterConstraints(Parameter $param): string
+    {
+        $parts = [];
+
+        if ($param instanceof StringParameter) {
+            if ($param->enum !== null && $param->enum !== []) {
+                $parts[] = 'accepted values: ' . implode(', ', $param->enum);
+            }
+
+            if ($param->maxLength !== null) {
+                $parts[] = sprintf('max length: %d', $param->maxLength);
+            }
+
+            if ($param->pattern !== null) {
+                $parts[] = 'pattern: ' . $param->pattern;
+            }
+        }
+
+        if ($param instanceof EnumParameter) {
+            $parts[] = 'accepted values: ' . implode(', ', $param->values);
+        }
+
+        if ($param instanceof NumberParameter) {
+            if ($param->integer) {
+                $parts[] = 'integer';
+            }
+
+            if ($param->minimum !== null) {
+                $parts[] = 'min: ' . $param->minimum;
+            }
+
+            if ($param->maximum !== null) {
+                $parts[] = 'max: ' . $param->maximum;
+            }
+        }
+
+        if ($param instanceof ArrayParameter && $param->items !== null) {
+            $parts[] = 'item type: ' . self::describeParameterType($param->items);
+        }
+
+        if ($param instanceof ObjectParameter && $param->properties !== []) {
+            $parts[] = 'properties: ' . implode(', ', array_map(
+                static fn(Parameter $property): string => sprintf('%s%s', $property->name, $property->required ? '' : '?'),
+                $param->properties,
+            ));
+        }
+
+        return $parts === [] ? '' : ' [' . implode('; ', $parts) . ']';
+    }
+
+    private static function describeParameterType(Parameter $param): string
+    {
+        return match (true) {
+            $param instanceof StringParameter => 'string',
+            $param instanceof EnumParameter => 'enum',
+            $param instanceof NumberParameter => $param->integer ? 'integer' : 'number',
+            $param instanceof ArrayParameter => 'array',
+            $param instanceof ObjectParameter => 'object',
+            default => 'value',
+        };
     }
 
     /**

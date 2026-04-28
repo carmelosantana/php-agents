@@ -76,6 +76,30 @@ test('trimToolResults preserves tool_call_id', function () {
     expect($trimmed->messages()[0]->toolCallId())->toBe('call_abc');
 });
 
+test('trimToolResults preserves tool result metadata on wrapped tool messages', function () {
+    $conversation = new Conversation();
+    $conversation->add(new ToolResultMessage(
+        ToolResult::success(str_repeat('a', 1000))
+            ->withMetadata(['source' => 'tool'])
+            ->withMimeType('text/plain')
+            ->withDisplayHint('debug')
+            ->withRetryable(true)
+            ->withErrorCode('NONE')
+            ->withCallId('call_abc'),
+    ));
+
+    $trimmed = $conversation->trimToolResults(200);
+    $message = $trimmed->messages()[0];
+
+    expect($message)->toBeInstanceOf(ToolResultMessage::class);
+    expect($message->toolCallId())->toBe('call_abc');
+    expect($message->result()->metadata)->toBe(['source' => 'tool']);
+    expect($message->result()->mimeType)->toBe('text/plain');
+    expect($message->result()->displayHint)->toBe('debug');
+    expect($message->result()->retryable)->toBeTrue();
+    expect($message->result()->errorCode)->toBe('NONE');
+});
+
 test('trimToolResults returns new instance', function () {
     $conversation = new Conversation();
     $conversation->add(new UserMessage('hello'));

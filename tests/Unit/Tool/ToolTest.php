@@ -5,6 +5,7 @@ declare(strict_types=1);
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
+use CarmeloSantana\PHPAgents\Tool\Parameter\NumberParameter;
 use CarmeloSantana\PHPAgents\Tool\Parameter\MapParameter;
 use CarmeloSantana\PHPAgents\Enum\ToolResultStatus;
 
@@ -61,6 +62,48 @@ test('tool wraps ToolResult from callback', function () {
 
     expect($result->status)->toBe(ToolResultStatus::Success);
     expect($result->content)->toBe('custom output');
+});
+
+test('tool execute validates parameter constraints before running callback', function () {
+    $callbackRan = false;
+
+    $tool = new Tool(
+        name: 'create_project',
+        description: 'Create a project',
+        parameters: [
+            new StringParameter('slug', 'Project slug', pattern: '/^[a-z-]+$/'),
+            new NumberParameter('count', 'Project count', required: false, integer: true, minimum: 1),
+        ],
+        callback: function (array $input) use (&$callbackRan) {
+            $callbackRan = true;
+
+            return sprintf('%s:%d', $input['slug'], $input['count']);
+        },
+    );
+
+    $result = $tool->execute(['slug' => 'Invalid Slug', 'count' => 0]);
+
+    expect($callbackRan)->toBeFalse();
+    expect($result->status)->toBe(ToolResultStatus::Error);
+    expect($result->content)->toContain('Parameter validation failed');
+    expect($result->content)->toContain('required pattern');
+    expect($result->content)->toContain('at least 1');
+});
+
+test('tool execute passes normalized values from validation to callback', function () {
+    $tool = new Tool(
+        name: 'count_items',
+        description: 'Count items',
+        parameters: [
+            new NumberParameter('count', 'Item count', integer: true, minimum: 1),
+        ],
+        callback: fn(array $input) => gettype($input['count']) . ':' . $input['count'],
+    );
+
+    $result = $tool->execute(['count' => '2']);
+
+    expect($result->status)->toBe(ToolResultStatus::Success);
+    expect($result->content)->toBe('integer:2');
 });
 
 test('toFunctionSchema generates correct structure', function () {

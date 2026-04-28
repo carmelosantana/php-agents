@@ -12,6 +12,11 @@ abstract readonly class Parameter
         public bool $required = true,
     ) {}
 
+    public function validate(mixed $value): ValidationResult
+    {
+        return ValidationResult::success($value);
+    }
+
     /**
      * JSON Schema fragment for this parameter.
      *

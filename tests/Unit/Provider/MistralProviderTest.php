@@ -520,6 +520,37 @@ test('normalization is deterministic — same input produces same output', funct
     expect($id1)->toBe($id2);
 });
 
+test('tool result json helper stays string-only after mistral tool call id normalization', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockMistralResponse();
+    });
+
+    $provider = new MistralProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $callId = 'call_very_long_tool_result_identifier';
+
+    $provider->chat([
+        new UserMessage('Read the file'),
+        new AssistantMessage('', [new ToolCall($callId, 'read_file', ['path' => '/tmp/test'])]),
+        new ToolResultMessage(
+            ToolResult::json(['status' => 'ok', 'path' => '/tmp/test'], ['phase' => 'read'])
+                ->withRetryable(false)
+                ->withCallId($callId),
+        ),
+    ]);
+
+    $normalizedId = $requestPayload['messages'][1]['tool_calls'][0]['id'];
+    $toolMessage = $requestPayload['messages'][2];
+
+    expect($normalizedId)->toMatch('/^[a-zA-Z0-9]{9}$/')
+        ->and($toolMessage['tool_call_id'])->toBe($normalizedId)
+        ->and($toolMessage['content'])->toContain('"status": "ok"')
+        ->and($toolMessage['content'])->toContain('"path": "/tmp/test"')
+        ->and($toolMessage)->not->toHaveKey('metadata')
+        ->and($toolMessage)->not->toHaveKey('retryable');
+});
+
 test('messages without tool calls pass through unchanged', function () {
     $requestPayload = null;
     $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {

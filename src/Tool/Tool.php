@@ -51,8 +51,29 @@ final class Tool implements ToolInterface
             );
         }
 
+        $validatedInput = $input;
+        $errors = [];
+
+        foreach ($this->parameters as $param) {
+            if (!array_key_exists($param->name, $validatedInput)) {
+                continue;
+            }
+
+            $result = $param->validate($validatedInput[$param->name]);
+            if (!$result->valid) {
+                $errors[] = $result->error ?? sprintf('Parameter "%s" is invalid.', $param->name);
+                continue;
+            }
+
+            $validatedInput[$param->name] = $result->value;
+        }
+
+        if ($errors !== []) {
+            return ToolResult::error('Parameter validation failed: ' . implode(' ', $errors));
+        }
+
         try {
-            $result = ($this->callback)($input);
+            $result = ($this->callback)($validatedInput);
 
             if ($result instanceof ToolResult) {
                 return $result;

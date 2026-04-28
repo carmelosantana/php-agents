@@ -6,10 +6,12 @@ use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
+use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Provider\OpenAIResponsesProvider;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\Parameter\MapParameter;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
+use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Psr\Log\AbstractLogger;
 use Symfony\Component\HttpClient\MockHttpClient;
@@ -288,6 +290,35 @@ test('responses stream trims oversized tool payloads', function () {
 
     expect($requestPayload['tools'])->toHaveCount(128)
         ->and($requestPayload['tools'][127]['name'])->toBe('tool_127');
+});
+
+test('responses formats tool result outputs as strings and ignores tool result metadata', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockResponsesApiResponse();
+    });
+
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
+
+    $provider->chat([
+        new UserMessage('Read the file'),
+        new AssistantMessage('', [new ToolCall('call_1', 'read_file', ['path' => '/tmp/test'])]),
+        new ToolResultMessage(
+            ToolResult::json(['status' => 'ok', 'path' => '/tmp/test'], ['phase' => 'read'])
+                ->withDisplayHint('structured-json')
+                ->withCallId('call_1'),
+        ),
+    ]);
+
+    $toolOutput = $requestPayload['input'][2];
+
+    expect($toolOutput['type'])->toBe('function_call_output')
+        ->and($toolOutput['call_id'])->toBe('call_1')
+        ->and($toolOutput['output'])->toContain('"status": "ok"')
+        ->and($toolOutput['output'])->toContain('"path": "/tmp/test"')
+        ->and($toolOutput)->not->toHaveKey('metadata')
+        ->and($toolOutput)->not->toHaveKey('displayHint');
 });
 
 // --- Reasoning ---

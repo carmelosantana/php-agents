@@ -6,8 +6,11 @@ use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
+use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
+use CarmeloSantana\PHPAgents\Tool\ToolCall;
+use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 
@@ -382,6 +385,37 @@ test('structured output uses tool_use trick', function () {
         ->and($requestPayload['tools'][0]['name'])->toBe('extract_data')
         ->and($requestPayload['tool_choice'])->toBe(['type' => 'tool', 'name' => 'extract_data'])
         ->and($result)->toBe(['name' => 'Alice']);
+});
+
+test('tool result messages serialize as tool_result blocks and ignore tool result metadata', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockAnthropicResponse();
+    });
+
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $provider->chat([
+        new UserMessage('Read the file'),
+        new AssistantMessage('', [new ToolCall('toolu_123', 'read_file', ['path' => '/tmp/test'])]),
+        new ToolResultMessage(
+            ToolResult::json(['status' => 'ok', 'path' => '/tmp/test'], ['phase' => 'read'])
+                ->withMimeType('application/json')
+                ->withDisplayHint('structured-json')
+                ->withCallId('toolu_123'),
+        ),
+    ]);
+
+    $toolResultBlock = $requestPayload['messages'][2]['content'][0];
+
+    expect($toolResultBlock['type'])->toBe('tool_result')
+        ->and($toolResultBlock['tool_use_id'])->toBe('toolu_123')
+        ->and($toolResultBlock['content'])->toContain('"status": "ok"')
+        ->and($toolResultBlock['content'])->toContain('"path": "/tmp/test"')
+        ->and($toolResultBlock)->not->toHaveKey('metadata')
+        ->and($toolResultBlock)->not->toHaveKey('mimeType')
+        ->and($toolResultBlock)->not->toHaveKey('displayHint');
 });
 
 // --- Reasoning / Extended Thinking ---

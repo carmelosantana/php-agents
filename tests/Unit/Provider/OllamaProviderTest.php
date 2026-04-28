@@ -3,11 +3,16 @@
 declare(strict_types=1);
 
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Contract\ToolDocumentationInterface;
+use CarmeloSantana\PHPAgents\Contract\ToolInterface;
+use CarmeloSantana\PHPAgents\Message\AssistantMessage;
+use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\Parameter\NumberParameter;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
+use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
@@ -155,6 +160,99 @@ test('constraint demotion appends to description', function () {
     $props = $requestPayload['tools'][0]['function']['parameters']['properties'] ?? [];
     expect($props)->toHaveKey('name')
         ->and($props['name']['type'])->toBe('string');
+});
+
+test('tool documentation interface remains prompt-only in ollama tool payloads', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOllamaResponse();
+    });
+
+    $provider = new OllamaProvider(model: 'llama3.2', httpClient: $mockClient);
+
+    $tool = new class implements ToolInterface, ToolDocumentationInterface {
+        public function name(): string
+        {
+            return 'documented_tool';
+        }
+
+        public function description(): string
+        {
+            return 'Search documentation';
+        }
+
+        public function parameters(): array
+        {
+            return [new StringParameter('query', 'Search query', required: true)];
+        }
+
+        public function execute(array $input): ToolResult
+        {
+            return ToolResult::success('ok');
+        }
+
+        public function toFunctionSchema(): array
+        {
+            return (new Tool(
+                name: $this->name(),
+                description: $this->description(),
+                parameters: $this->parameters(),
+                callback: fn(array $input): ToolResult => $this->execute($input),
+            ))->toFunctionSchema();
+        }
+
+        public function useWhen(): ?string
+        {
+            return 'Use this when you need to search docs.';
+        }
+
+        public function examples(): array
+        {
+            return ['query: "tool calling"'];
+        }
+    };
+
+    $provider->chat([new UserMessage('Search docs')], [$tool]);
+
+    $function = $requestPayload['tools'][0]['function'];
+
+    expect($requestPayload['num_ctx'])->toBe(65536)
+        ->and($function['name'])->toBe('documented_tool')
+        ->and($function['description'])->toBe('Search documentation')
+        ->and($function['parameters']['properties']['query']['type'])->toBe('string')
+        ->and($function)->not->toHaveKey('examples')
+        ->and($function)->not->toHaveKey('useWhen')
+        ->and($function)->not->toHaveKey('use_when');
+});
+
+test('tool result json helper stays string-only in ollama message payloads', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOllamaResponse();
+    });
+
+    $provider = new OllamaProvider(model: 'llama3.2', httpClient: $mockClient);
+
+    $provider->chat([
+        new UserMessage('Read the file'),
+        new AssistantMessage('', [new ToolCall('call_1', 'read_file', ['path' => '/tmp/test'])]),
+        new ToolResultMessage(
+            ToolResult::json(['status' => 'ok', 'path' => '/tmp/test'], ['phase' => 'read'])
+                ->withErrorCode('NONE')
+                ->withCallId('call_1'),
+        ),
+    ]);
+
+    $toolMessage = $requestPayload['messages'][2];
+
+    expect($toolMessage['role'])->toBe('tool')
+        ->and($toolMessage['tool_call_id'])->toBe('call_1')
+        ->and($toolMessage['content'])->toContain('"status": "ok"')
+        ->and($toolMessage['content'])->toContain('"path": "/tmp/test"')
+        ->and($toolMessage)->not->toHaveKey('metadata')
+        ->and($toolMessage)->not->toHaveKey('errorCode');
 });
 
 test('models() parses Ollama native API response', function () {
