@@ -8,6 +8,9 @@ use CarmeloSantana\PHPAgents\Enum\ToolResultStatus;
 
 final readonly class ToolResult
 {
+    /**
+     * @param array<string, mixed> $metadata
+     */
     public function __construct(
         public ToolResultStatus $status,
         public string $content,
