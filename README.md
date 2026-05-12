@@ -10,7 +10,7 @@
 
 PHP 8.4+ framework for building AI agents with tool-use loops, provider abstraction, and composable toolkits.
 
-Build agents that reason, use tools, and iterate autonomously — powered by any OpenAI-compatible API, Anthropic, or local models via Ollama. You provide the toolkits; php-agents provides the agent loop.
+Build agents that reason, use tools, and iterate autonomously — powered by any OpenAI-compatible API, Anthropic, or local models via Ollama. You provide the toolkits; php-agents provides a non-opinionated agent loop.
 
 ```mermaid
 graph LR
@@ -280,12 +280,49 @@ Working examples live in the [`examples/`](examples/) directory:
 
 ## `php-agents` In The Wild
 
-[Coqui](https://github.com/AgentCoqui/coqui) is a full AI assistant product built on php-agents. It demonstrates the framework's extensibility:
+These projects take `php-agents` in very different directions: a personal AI companion, a real-time emulator runner, and a model benchmark workbench.
 
-- **php-agents** is the **library** — agent loop, providers, tools, messages, embeddings
-- **Coqui** is the **product** — REPL, API server, session persistence, multi-agent orchestration, credential management, security policies, toolkit discovery
-
-Coqui adds product logic on top of `php-agents` framework code, with zero code duplication. Each Coqui agent (`OrchestratorAgent`, `ChildAgent`) extends `AbstractAgent` — they are purely configuration layers.
+<table>
+    <tr>
+        <td width="42%" valign="top">
+            <a href="https://github.com/AgentCoqui/coqui">
+                <img src="screenshots/coqui-screenshot-01.png" alt="Coqui screenshot" />
+            </a>
+        </td>
+        <td width="58%" valign="top">
+            <strong><a href="https://github.com/AgentCoqui/coqui">Coqui</a></strong>
+            <br />
+            Your personal AI companion with a soul. Long-term memory, reflective personalities, and tools for consciousness research. Because agents deserve identity, continuity, and a good REPL.
+            <br />
+        </td>
+    </tr>
+    <tr>
+        <td width="42%" valign="top">
+            <a href="https://github.com/carmelosantana/php-llm-benchy">
+                <img src="screenshots/llm-benchy-screenshot-01.png" alt="LLM Benchy dashboard screenshot" />
+            </a>
+        </td>
+        <td width="58%" valign="top">
+            <strong><a href="https://github.com/carmelosantana/php-llm-benchy">LLM Benchy</a></strong>
+            <br />
+            Put your models to the test. Benchmarks tool use, creativity, code quality, and shell execution with live browser traces and a strict 100-point grading system. Local-first, reproducible, inspectable.
+            <br />
+        </td>
+    </tr>    
+    <tr>
+        <td width="42%" valign="top">
+            <a href="https://github.com/carmelosantana/php-plays">
+                <img src="screenshots/php-plays-screenshot-01.png" alt="php-plays gameplay screenshot" />
+            </a>
+        </td>
+        <td width="58%" valign="top">
+            <strong><a href="https://github.com/carmelosantana/php-plays">php-plays</a></strong>
+            <br />
+            AI attempts to teach itself to <strike>play</strike> fumble through Super Mario World. Reads game RAM, reasons over strategy files, and mashes buttons at ~60fps. <strike>Turns out agents are pretty good at Super Mario World.</strike>
+            <br />
+        </td>
+    </tr>
+</table>
 
 ## License
 

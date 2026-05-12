@@ -15,3 +15,6 @@
 # Tests and build scripts
 /tests/               export-ignore
 /scripts/             export-ignore
+
+# README-only screenshots
+/screenshots/         export-ignore
