@@ -280,8 +280,6 @@ Working examples live in the [`examples/`](examples/) directory:
 
 ## `php-agents` In The Wild
 
-These projects take `php-agents` in very different directions: a personal AI companion, a real-time emulator runner, and a model benchmark workbench.
-
 <table>
     <tr>
         <td width="42%" valign="top">
@@ -318,11 +316,13 @@ These projects take `php-agents` in very different directions: a personal AI com
         <td width="58%" valign="top">
             <strong><a href="https://github.com/carmelosantana/php-plays">php-plays</a></strong>
             <br />
-            AI attempts to teach itself to <strike>play</strike> fumble through Super Mario World. Reads game RAM, reasons over strategy files, and mashes buttons at ~60fps. <strike>Turns out agents are pretty good at Super Mario World.</strike>
+            AI attempts to teach itself to <strike>play</strike> fumble through Super Mario World. Reads game RAM, reasons over strategy files, and mashes buttons at ~60fps. <strike>Turns out agents are pretty good at playing games.</strike>
             <br />
         </td>
     </tr>
 </table>
+
+> Building with php-agents? Lets us know on [Discord](https://discord.gg/Vc29xdvGAH) or open a PR to add your project to the list!
 
 ## License
 

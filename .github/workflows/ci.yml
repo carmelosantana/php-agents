@@ -24,6 +24,7 @@ jobs:
         with:
           php-version: ${{ matrix.php }}
           extensions: mbstring, curl, xml
+          tools: composer:v2.9.8
           coverage: none
 
       - name: Get Composer cache directory
@@ -60,6 +61,7 @@ jobs:
         with:
           php-version: ${{ matrix.php }}
           extensions: mbstring, curl, xml
+          tools: composer:v2.9.8
           coverage: none
 
       - name: Get Composer cache directory
