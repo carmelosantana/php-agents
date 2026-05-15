@@ -119,3 +119,23 @@ test('fake runtime enforces capability gates for tools, images, and structured o
     expect(fn() => iterator_to_array($handle->stream($structuredRequest)))
         ->toThrow(RuntimeException::class, 'does not support structured output');
 });
+
+test('fake runtime rejects open when unavailable', function () {
+    $runtime = new FakeLocalModelRuntime();
+    $runtime->registerModel(new RuntimeModelMetadata(id: 'offline', name: 'Offline'));
+    $runtime->setAvailable(false);
+
+    expect($runtime->isAvailable())->toBeFalse()
+        ->and(fn() => $runtime->open('offline'))
+        ->toThrow(RuntimeException::class, 'runtime is unavailable');
+});
+
+test('fake runtime handle close is enforced', function () {
+    $runtime = new FakeLocalModelRuntime();
+    $runtime->registerModel(new RuntimeModelMetadata(id: 'close-test', name: 'Close Test'));
+    $handle = $runtime->open('close-test');
+    $handle->close();
+
+    expect(fn() => $handle->model())
+        ->toThrow(RuntimeException::class, 'handle is closed');
+});
