@@ -12,6 +12,10 @@ use CarmeloSantana\PHPAgents\Runtime\RuntimeCompletionResult;
 use CarmeloSantana\PHPAgents\Runtime\RuntimeImageInput;
 use CarmeloSantana\PHPAgents\Runtime\RuntimeModelMetadata;
 
+/**
+ * @phpstan-type NativeModelHandle object{path: string, pointer: mixed}&\stdClass
+ * @phpstan-type NativeContextHandle object{pointer: mixed, batchSize: int, threads: int, mtmd: mixed, mtmdProjectorPath: ?string}&\stdClass
+ */
 final class FfiLlamaCppNativeApi implements LlamaCppNativeApiInterface
 {
     private const int INT32_MIN = -2147483648;
@@ -60,6 +64,9 @@ final class FfiLlamaCppNativeApi implements LlamaCppNativeApiInterface
         $this->backendInitialized = true;
     }
 
+    /**
+     * @return NativeModelHandle
+     */
     public function openModel(string $path, array $options = []): object
     {
         $this->backendInit();
@@ -120,6 +127,10 @@ final class FfiLlamaCppNativeApi implements LlamaCppNativeApiInterface
         );
     }
 
+    /**
+     * @param NativeModelHandle $model
+     * @return NativeContextHandle
+     */
     public function openContext(object $model, array $options = []): object
     {
         $params = $this->symbol('llama_context_default_params');
@@ -147,6 +158,9 @@ final class FfiLlamaCppNativeApi implements LlamaCppNativeApiInterface
         ];
     }
 
+    /**
+     * @param NativeContextHandle $context
+     */
     public function closeContext(object $context): void
     {
         if (($context->mtmd ?? null) !== null && !\FFI::isNull($context->mtmd)) {
@@ -264,6 +278,10 @@ final class FfiLlamaCppNativeApi implements LlamaCppNativeApiInterface
         return $this->cString($textBuffer, $written);
     }
 
+    /**
+     * @param NativeModelHandle $model
+     * @param NativeContextHandle $context
+     */
     public function generate(
         object $model,
         object $context,
@@ -273,6 +291,10 @@ final class FfiLlamaCppNativeApi implements LlamaCppNativeApiInterface
         return RuntimeCompletionResult::fromChunks($this->stream($model, $context, $metadata, $request));
     }
 
+    /**
+     * @param NativeModelHandle $model
+     * @param NativeContextHandle $context
+     */
     public function stream(
         object $model,
         object $context,
@@ -501,6 +523,10 @@ final class FfiLlamaCppNativeApi implements LlamaCppNativeApiInterface
         return $tokenCount;
     }
 
+    /**
+     * @param NativeModelHandle $model
+     * @param NativeContextHandle $context
+     */
     private function evaluateMultimodalPrompt(
         object $model,
         object $context,
@@ -631,6 +657,10 @@ final class FfiLlamaCppNativeApi implements LlamaCppNativeApiInterface
         }
     }
 
+    /**
+     * @param NativeModelHandle $model
+     * @param NativeContextHandle $context
+     */
     private function ensureMtmdContext(
         object $model,
         object $context,
@@ -823,11 +853,19 @@ final class FfiLlamaCppNativeApi implements LlamaCppNativeApiInterface
             return \FFI::string($value);
         }
 
+        if ($length < 0) {
+            throw new \RuntimeException('FFI string length cannot be negative.');
+        }
+
         return \FFI::string($value, $length);
     }
 
     private function copy(mixed $target, string $source, int $length): void
     {
+        if ($length < 0) {
+            throw new \RuntimeException('FFI copy length cannot be negative.');
+        }
+
         $ffi = $this->ffi();
 
         $ffi->{'memcpy'}($target, $source, $length);
@@ -885,6 +923,10 @@ final class FfiLlamaCppNativeApi implements LlamaCppNativeApiInterface
 
     private function mtmdCopy(mixed $target, string $source, int $length): void
     {
+        if ($length < 0) {
+            throw new \RuntimeException('FFI copy length cannot be negative.');
+        }
+
         $ffi = $this->mtmdFfi();
 
         $ffi->{'memcpy'}($target, $source, $length);
