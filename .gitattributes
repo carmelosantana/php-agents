@@ -8,9 +8,17 @@
 # CI / Dev tooling
 /.github/             export-ignore
 /.gitignore           export-ignore
+/.env                 export-ignore
+/.env.*               export-ignore
+/.llama-cpp*.env      export-ignore
 /.phpunit.cache/      export-ignore
 /phpstan.neon         export-ignore
 /phpunit.xml          export-ignore
+/benchmark_output*.txt export-ignore
+/cache_benchmark_output*.json export-ignore
+/raw_compare_output*.json export-ignore
+/test_output.log      export-ignore
+/test_results*.log    export-ignore
 
 # Tests and build scripts
 /tests/               export-ignore

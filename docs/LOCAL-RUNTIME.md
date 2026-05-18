@@ -61,10 +61,10 @@ export LLAMA_CPP_MODEL_PATH="/path/to/model.gguf"
 
 ### One-command setup
 
-php-agents now ships a setup script that can build llama.cpp, optionally download a GGUF artifact, and write a reusable env file:
+php-agents now ships a setup script that can build llama.cpp, download a default Qwen2.5 1.5B GGUF artifact, and write a reusable env file:
 
 ```bash
-composer setup:llama-cpp -- --hf-repo your-org/your-model-GGUF --hf-file model-q4_k_m.gguf
+composer setup:llama-cpp
 source ./.llama-cpp.env
 ```
 
@@ -72,8 +72,28 @@ By default the script:
 
 - builds llama.cpp from source with `BUILD_SHARED_LIBS=ON`
 - writes `.llama-cpp.env`
+- keeps that env file local to your machine; it is generated runtime state and should not be committed
 - persists `LLAMA_CACHE` to a user cache directory
 - keeps the GGUF path explicit so `LLAMA_CPP_MODEL_PATH` is deterministic
+- defaults `OLLAMA_BASE_URL` to `http://localhost:11434/v1`
+- defaults `OLLAMA_MODEL` to `qwen2.5:1.5b`
+- defaults the local GGUF to `bartowski/Qwen2.5-1.5B-Instruct-GGUF` with `Qwen2.5-1.5B-Instruct-Q4_K_M.gguf`
+
+It also accepts the Coqui/OpenClaw-style model identifier `ollama/qwen2.5:1.5b` and normalizes it to the raw Ollama model name before running the comparison.
+
+Override the default GGUF when you need a different quantization:
+
+```bash
+composer setup:llama-cpp -- --hf-repo your-org/your-model-GGUF --hf-file model-q4_k_m.gguf
+source ./.llama-cpp.env
+```
+
+If you only want the shared library build and do not want a model download yet:
+
+```bash
+composer setup:llama-cpp -- --skip-model-download
+source ./.llama-cpp.env
+```
 
 If you already have a local build, skip the build step and point the script at existing files:
 
@@ -108,9 +128,14 @@ Download a `.gguf` file from Hugging Face or another compatible source, then exp
 export LLAMA_CPP_MODEL_PATH="/path/to/your-model.gguf"
 ```
 
-The `Qwen/Qwen3-Coder-30B-A3B-Instruct` model page is the base Transformers/Safetensors model card, not the GGUF artifact itself. For local llama.cpp usage you need a GGUF quantization repo and file, then point the setup script at that GGUF artifact.
+The `https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct` page is the base Transformers/Safetensors model card, not the GGUF artifact itself. For local llama.cpp usage you need a GGUF quantization repo and file, then point the setup script at that GGUF artifact.
 
-For Qwen3-Coder-30B-A3B-Instruct specifically, the model card notes that reducing the context window to around `32768` can help if you run into memory pressure locally.
+For the default Qwen2.5 1.5B setup, the shipped `.llama-cpp.env` uses a `4096` context window because it provides a stable local integration footprint on typical developer machines.
+
+So the recommended split for this exact setup is:
+
+- remote comparison model: `ollama/qwen2.5:1.5b`
+- local llama.cpp model: `bartowski/Qwen2.5-1.5B-Instruct-GGUF` with `Qwen2.5-1.5B-Instruct-Q4_K_M.gguf`, or another compatible GGUF provided as `--model-path` or `--hf-repo` plus `--hf-file`
 
 For image-capable models, also provide the matching projector file:
 
@@ -135,11 +160,29 @@ After sourcing `.llama-cpp.env`, run:
 composer test:llama-cpp-runtime
 ```
 
-That wrapper does three things:
+That wrapper does four things:
 
 - runs the guarded native integration suite
 - runs the native runtime benchmark
-- if `OLLAMA_MODEL` is set, compares native llama.cpp with the configured Ollama/OpenAI-compatible endpoint through php-agents' `OllamaProvider`
+- runs the native warm-handle cache benchmark
+- if `OLLAMA_MODEL` is set, runs one consolidated Ollama comparison suite that reports both provider-surface behavior through php-agents' `OllamaProvider` and raw-parity behavior through Ollama `POST /api/generate`
+
+If you only want the cache benchmark directly, run:
+
+```bash
+composer benchmark:llama-cpp-cache
+```
+
+If you only want the consolidated Ollama comparison directly, run:
+
+```bash
+composer compare:llama-cpp-vs-ollama
+```
+
+That comparison command prints two sections:
+
+- `providerSurface` for end-to-end php-agents behavior through `OllamaProvider`
+- `rawParity` for same-prompt comparison through Ollama `POST /api/generate` with `raw: true`
 
 If you only want the local runtime checks, skip the remote comparison:
 
@@ -175,7 +218,7 @@ Then build the Ollama model:
 ollama create gemma-3-1b-direct -f Modelfile
 ```
 
-If your remote endpoint is already hosting a model behind `https://ollama:11434/v1`, you can also point `.llama-cpp.env` at that endpoint with `OLLAMA_BASE_URL` and `OLLAMA_MODEL` and use `composer test:llama-cpp-runtime` as a functional integration check. That is a provider-surface comparison, not a strict raw-prompt parity check.
+If your remote endpoint is already hosting a model behind `http://localhost:11434/v1`, you can also point `.llama-cpp.env` at that endpoint with `OLLAMA_BASE_URL` and `OLLAMA_MODEL` and use `composer test:llama-cpp-runtime` as a functional integration check. That is a provider-surface comparison, not a strict raw-prompt parity check.
 
 ### 4. Compare with raw prompts and matched sampling settings
 

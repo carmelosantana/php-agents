@@ -430,7 +430,15 @@ final class FfiLlamaCppNativeApi implements LlamaCppNativeApiInterface
 
     private function readOptionalCString(mixed $value): ?string
     {
-        if ($value === null || \FFI::isNull($value)) {
+        if ($value === null) {
+            return null;
+        }
+
+        if (is_string($value)) {
+            return $value !== '' ? $value : null;
+        }
+
+        if (!($value instanceof \FFI\CData) || \FFI::isNull($value)) {
             return null;
         }
 
@@ -811,13 +819,11 @@ final class FfiLlamaCppNativeApi implements LlamaCppNativeApiInterface
 
     private function cString(mixed $value, ?int $length = null): string
     {
-        $ffi = $this->ffi();
-
         if ($length === null) {
-            return $ffi->{'string'}($value);
+            return \FFI::string($value);
         }
 
-        return $ffi->{'string'}($value, $length);
+        return \FFI::string($value, $length);
     }
 
     private function copy(mixed $target, string $source, int $length): void

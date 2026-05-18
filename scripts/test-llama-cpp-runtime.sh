@@ -28,8 +28,8 @@ usage() {
     cat <<EOF
 Usage: $0 [options]
 
-Run the native llama.cpp integration slice, the runtime benchmark, and an optional
-Ollama/OpenAI-compatible comparison using php-agents' provider surface.
+Run the native llama.cpp integration slice, the runtime benchmark, the cache benchmark,
+and an optional Ollama comparison suite covering both provider-surface and raw parity runs.
 
 Options:
   --env-file <path>       Env file to source (default: $env_file)
@@ -73,7 +73,7 @@ source "$env_file"
 set +a
 
 [[ -n "${LLAMA_CPP_LIB_PATH:-}" ]] || fail "LLAMA_CPP_LIB_PATH is not set"
-[[ -n "${LLAMA_CPP_MODEL_PATH:-}" ]] || fail "LLAMA_CPP_MODEL_PATH is not set"
+[[ -n "${LLAMA_CPP_MODEL_PATH:-}" ]] || fail "LLAMA_CPP_MODEL_PATH is not set. Rerun composer setup:llama-cpp or set --model-path/--hf-repo/--hf-file when generating $env_file."
 
 if [[ $do_install -eq 1 ]]; then
     info "Installing composer dependencies"
@@ -87,8 +87,12 @@ info "Running native llama.cpp integration tests"
 ok "Native integration tests passed"
 
 info "Running native runtime benchmark"
-composer benchmark:llama-cpp-runtime
+php scripts/benchmark-llama-cpp-runtime.php
 ok "Native runtime benchmark completed"
+
+info "Running native cache benchmark"
+php scripts/benchmark-llama-cpp-cache.php
+ok "Native cache benchmark completed"
 
 if [[ $skip_remote -eq 1 ]]; then
     warn "Skipping remote comparison by request"
@@ -101,6 +105,6 @@ if [[ -z "${OLLAMA_MODEL:-}" ]]; then
     exit 0
 fi
 
-info "Running php-agents comparison against ${OLLAMA_BASE_URL:-https://ollama:11434/v1}"
-composer compare:llama-cpp-vs-ollama
-ok "Remote comparison completed"
+info "Running consolidated Ollama comparison suite against ${OLLAMA_BASE_URL:-http://localhost:11434/v1}"
+php scripts/compare-llama-cpp-vs-ollama.php
+ok "Ollama comparison suite completed"
