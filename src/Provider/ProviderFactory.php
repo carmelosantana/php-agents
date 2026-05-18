@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Provider;
 
 use CarmeloSantana\PHPAgents\Contract\ConfigInterface;
+use CarmeloSantana\PHPAgents\Contract\LocalModelRuntimeInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
@@ -27,7 +28,7 @@ final class ProviderFactory
      *     aliases?: list<string>,
      *     apiKeyEnvVar?: string|null,
      *     defaultBaseUrl: string,
-     *     type: 'anthropic'|'gemini'|'mistral'|'ollama'|'openai-compatible'|'xai'
+    *     type: 'anthropic'|'gemini'|'llama-cpp'|'mistral'|'ollama'|'openai-compatible'|'xai'
      * }>
      */
     private static function providerDescriptors(): array
@@ -37,6 +38,12 @@ final class ProviderFactory
                 'apiKeyEnvVar' => null,
                 'defaultBaseUrl' => 'http://localhost:11434/v1',
                 'type' => 'ollama',
+            ],
+            'llama-cpp' => [
+                'aliases' => ['llamacpp'],
+                'apiKeyEnvVar' => null,
+                'defaultBaseUrl' => '',
+                'type' => 'llama-cpp',
             ],
             'openai' => [
                 'apiKeyEnvVar' => 'OPENAI_API_KEY',
@@ -80,6 +87,7 @@ final class ProviderFactory
     public function __construct(
         private readonly ?ConfigInterface $config = null,
         private readonly ?HttpClientInterface $httpClient = null,
+        private readonly ?LocalModelRuntimeInterface $localModelRuntime = null,
     ) {}
 
     /**
@@ -90,7 +98,7 @@ final class ProviderFactory
      */
     public function create(string $modelString): ProviderInterface
     {
-        return self::fromModelString($modelString, $this->config, $this->httpClient);
+        return self::fromModelString($modelString, $this->config, $this->httpClient, $this->localModelRuntime);
     }
 
     /**
@@ -104,6 +112,7 @@ final class ProviderFactory
         string $modelString,
         ?ConfigInterface $config = null,
         ?HttpClientInterface $httpClient = null,
+        ?LocalModelRuntimeInterface $localModelRuntime = null,
     ): ProviderInterface {
         [$requestedProviderName, $model] = self::parseModelString($modelString);
 
@@ -118,6 +127,7 @@ final class ProviderFactory
 
         return match ($descriptor['type']) {
             'ollama' => self::makeOllamaProvider($model, $baseUrl, $config, $httpClient),
+            'llama-cpp' => self::makeLlamaCppProvider($model, $providerConfig, $config, $localModelRuntime),
             'anthropic' => new AnthropicProvider(
                 model: $model,
                 baseUrl: $baseUrl,
@@ -153,7 +163,7 @@ final class ProviderFactory
      *     name: string,
      *     apiKeyEnvVar?: string|null,
      *     defaultBaseUrl: string,
-     *     type: 'anthropic'|'gemini'|'mistral'|'ollama'|'openai-compatible'|'xai'
+    *     type: 'anthropic'|'gemini'|'llama-cpp'|'mistral'|'ollama'|'openai-compatible'|'xai'
      * }
      */
     private static function resolveProviderDescriptor(string $providerName): array
@@ -226,6 +236,76 @@ final class ProviderFactory
         return new OllamaProvider(...$args);
     }
 
+    /**
+     * @param array<string, mixed> $providerConfig
+     */
+    private static function makeLlamaCppProvider(
+        string $model,
+        array $providerConfig,
+        ?ConfigInterface $config,
+        ?LocalModelRuntimeInterface $localModelRuntime,
+    ): LlamaCppProvider {
+        if ($localModelRuntime === null) {
+            throw new \InvalidArgumentException('llama-cpp provider requires an injected local model runtime.');
+        }
+
+        $modelDefinition = $config?->getModelDefinition($model);
+        $runtimeOptions = $providerConfig;
+
+        if (is_string($providerConfig['defaultTemplate'] ?? null) && !isset($runtimeOptions['builtInTemplate'])) {
+            $runtimeOptions['builtInTemplate'] = $providerConfig['defaultTemplate'];
+        }
+
+        if (is_string($providerConfig['defaultToolParser'] ?? null) && !isset($runtimeOptions['defaultToolParser'])) {
+            $runtimeOptions['defaultToolParser'] = $providerConfig['defaultToolParser'];
+        }
+
+        if ($modelDefinition?->numCtx !== null && !isset($runtimeOptions['numCtx'])) {
+            $runtimeOptions['numCtx'] = $modelDefinition->numCtx;
+        }
+
+        $modelTemplate = $modelDefinition?->extras['template'] ?? null;
+        if (is_string($modelTemplate) && $modelTemplate !== '' && !isset($runtimeOptions['modelTemplate'])) {
+            $runtimeOptions['modelTemplate'] = $modelTemplate;
+        }
+
+        $modelToolParser = $modelDefinition?->extras['toolParser'] ?? null;
+        if (is_string($modelToolParser) && $modelToolParser !== '' && !isset($runtimeOptions['modelToolParser'])) {
+            $runtimeOptions['modelToolParser'] = $modelToolParser;
+        }
+
+        $modelProjectorPath = $modelDefinition?->extras['projectorPath'] ?? null;
+        if (is_string($modelProjectorPath) && $modelProjectorPath !== '' && !isset($runtimeOptions['modelProjectorPath'])) {
+            $runtimeOptions['modelProjectorPath'] = $modelProjectorPath;
+        }
+
+        $maxImages = $modelDefinition?->extras['maxImages'] ?? null;
+        if (is_int($maxImages) && !isset($runtimeOptions['maxImages'])) {
+            $runtimeOptions['maxImages'] = $maxImages;
+        }
+
+        $imageTokenCost = $modelDefinition?->extras['imageTokenCost'] ?? null;
+        if (is_int($imageTokenCost) && !isset($runtimeOptions['imageTokenCost'])) {
+            $runtimeOptions['imageTokenCost'] = $imageTokenCost;
+        }
+
+        $structuredOutputModes = $modelDefinition?->extras['structuredOutputModes'] ?? null;
+        if (is_array($structuredOutputModes) && !isset($runtimeOptions['structuredOutputModes'])) {
+            $runtimeOptions['structuredOutputModes'] = $structuredOutputModes;
+        }
+
+        $supportsStructuredOutput = $modelDefinition?->extras['supportsStructuredOutput'] ?? null;
+        if (is_bool($supportsStructuredOutput) && !isset($runtimeOptions['supportsStructuredOutput'])) {
+            $runtimeOptions['supportsStructuredOutput'] = $supportsStructuredOutput;
+        }
+
+        return new LlamaCppProvider(
+            model: $model,
+            runtime: $localModelRuntime,
+            runtimeOptions: $runtimeOptions,
+        );
+    }
+
     private static function makeOpenAICompatibleProvider(
         string $model,
         string $baseUrl,
@@ -287,7 +367,7 @@ final class ProviderFactory
     *     name: string,
     *     apiKeyEnvVar?: string|null,
     *     defaultBaseUrl: string,
-    *     type: 'anthropic'|'gemini'|'mistral'|'ollama'|'openai-compatible'|'xai'
+    *     type: 'anthropic'|'gemini'|'llama-cpp'|'mistral'|'ollama'|'openai-compatible'|'xai'
     * } $descriptor
      * @param array<string, mixed> $providerConfig
      */
@@ -317,7 +397,7 @@ final class ProviderFactory
     *     name: string,
     *     apiKeyEnvVar?: string|null,
     *     defaultBaseUrl: string,
-    *     type: 'anthropic'|'gemini'|'mistral'|'ollama'|'openai-compatible'|'xai'
+    *     type: 'anthropic'|'gemini'|'llama-cpp'|'mistral'|'ollama'|'openai-compatible'|'xai'
     * } $descriptor
      * @param array<string, mixed> $providerConfig
      */

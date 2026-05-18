@@ -4,20 +4,50 @@ Providers abstract the differences between LLM APIs. php-agents ships with provi
 
 ## Provider Feature Matrix
 
-| Feature | OpenAI Compatible | OpenAI Responses | Ollama | Anthropic | Gemini | xAI | Mistral |
-|---------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| `chat()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `stream()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `structured()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Tool calling | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Streaming + tool calls | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Image input (base64) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Image input (URL) | ✅ | ✅ | ✅ | ✅ | ✅* | ✅ | ✅ |
-| `models()` list | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `isAvailable()` health check | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `withModel()` immutable swap | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Feature | OpenAI Compatible | OpenAI Responses | Ollama | Anthropic | Gemini | xAI | Mistral | LlamaCpp |
+|---------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| `chat()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `stream()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `structured()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Tool calling | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Streaming + tool calls | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Image input (base64) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Image input (URL) | ✅ | ✅ | ✅ | ✅ | ✅* | ✅ | ✅ | ✅ |
+| `models()` list | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `isAvailable()` health check | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `withModel()` immutable swap | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 \* Gemini does not natively support URL image references. The provider auto-downloads URL images and converts them to base64 `inlineData` for seamless compatibility.
+
+## LlamaCppProvider
+
+`LlamaCppProvider` is the direct local provider for llama.cpp-backed runtimes. It keeps the same message, tool, streaming, multimodal, and structured-output surface as the rest of php-agents while dispatching through a local runtime instead of HTTP.
+
+The provider is typically paired with `docs/LOCAL-RUNTIME.md`, which documents the native FFI runtime, setup steps, and the guarded integration matrix.
+
+```php
+use CarmeloSantana\PHPAgents\Provider\LlamaCppProvider;
+use CarmeloSantana\PHPAgents\Runtime\LlamaCpp\FfiLlamaCppNativeApi;
+use CarmeloSantana\PHPAgents\Runtime\LlamaCpp\LlamaCppNativeRuntime;
+
+$runtime = new LlamaCppNativeRuntime(
+    new FfiLlamaCppNativeApi(getenv('LLAMA_CPP_LIB_PATH')),
+    [],
+    ['threads' => 2, 'numCtx' => 4096],
+);
+
+$provider = new LlamaCppProvider(
+    model: getenv('LLAMA_CPP_MODEL_PATH'),
+    runtime: $runtime,
+);
+```
+
+### Native Runtime Notes
+
+- Direct text generation and streaming are handled inside the native llama.cpp runtime.
+- Strict structured output uses a JSON grammar plus schema validation at the runtime layer.
+- Image input is supported when the model has a matching projector GGUF and `libmtmd` is available.
+- The provider still owns history formatting, tool prompt injection, and tool-call parsing so the high-level provider contract remains consistent with remote backends.
 
 ## OpenAICompatibleProvider
 

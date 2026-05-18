@@ -1,7 +1,15 @@
 /vendor/
 /.env
+/.env.*
+/.llama-cpp*.env
 *.cache
 .phpunit.result.cache
 .phpunit.cache/
 composer.lock
 .DS_Store
+/BUILD/
+/benchmark_output*.txt
+/cache_benchmark_output*.json
+/raw_compare_output*.json
+/test_output.log
+/test_results*.log

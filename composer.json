@@ -42,7 +42,27 @@
     },
     "scripts": {
         "test": "pest",
-        "analyse": "phpstan analyse --memory-limit=512M"
+        "analyse": "phpstan analyse --memory-limit=512M",
+        "benchmark:llama-cpp-runtime": [
+            "Composer\\Config::disableProcessTimeout",
+            "php scripts/benchmark-llama-cpp-runtime.php"
+        ],
+        "benchmark:llama-cpp-cache": [
+            "Composer\\Config::disableProcessTimeout",
+            "php scripts/benchmark-llama-cpp-cache.php"
+        ],
+        "compare:llama-cpp-vs-ollama": [
+            "Composer\\Config::disableProcessTimeout",
+            "php scripts/compare-llama-cpp-vs-ollama.php"
+        ],
+        "setup:llama-cpp": [
+            "Composer\\Config::disableProcessTimeout",
+            "./scripts/setup-llama-cpp.sh"
+        ],
+        "test:llama-cpp-runtime": [
+            "Composer\\Config::disableProcessTimeout",
+            "./scripts/test-llama-cpp-runtime.sh"
+        ]
     },
     "minimum-stability": "stable",
     "prefer-stable": true,

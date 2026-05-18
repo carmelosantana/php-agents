@@ -10,12 +10,12 @@
 
 PHP 8.4+ framework for building AI agents with tool-use loops, provider abstraction, and composable toolkits.
 
-Build agents that reason, use tools, and iterate autonomously — powered by any OpenAI-compatible API, Anthropic, or local models via Ollama. You provide the toolkits; php-agents provides a non-opinionated agent loop.
+Build agents that reason, use tools, and iterate autonomously — powered by any OpenAI-compatible API, Anthropic, local models via Ollama, or a native llama.cpp runtime. You provide the toolkits; php-agents provides a non-opinionated agent loop.
 
 ```mermaid
 graph LR
     APP[Your App] --> AGENT[Agent]
-    AGENT --> PROVIDER[Provider<br/>OpenAI / Anthropic / Ollama]
+    AGENT --> PROVIDER[Provider<br/>OpenAI / Anthropic / Ollama / llama.cpp]
     AGENT --> TOOLS[Tools & Toolkits<br/>Custom Toolkits]
     AGENT --> OBSERVER[Observers<br/>Logging / Streaming / Metrics]
     PROVIDER --> LLM[LLM]
@@ -26,7 +26,7 @@ graph LR
 ## Features
 
 - **Agentic tool-use loop** — automatic iteration: the LLM calls tools, processes results, and decides when it's done
-- **Multi-provider** — Ollama (local), OpenAI, Anthropic, Gemini, xAI, Mistral, OpenRouter, or any OpenAI-compatible endpoint
+- **Multi-provider** — Ollama (local), native llama.cpp, OpenAI, Anthropic, Gemini, xAI, Mistral, OpenRouter, or any OpenAI-compatible endpoint
 - **Streaming + tool calls** — all providers support streaming with assembled tool call deltas
 - **Structured output** — extract typed data from LLMs via JSON mode (OpenAI) or tool-use trick (Anthropic)
 - **Image input** — send images to vision models via base64, URL, or file path (auto-converts between provider formats; URLs pre-downloaded for providers that don't support them natively)
@@ -40,17 +40,17 @@ graph LR
 
 ## Provider Feature Matrix
 
-| Feature                | OpenAI Compatible | OpenAI Responses | Ollama | Anthropic | Gemini |  xAI  | Mistral |
-| ---------------------- | :---------------: | :--------------: | :----: | :-------: | :----: | :---: | :-----: |
-| `chat()`               |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
-| `stream()`             |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
-| `structured()`         |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
-| Tool calling           |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
-| Streaming + tool calls |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
-| Image input (base64)   |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
-| Image input (URL)      |         ✅         |        ✅         |   ✅    |     ✅     |   *    |   ✅   |    ✅    |
-| `models()` list        |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
-| `isAvailable()`        |         ✅         |        ✅         |   ✅    |     ✅     |   ✅    |   ✅   |    ✅    |
+| Feature | OpenAI Compatible | OpenAI Responses | Ollama | Anthropic | Gemini | xAI | Mistral |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `chat()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `stream()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `structured()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Tool calling | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Streaming + tool calls | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Image input (base64) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Image input (URL) | ✅ | ✅ | ✅ | ✅ | * | ✅ | ✅ |
+| `models()` list | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `isAvailable()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 *\* Gemini does not natively support URL image references. The provider auto-downloads URL images and converts them to base64 `inlineData`.*
 
@@ -66,6 +66,23 @@ graph LR
 ```bash
 composer require carmelosantana/php-agents
 ```
+
+## Local Inference Modes
+
+- `OllamaProvider` is the easiest local path and remains the default quick-start option.
+- The native llama.cpp runtime is for direct FFI-based local inference without an HTTP sidecar.
+- The full native setup, benchmarking, and comparison workflow lives in [docs/LOCAL-RUNTIME.md](docs/LOCAL-RUNTIME.md).
+
+Fastest path to validate native llama.cpp in this repo:
+
+```bash
+composer setup:llama-cpp
+source ./.llama-cpp.env
+composer test:llama-cpp-runtime -- --skip-remote
+composer compare:llama-cpp-vs-ollama
+```
+
+The setup script writes a local `.llama-cpp.env` file for your machine. That file is generated runtime state and should not be committed.
 
 ## Quick Start
 
@@ -260,23 +277,24 @@ Publish your toolkit as a Composer package with auto-discovery:
 
 ## Documentation
 
-| Guide                                          | Description                                              |
-| ---------------------------------------------- | -------------------------------------------------------- |
-| [Architecture](docs/architecture.md)           | System design, Mermaid diagrams, extension points        |
-| [Getting Started](docs/getting-started.md)     | Installation, provider setup, first agent                |
-| [Providers](docs/providers.md)                 | Feature matrix, streaming, structured output, images     |
+| Guide | Description |
+| --- | --- |
+| [Architecture](docs/architecture.md) | System design, Mermaid diagrams, extension points |
+| [Getting Started](docs/getting-started.md) | Installation, provider setup, first agent |
+| [Local Runtime](docs/LOCAL-RUNTIME.md) | Native llama.cpp setup, testing, benchmarking, comparison |
+| [Providers](docs/providers.md) | Feature matrix, streaming, structured output, images |
 | [Tools & Toolkits](docs/tools-and-toolkits.md) | Parameter types, execution policies, publishing packages |
-| [Agents](docs/agents.md)                       | Agent loop, observers, cancellation, context window      |
-| [Embeddings & Vector Stores](docs/memory.md)    | Vector similarity search, embedding providers            |
+| [Agents](docs/agents.md) | Agent loop, observers, cancellation, context window |
+| [Embeddings & Vector Stores](docs/memory.md) | Vector similarity search, embedding providers |
 
 ## Examples
 
 Working examples live in the [`examples/`](examples/) directory:
 
-| Example                                       | Description                                               | Run                                                 |
-| --------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------- |
-| [CLI Chat](examples/cli-chat.php)             | Interactive terminal conversation with an LLM             | `php examples/cli-chat.php`                         |
-| [README Summarizer](examples/web-summarizer/) | Web UI that auto-summarizes this README using an agent     | `php -S localhost:8080 -t examples/web-summarizer/` |
+| Example | Description | Run |
+| --- | --- | --- |
+| [CLI Chat](examples/cli-chat.php) | Interactive terminal conversation with an LLM | `php examples/cli-chat.php` |
+| [README Summarizer](examples/web-summarizer/) | Web UI that auto-summarizes this README using an agent | `php -S localhost:8080 -t examples/web-summarizer/` |
 
 ## `php-agents` In The Wild
 

@@ -38,11 +38,27 @@ jobs:
       - name: Install dependencies
         run: composer install --prefer-dist --no-progress --no-interaction
 
+      - name: Verify tracked local artifacts are absent
+        run: |
+          tracked_artifacts="$(git ls-files -- '.env' '.env.*' '.llama-cpp*.env' '*.log' 'benchmark_output*.txt' 'cache_benchmark_output*.json' 'raw_compare_output*.json')"
+          if [[ -n "$tracked_artifacts" ]]; then
+            echo "Tracked local/runtime artifacts are not allowed:" >&2
+            echo "$tracked_artifacts" >&2
+            exit 1
+          fi
+
       - name: Run tests
         run: composer test
 
       - name: Run PHPStan
         run: composer analyse
+
+      - name: Verify tracked worktree stays clean
+        run: |
+          if [[ -n "$(git status --short --untracked-files=no)" ]]; then
+            git status --short --untracked-files=no
+            exit 1
+          fi
 
   build:
     name: Build release
