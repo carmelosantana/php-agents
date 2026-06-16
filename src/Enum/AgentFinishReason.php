@@ -11,4 +11,5 @@ enum AgentFinishReason: string
     case Error = 'error';
     case Done = 'done';
     case BudgetExhausted = 'budget_exhausted';
+    case EmptyResponse = 'empty_response';
 }

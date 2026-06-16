@@ -7,6 +7,7 @@ namespace CarmeloSantana\PHPAgents\Provider;
 use CarmeloSantana\PHPAgents\Contract\ConfigInterface;
 use CarmeloSantana\PHPAgents\Contract\LocalModelRuntimeInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
+use CarmeloSantana\PHPAgents\Enum\ReasoningEffort;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
@@ -217,7 +218,10 @@ final class ProviderFactory
         ?ConfigInterface $config,
         ?HttpClientInterface $httpClient = null,
     ): OllamaProvider {
-        $modelDef = $config?->getModelDefinition($model);
+        // Definitions may be keyed by bare id or by "provider/id"
+        // (OpenClaw config uses the prefixed form) — try both.
+        $modelDef = $config?->getModelDefinition($model)
+            ?? $config?->getModelDefinition("ollama/{$model}");
         $numCtx = $modelDef?->numCtx;
 
         $args = [
@@ -227,6 +231,16 @@ final class ProviderFactory
 
         if ($numCtx !== null) {
             $args['numCtx'] = $numCtx;
+        }
+
+        // Per-model reasoning control (e.g. `"reasoningEffort": "none"` to
+        // disable thinking). Invalid values are ignored rather than fatal.
+        $effort = $modelDef?->extras['reasoningEffort'] ?? null;
+        if (is_string($effort)) {
+            $parsed = ReasoningEffort::tryFrom(strtolower($effort));
+            if ($parsed !== null) {
+                $args['reasoningEffort'] = $parsed;
+            }
         }
 
         if ($httpClient !== null) {

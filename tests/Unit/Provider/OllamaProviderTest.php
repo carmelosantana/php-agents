@@ -436,3 +436,50 @@ test('stream_options include_usage is sent in Ollama streaming payload', functio
     expect($capturedPayload)->toHaveKey('stream_options');
     expect($capturedPayload['stream_options'])->toBe(['include_usage' => true]);
 });
+
+test('reasoning_effort is sent when configured', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOllamaResponse();
+    });
+
+    $provider = new OllamaProvider(
+        model: 'qwen3:8b',
+        httpClient: $mockClient,
+        reasoningEffort: \CarmeloSantana\PHPAgents\Enum\ReasoningEffort::None,
+    );
+    $provider->chat([new UserMessage('hi')]);
+
+    expect($requestPayload['reasoning_effort'])->toBe('none');
+});
+
+test('reasoning_effort is absent when not configured', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOllamaResponse();
+    });
+
+    $provider = new OllamaProvider(model: 'llama3.2', httpClient: $mockClient);
+    $provider->chat([new UserMessage('hi')]);
+
+    expect($requestPayload)->not->toHaveKey('reasoning_effort');
+});
+
+test('explicit reasoning_effort option is not overridden', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOllamaResponse();
+    });
+
+    $provider = new OllamaProvider(
+        model: 'qwen3:8b',
+        httpClient: $mockClient,
+        reasoningEffort: \CarmeloSantana\PHPAgents\Enum\ReasoningEffort::None,
+    );
+    $provider->chat([new UserMessage('hi')], [], ['reasoning_effort' => 'high']);
+
+    expect($requestPayload['reasoning_effort'])->toBe('high');
+});
