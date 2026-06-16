@@ -18,6 +18,7 @@ use CarmeloSantana\PHPAgents\Contract\ToolExecutorInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolkitInterface;
 use CarmeloSantana\PHPAgents\Enum\AgentFinishReason;
+use CarmeloSantana\PHPAgents\Enum\EmptyResponseHandling;
 use CarmeloSantana\PHPAgents\Enum\ModelCapability;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Exception\TerminationException;
@@ -26,6 +27,7 @@ use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\Conversation;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
+use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Prompt\SystemPrompt;
 use CarmeloSantana\PHPAgents\Provider\Response;
 use CarmeloSantana\PHPAgents\Provider\Usage;
@@ -78,6 +80,8 @@ abstract class AbstractAgent implements AgentInterface
         private readonly int $budgetExitWrapUpIterations = 2,
         ?ToolExecutorInterface $toolExecutor = null,
         ?TickCallbackInterface $tickCallback = null,
+        private readonly EmptyResponseHandling $emptyResponseHandling = EmptyResponseHandling::Nudge,
+        private readonly int $maxEmptyResponseRetries = 2,
     ) {
         $this->toolExecutor = $toolExecutor ?? new SynchronousToolExecutor();
         $this->tickCallback = $tickCallback ?? new NullTickCallback();
@@ -167,6 +171,11 @@ abstract class AbstractAgent implements AgentInterface
         $budgetExitTriggered = false;
         $wrapUpIterationsRemaining = $this->budgetExitWrapUpIterations;
 
+        // Consecutive turns that produced no content and no tool calls.
+        // Governs the EmptyResponseHandling policy instead of letting an
+        // unresponsive model silently burn the full iteration budget.
+        $consecutiveEmptyResponses = 0;
+
         if ($this->maxIter === 0) {
             $this->notify('agent.warning', 'Unlimited iterations enabled (max_iterations=0). The agent will run until the task is complete.');
         }
@@ -232,6 +241,7 @@ abstract class AbstractAgent implements AgentInterface
 
             try {
                 $contentParts = [];
+                $reasoningParts = [];
                 $toolCalls = [];
                 $streamUsage = null;
                 $streamModel = '';
@@ -246,6 +256,7 @@ abstract class AbstractAgent implements AgentInterface
                     }
 
                     if ($chunk->reasoning !== '') {
+                        $reasoningParts[] = $chunk->reasoning;
                         $this->notify('agent.reasoning', $chunk->reasoning);
                     }
 
@@ -294,6 +305,7 @@ abstract class AbstractAgent implements AgentInterface
                     toolCalls: $toolCalls,
                     model: $streamModel,
                     usage: $streamUsage,
+                    reasoning: implode('', $reasoningParts),
                 );
             } catch (\Throwable $e) {
                 $errorMessage = $e->getMessage();
@@ -371,11 +383,13 @@ abstract class AbstractAgent implements AgentInterface
                         iterations: $i + 1,
                         conversation: $conversation,
                         finishReason: AgentFinishReason::Done,
+                        reasoning: $response->reasoning,
                     );
                 }
             }
 
             if (!empty($response->toolCalls)) {
+                $consecutiveEmptyResponses = 0;
                 $conversation->add(new AssistantMessage($response->content, $response->toolCalls));
 
                 $executionResult = $this->executeToolCalls(
@@ -413,11 +427,63 @@ abstract class AbstractAgent implements AgentInterface
                     iterations: $i + 1,
                     conversation: $conversation,
                     finishReason: AgentFinishReason::Stop,
+                    reasoning: $response->reasoning,
                 );
             }
 
-            // Empty response with no tool calls — let it retry
-            $conversation->add(new AssistantMessage($response->content));
+            // Empty response with no tool calls — apply the configured policy.
+            // Some serving stacks (Ollama + qwen/gemma thinking models) route
+            // the whole completion into reasoning and leave content empty.
+            $consecutiveEmptyResponses++;
+            $this->notify('agent.empty_response', [
+                'attempt' => $consecutiveEmptyResponses,
+                'maxRetries' => $this->maxEmptyResponseRetries,
+                'hasReasoning' => $response->reasoning !== '',
+            ]);
+
+            if (
+                $this->emptyResponseHandling === EmptyResponseHandling::Fallback
+                && $response->reasoning !== ''
+            ) {
+                return $this->fallbackToReasoning($response, $conversation, $allToolResults, $totalUsage, $i + 1);
+            }
+
+            if ($this->emptyResponseHandling === EmptyResponseHandling::Ignore) {
+                $conversation->add(new AssistantMessage($response->content));
+                continue;
+            }
+
+            // Nudge / NudgeThenFallback: keep the empty assistant turn so role
+            // alternation stays valid, then ask for a plain-text answer.
+            if ($consecutiveEmptyResponses <= $this->maxEmptyResponseRetries) {
+                $conversation->add(new AssistantMessage($response->content));
+                $conversation->add(new UserMessage(
+                    'Your previous reply contained no final answer text'
+                    . ($response->reasoning !== '' ? ' (only internal reasoning)' : '')
+                    . '. Reply again with your final answer as plain text.',
+                ));
+                continue;
+            }
+
+            if (
+                $this->emptyResponseHandling === EmptyResponseHandling::NudgeThenFallback
+                && $response->reasoning !== ''
+            ) {
+                return $this->fallbackToReasoning($response, $conversation, $allToolResults, $totalUsage, $i + 1);
+            }
+
+            $this->notify('agent.error', 'Model returned empty responses after ' . $consecutiveEmptyResponses . ' attempts');
+
+            return new Output(
+                content: 'Model returned empty responses after ' . $consecutiveEmptyResponses . ' attempts.',
+                toolResults: $allToolResults,
+                usage: $totalUsage,
+                model: $response->model,
+                iterations: $i + 1,
+                conversation: $conversation,
+                finishReason: AgentFinishReason::EmptyResponse,
+                reasoning: $response->reasoning,
+            );
         }
 
         $this->notify('agent.error', 'Max iterations reached');
@@ -429,6 +495,41 @@ abstract class AbstractAgent implements AgentInterface
             iterations: $this->maxIterations(),
             conversation: $conversation,
             finishReason: AgentFinishReason::MaxIterations,
+        );
+    }
+
+    /**
+     * Return accumulated reasoning as the answer for an empty-content turn.
+     *
+     * Used when the provider routed the entire completion into the
+     * reasoning channel (Ollama qwen/gemma thinking bug) and the policy
+     * allows surfacing it instead of failing the turn.
+     *
+     * @param ToolResult[] $allToolResults
+     */
+    private function fallbackToReasoning(
+        Response $response,
+        Conversation $conversation,
+        array $allToolResults,
+        Usage $totalUsage,
+        int $iterations,
+    ): Output {
+        $answer = trim($response->reasoning);
+
+        $this->notify('agent.warning', 'Model returned reasoning only; using reasoning as the answer');
+
+        $conversation->add(new AssistantMessage($answer));
+        $this->notify('agent.done', ['response' => $answer]);
+
+        return new Output(
+            content: $answer,
+            toolResults: $allToolResults,
+            usage: $totalUsage,
+            model: $response->model,
+            iterations: $iterations,
+            conversation: $conversation,
+            finishReason: AgentFinishReason::Stop,
+            reasoning: $response->reasoning,
         );
     }
 

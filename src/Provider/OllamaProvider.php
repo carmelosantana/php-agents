@@ -6,6 +6,7 @@ namespace CarmeloSantana\PHPAgents\Provider;
 
 use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
+use CarmeloSantana\PHPAgents\Enum\ReasoningEffort;
 use CarmeloSantana\PHPAgents\Provider\Response;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -78,6 +79,7 @@ final class OllamaProvider extends OpenAICompatibleProvider
         ?HttpClientInterface $httpClient = null,
         private int $numCtx = self::DEFAULT_NUM_CTX,
         ?LoggerInterface $logger = null,
+        private ?ReasoningEffort $reasoningEffort = null,
     ) {
         parent::__construct(
             model: $model,
@@ -278,6 +280,13 @@ final class OllamaProvider extends OpenAICompatibleProvider
 
         if (!empty($tools) && !isset($options['num_ctx'])) {
             $options['num_ctx'] = $this->numCtx;
+        }
+
+        // Only send reasoning_effort when explicitly configured — Ollama's
+        // strict request structs and non-thinking models should never see
+        // the field. `none` disables thinking on thinking-capable models.
+        if ($this->reasoningEffort !== null && !isset($options['reasoning_effort'])) {
+            $options['reasoning_effort'] = $this->reasoningEffort->value;
         }
 
         return $options;

@@ -22,5 +22,6 @@ final readonly class Output
         public int $iterations = 0,
         public ?Conversation $conversation = null,
         public AgentFinishReason $finishReason = AgentFinishReason::Stop,
+        public string $reasoning = '',
     ) {}
 }

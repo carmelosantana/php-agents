@@ -575,6 +575,53 @@ test('stream yields reasoning Response chunks from delta.thinking field', functi
     expect(array_values($reasoningChunks)[0]->reasoning)->toBe('deep thought');
 });
 
+test('stream yields reasoning-only response followed by empty-content stop', function () {
+    // Ollama qwen/gemma thinking bug: the entire completion arrives via
+    // delta.reasoning and content stays empty (ollama/ollama#15288).
+    $sseData = implode("\n", [
+        'data: ' . json_encode(['choices' => [['delta' => ['reasoning' => 'The answer '], 'finish_reason' => null]]]),
+        'data: ' . json_encode(['choices' => [['delta' => ['reasoning' => 'is 42.'], 'finish_reason' => null]]]),
+        'data: ' . json_encode(['choices' => [['delta' => [], 'finish_reason' => 'stop']]]),
+        'data: [DONE]',
+        '',
+    ]);
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $provider = new OpenAICompatibleProvider(model: 'qwen3', apiKey: '', httpClient: $mockClient);
+
+    $chunks = iterator_to_array($provider->stream([new UserMessage('hi')]));
+
+    $reasoningChunks = array_values(array_filter($chunks, fn($r) => $r->reasoning !== ''));
+    $contentChunks = array_filter($chunks, fn($r) => $r->content !== '');
+    $stopChunks = array_filter($chunks, fn($r) => $r->finishReason === ProviderFinishReason::Stop && $r->reasoning === '');
+
+    expect(implode('', array_map(fn($r) => $r->reasoning, $reasoningChunks)))->toBe('The answer is 42.')
+        ->and($contentChunks)->toBeEmpty()
+        ->and($stopChunks)->not->toBeEmpty();
+});
+
+test('stream yields stop when tool_calls finish arrives without tool call deltas', function () {
+    // Ollama thinking+tools bug (ollama/ollama#10976): finish_reason=tool_calls
+    // with no streamed tool-call fragments must not be dropped silently.
+    $sseData = implode("\n", [
+        'data: ' . json_encode(['choices' => [['delta' => ['reasoning' => 'pondering'], 'finish_reason' => null]]]),
+        'data: ' . json_encode(['choices' => [['delta' => [], 'finish_reason' => 'tool_calls']]]),
+        'data: [DONE]',
+        '',
+    ]);
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $provider = new OpenAICompatibleProvider(model: 'qwen3', apiKey: '', httpClient: $mockClient);
+
+    $chunks = iterator_to_array($provider->stream([new UserMessage('hi')]));
+
+    $toolChunks = array_filter($chunks, fn($r) => $r->finishReason === ProviderFinishReason::ToolUse);
+    $stopChunks = array_filter($chunks, fn($r) => $r->finishReason === ProviderFinishReason::Stop && $r->reasoning === '');
+
+    expect($toolChunks)->toBeEmpty()
+        ->and($stopChunks)->toHaveCount(1);
+});
+
 test('stream reasoning chunks have empty content', function () {
     $sseData = implode("\n", [
         'data: ' . json_encode(['choices' => [['delta' => ['reasoning' => 'reasoning token'], 'finish_reason' => null]]]),

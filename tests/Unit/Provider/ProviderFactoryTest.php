@@ -376,3 +376,79 @@ test('mistral provider resolves MISTRAL_API_KEY from environment', function () {
         }
     }
 });
+
+test('ollama factory branch applies reasoningEffort from model definition extras', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return new MockResponse(json_encode([
+            'model' => 'qwen3:8b',
+            'choices' => [['message' => ['role' => 'assistant', 'content' => 'ok'], 'finish_reason' => 'stop']],
+        ]), ['http_code' => 200]);
+    });
+
+    $config = makeProviderFactoryConfig([], [
+        'qwen3:8b' => new ModelDefinition(
+            id: 'qwen3:8b',
+            name: 'Qwen 3',
+            provider: 'ollama',
+            extras: ['reasoningEffort' => 'low'],
+        ),
+    ]);
+
+    $provider = ProviderFactory::fromModelString('ollama/qwen3:8b', $config, $mockClient);
+    $provider->chat([new UserMessage('hi')]);
+
+    expect($requestPayload['reasoning_effort'])->toBe('low');
+});
+
+test('ollama factory branch resolves provider-prefixed model definition keys', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return new MockResponse(json_encode([
+            'model' => 'qwen3:8b',
+            'choices' => [['message' => ['role' => 'assistant', 'content' => 'ok'], 'finish_reason' => 'stop']],
+        ]), ['http_code' => 200]);
+    });
+
+    // OpenClaw-style configs key definitions by "provider/id"
+    $config = makeProviderFactoryConfig([], [
+        'ollama/qwen3:8b' => new ModelDefinition(
+            id: 'qwen3:8b',
+            name: 'Qwen 3',
+            provider: 'ollama',
+            extras: ['reasoningEffort' => 'none'],
+        ),
+    ]);
+
+    $provider = ProviderFactory::fromModelString('ollama/qwen3:8b', $config, $mockClient);
+    $provider->chat([new UserMessage('hi')]);
+
+    expect($requestPayload['reasoning_effort'])->toBe('none');
+});
+
+test('ollama factory branch ignores invalid reasoningEffort values', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return new MockResponse(json_encode([
+            'model' => 'qwen3:8b',
+            'choices' => [['message' => ['role' => 'assistant', 'content' => 'ok'], 'finish_reason' => 'stop']],
+        ]), ['http_code' => 200]);
+    });
+
+    $config = makeProviderFactoryConfig([], [
+        'qwen3:8b' => new ModelDefinition(
+            id: 'qwen3:8b',
+            name: 'Qwen 3',
+            provider: 'ollama',
+            extras: ['reasoningEffort' => 'maximum-overdrive'],
+        ),
+    ]);
+
+    $provider = ProviderFactory::fromModelString('ollama/qwen3:8b', $config, $mockClient);
+    $provider->chat([new UserMessage('hi')]);
+
+    expect($requestPayload)->not->toHaveKey('reasoning_effort');
+});

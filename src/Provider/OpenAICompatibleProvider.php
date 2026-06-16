@@ -90,11 +90,6 @@ class OpenAICompatibleProvider extends AbstractProvider
         /** @var array<int, array{id: string, name: string, arguments: string}> $pendingToolCalls */
         $pendingToolCalls = [];
 
-        // Accumulate reasoning/thinking content from models like qwen3.5, DeepSeek-R1.
-        // These models send thinking tokens via delta.reasoning or delta.reasoning_content
-        // with empty delta.content, then switch to regular content for the final answer.
-        $reasoningBuffer = '';
-
         $parser = new SseStreamParser($this->httpClient, $response);
 
         foreach ($parser->events() as $json) {
@@ -119,15 +114,16 @@ class OpenAICompatibleProvider extends AbstractProvider
                 }
             }
 
-            // Accumulate reasoning content from thinking models.
+            // Reasoning content from thinking models (qwen3.5, DeepSeek-R1).
             // Models use different field names: reasoning (Ollama/qwen),
-            // reasoning_content (DeepSeek), thinking (some others).
+            // reasoning_content (DeepSeek), thinking (some others). Each delta
+            // is yielded as-is; accumulation is the consumer's responsibility
+            // so reasoning is never double-emitted.
             $reasoningDelta = $delta['reasoning']
                 ?? $delta['reasoning_content']
                 ?? $delta['thinking']
                 ?? null;
             if ($reasoningDelta !== null && $reasoningDelta !== '') {
-                $reasoningBuffer .= $reasoningDelta;
                 yield new Response(
                     content: '',
                     finishReason: ProviderFinishReason::Stop,
@@ -139,25 +135,40 @@ class OpenAICompatibleProvider extends AbstractProvider
 
             // When the stream signals tool_calls finish, yield a
             // Response with the fully-assembled ToolCall objects.
-            if ($finishReason === 'tool_calls' && !empty($pendingToolCalls)) {
-                $toolCalls = [];
-                foreach ($pendingToolCalls as $tc) {
-                    $toolCalls[] = new ToolCall(
-                        id: $tc['id'],
-                        name: $tc['name'],
-                        arguments: json_decode($tc['arguments'], true) ?? [],
+            if ($finishReason === 'tool_calls') {
+                if (!empty($pendingToolCalls)) {
+                    $toolCalls = [];
+                    foreach ($pendingToolCalls as $tc) {
+                        $toolCalls[] = new ToolCall(
+                            id: $tc['id'],
+                            name: $tc['name'],
+                            arguments: json_decode($tc['arguments'], true) ?? [],
+                        );
+                    }
+
+                    yield new Response(
+                        content: $delta['content'] ?? '',
+                        finishReason: ProviderFinishReason::ToolUse,
+                        toolCalls: $toolCalls,
+                        model: $json['model'] ?? $this->model,
                     );
+
+                    $pendingToolCalls = [];
+                    continue;
                 }
+
+                // Ollama thinking+tools bug (ollama/ollama#10976): finish_reason
+                // arrives as tool_calls but no tool-call deltas were streamed.
+                // Yield a Stop so the consumer applies empty-response handling
+                // instead of the chunk being dropped silently.
+                $this->logger?->debug('tool_calls finish with no pending tool calls — treating as stop');
 
                 yield new Response(
                     content: $delta['content'] ?? '',
-                    finishReason: ProviderFinishReason::ToolUse,
-                    toolCalls: $toolCalls,
+                    finishReason: ProviderFinishReason::Stop,
+                    toolCalls: [],
                     model: $json['model'] ?? $this->model,
                 );
-                $reasoningBuffer = '';
-
-                $pendingToolCalls = [];
                 continue;
             }
 
@@ -206,7 +217,6 @@ class OpenAICompatibleProvider extends AbstractProvider
                     model: $json['model'] ?? $this->model,
                     usage: $usage,
                 );
-                $reasoningBuffer = '';
             }
         }
     }
