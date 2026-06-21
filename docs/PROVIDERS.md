@@ -19,6 +19,12 @@ Providers abstract the differences between LLM APIs. php-agents ships with provi
 
 \* Gemini does not natively support URL image references. The provider auto-downloads URL images and converts them to base64 `inlineData` for seamless compatibility.
 
+**CliProvider** (the `claude` CLI vendor) runs as a raw chat completion and has a narrower profile:
+`chat()`, `stream()`, `structured()` (best-effort JSON), `models()`, `isAvailable()`, and
+`withModel()` are supported. Native tool calling and image input are **not** in v1 — the host app's
+own toolkits run the tools and prior tool history is folded into the prompt. See
+[CliProvider (CLI Vendors)](#cliprovider-cli-vendors) below.
+
 ## LlamaCppProvider
 
 `LlamaCppProvider` is the direct local provider for llama.cpp-backed runtimes. It keeps the same message, tool, streaming, multimodal, and structured-output surface as the rest of php-agents while dispatching through a local runtime instead of HTTP.
@@ -508,6 +514,72 @@ The normalization is deterministic (SHA-256 hash-based), so the same conversatio
 | Variable | Used By |
 |----------|---------|
 | `MISTRAL_API_KEY` | `MistralProvider` |
+
+## CliProvider (CLI Vendors)
+
+`CliProvider` drives a local command-line binary as an LLM backend instead of an HTTP API. The first
+supported vendor is the **Claude Code CLI** (`claude`), run headless as a raw chat completion. It is
+the expandable path for adding other CLIs (codex, grok, deepseek, ...) later.
+
+Two seams keep the design open and the library dependency-free:
+
+- **`CliVendorAdapterInterface`** — vendor-specific knowledge: how to turn messages/tools/model into
+  argv + stdin for a given binary, how to parse its stdout into a `Response`/`Usage`, and the model
+  catalog. One adapter per binary; `ClaudeCliVendorAdapter` is the first.
+- **`CliRuntimeInterface`** — host-supplied process executor. php-agents never calls `proc_open` (it
+  depends only on `symfony/http-client` + `psr/log`); the host injects a runtime that spawns the
+  binary. This mirrors how `LocalModelRuntimeInterface` is injected for `LlamaCppProvider`, and lets
+  the host make execution event-loop/Fiber friendly (e.g. Coqui's ReactPHP runtime keeps the REPL
+  spinner alive during a CLI call).
+
+```php
+use CarmeloSantana\PHPAgents\Provider\CliProvider;
+use CarmeloSantana\PHPAgents\Provider\Cli\ClaudeCliVendorAdapter;
+
+$provider = new CliProvider(
+    model: 'sonnet',                       // or 'opus' / 'haiku' / a full id
+    adapter: new ClaudeCliVendorAdapter(), // binary defaults to `claude`
+    runtime: $cliRuntime,                  // host implementation of CliRuntimeInterface
+);
+```
+
+### Raw-LLM invocation
+
+`ClaudeCliVendorAdapter` invokes the binary in print mode with all built-in tooling disabled, so it
+behaves like a plain chat completion and the host app's own toolkits/safety model stay in control:
+
+```bash
+claude -p --tools "" --strict-mcp-config --bare --no-session-persistence \
+  --model <id> --system-prompt <system> --output-format json   # stdin = flattened transcript
+```
+
+For `stream()` it swaps to `--output-format stream-json --verbose --include-partial-messages` and
+parses the NDJSON event stream. The CLI emits a `system`/init line, zero or more `stream_event`
+envelopes (Anthropic SSE `text_delta`s, only when partial messages are enabled), a complete
+`assistant` message that restates the text, then a terminal `result` line with the full text, usage,
+and stop reason. The adapter prefers the incremental deltas and suppresses the duplicated text from
+the `assistant`/`result` lines; if no deltas arrived it falls back to the `assistant` (then `result`)
+full text so content is never dropped. A `result` with `is_error: true` (e.g. *"Not logged in"*) is
+raised as an exception.
+
+**Model discovery is curated, not live.** The `claude` CLI has no machine-readable model-list command
+— it only accepts `--model <alias|id>`. `models()` therefore returns a fixed list of the stable
+aliases (`fable`, `opus`, `sonnet`, `haiku`); any full id works via the model string.
+
+### Authentication & terms
+
+The provider delegates authentication entirely to the user's existing `claude` install (its API key
+or a token from `claude setup-token` / `CLAUDE_CODE_OAUTH_TOKEN`). It does **not** drive a claude.ai
+Pro/Max subscription login — Anthropic's terms reserve subscription auth for approved integrations and
+direct third-party products to API-key auth. Use this provider only to invoke a CLI you have already
+authenticated yourself.
+
+### Token budgeting
+
+The Claude SDK JSON output reports `usage.input_tokens`, `output_tokens`,
+`cache_read_input_tokens`, `cache_creation_input_tokens`, and `total_cost_usd`. The adapter folds the
+input + cache tokens into `Usage.promptTokens` so host-side budget tracking works the same as for
+HTTP providers.
 
 ## Shared Provider Utilities
 

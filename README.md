@@ -26,7 +26,7 @@ graph LR
 ## Features
 
 - **Agentic tool-use loop** — automatic iteration: the LLM calls tools, processes results, and decides when it's done
-- **Multi-provider** — Ollama (local), native llama.cpp, OpenAI, Anthropic, Gemini, xAI, Mistral, OpenRouter, or any OpenAI-compatible endpoint
+- **Multi-provider** — Ollama (local), native llama.cpp, the Claude Code CLI (`claude`), OpenAI, Anthropic, Gemini, xAI, Mistral, OpenRouter, or any OpenAI-compatible endpoint
 - **Streaming + tool calls** — all providers support streaming with assembled tool call deltas
 - **Structured output** — extract typed data from LLMs via JSON mode (OpenAI) or tool-use trick (Anthropic)
 - **Image input** — send images to vision models via base64, URL, or file path (auto-converts between provider formats; URLs pre-downloaded for providers that don't support them natively)
