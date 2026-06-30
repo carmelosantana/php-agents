@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Provider;
 
+use CarmeloSantana\PHPAgents\Contract\CliRuntimeInterface;
 use CarmeloSantana\PHPAgents\Contract\ConfigInterface;
 use CarmeloSantana\PHPAgents\Contract\LocalModelRuntimeInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Enum\ReasoningEffort;
+use CarmeloSantana\PHPAgents\Provider\Cli\ClaudeCliVendorAdapter;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
@@ -29,7 +31,7 @@ final class ProviderFactory
      *     aliases?: list<string>,
      *     apiKeyEnvVar?: string|null,
      *     defaultBaseUrl: string,
-    *     type: 'anthropic'|'gemini'|'llama-cpp'|'mistral'|'ollama'|'openai-compatible'|'xai'
+    *     type: 'anthropic'|'cli'|'gemini'|'llama-cpp'|'mistral'|'ollama'|'openai-compatible'|'xai'
      * }>
      */
     private static function providerDescriptors(): array
@@ -82,6 +84,12 @@ final class ProviderFactory
                 'defaultBaseUrl' => 'https://api.minimaxi.com/v1',
                 'type' => 'openai-compatible',
             ],
+            'claude-cli' => [
+                'aliases' => ['claudecli'],
+                'apiKeyEnvVar' => null,
+                'defaultBaseUrl' => '',
+                'type' => 'cli',
+            ],
         ];
     }
 
@@ -89,6 +97,7 @@ final class ProviderFactory
         private readonly ?ConfigInterface $config = null,
         private readonly ?HttpClientInterface $httpClient = null,
         private readonly ?LocalModelRuntimeInterface $localModelRuntime = null,
+        private readonly ?CliRuntimeInterface $cliRuntime = null,
     ) {}
 
     /**
@@ -99,7 +108,7 @@ final class ProviderFactory
      */
     public function create(string $modelString): ProviderInterface
     {
-        return self::fromModelString($modelString, $this->config, $this->httpClient, $this->localModelRuntime);
+        return self::fromModelString($modelString, $this->config, $this->httpClient, $this->localModelRuntime, $this->cliRuntime);
     }
 
     /**
@@ -114,6 +123,7 @@ final class ProviderFactory
         ?ConfigInterface $config = null,
         ?HttpClientInterface $httpClient = null,
         ?LocalModelRuntimeInterface $localModelRuntime = null,
+        ?CliRuntimeInterface $cliRuntime = null,
     ): ProviderInterface {
         [$requestedProviderName, $model] = self::parseModelString($modelString);
 
@@ -129,6 +139,7 @@ final class ProviderFactory
         return match ($descriptor['type']) {
             'ollama' => self::makeOllamaProvider($model, $baseUrl, $config, $httpClient),
             'llama-cpp' => self::makeLlamaCppProvider($model, $providerConfig, $config, $localModelRuntime),
+            'cli' => self::makeCliProvider($model, $providerName, $providerConfig, $cliRuntime),
             'anthropic' => new AnthropicProvider(
                 model: $model,
                 baseUrl: $baseUrl,
@@ -164,7 +175,7 @@ final class ProviderFactory
      *     name: string,
      *     apiKeyEnvVar?: string|null,
      *     defaultBaseUrl: string,
-    *     type: 'anthropic'|'gemini'|'llama-cpp'|'mistral'|'ollama'|'openai-compatible'|'xai'
+    *     type: 'anthropic'|'cli'|'gemini'|'llama-cpp'|'mistral'|'ollama'|'openai-compatible'|'xai'
      * }
      */
     private static function resolveProviderDescriptor(string $providerName): array
@@ -320,6 +331,41 @@ final class ProviderFactory
         );
     }
 
+    /**
+     * Construct a CLI-backed provider, selecting a vendor adapter by provider name.
+     *
+     * The adapter is the expandable seam: new CLI vendors (codex, grok, ...) map
+     * to their own adapter here without a new provider class. The host app must
+     * inject a CliRuntimeInterface so php-agents itself never spawns a process.
+     *
+     * @param array<string, mixed> $providerConfig
+     */
+    private static function makeCliProvider(
+        string $model,
+        string $providerName,
+        array $providerConfig,
+        ?CliRuntimeInterface $cliRuntime,
+    ): CliProvider {
+        if ($cliRuntime === null) {
+            throw new \InvalidArgumentException('cli provider requires an injected CLI runtime.');
+        }
+
+        $binary = is_string($providerConfig['binary'] ?? null) && $providerConfig['binary'] !== ''
+            ? $providerConfig['binary']
+            : 'claude';
+
+        $adapter = match ($providerName) {
+            // Future vendors: 'codex' => new CodexCliVendorAdapter($binary), etc.
+            default => new ClaudeCliVendorAdapter($binary),
+        };
+
+        return new CliProvider(
+            model: $model,
+            adapter: $adapter,
+            runtime: $cliRuntime,
+        );
+    }
+
     private static function makeOpenAICompatibleProvider(
         string $model,
         string $baseUrl,
@@ -381,7 +427,7 @@ final class ProviderFactory
     *     name: string,
     *     apiKeyEnvVar?: string|null,
     *     defaultBaseUrl: string,
-    *     type: 'anthropic'|'gemini'|'llama-cpp'|'mistral'|'ollama'|'openai-compatible'|'xai'
+    *     type: 'anthropic'|'cli'|'gemini'|'llama-cpp'|'mistral'|'ollama'|'openai-compatible'|'xai'
     * } $descriptor
      * @param array<string, mixed> $providerConfig
      */
@@ -411,7 +457,7 @@ final class ProviderFactory
     *     name: string,
     *     apiKeyEnvVar?: string|null,
     *     defaultBaseUrl: string,
-    *     type: 'anthropic'|'gemini'|'llama-cpp'|'mistral'|'ollama'|'openai-compatible'|'xai'
+    *     type: 'anthropic'|'cli'|'gemini'|'llama-cpp'|'mistral'|'ollama'|'openai-compatible'|'xai'
     * } $descriptor
      * @param array<string, mixed> $providerConfig
      */
