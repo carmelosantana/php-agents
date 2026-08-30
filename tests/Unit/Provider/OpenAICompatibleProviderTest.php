@@ -387,6 +387,46 @@ test('structured output includes response_format', function () {
         ->and($requestPayload['response_format']['json_schema']['name'])->toBe('test');
 });
 
+test('structured output wraps a bare JSON schema in the OpenAI json_schema envelope', function () {
+    // Real callers (AiConnector/TimeInvoice) pass a BARE JSON Schema — no
+    // {name, schema} wrapper. The OpenAI (and Ollama OpenAI-compat) spec
+    // REQUIRES response_format.json_schema = {name, schema, strict}, otherwise
+    // the server ignores the schema and the model returns free-form prose.
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOpenAIResponse();
+    });
+
+    $provider = new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient);
+    $bareSchema = '{"type":"object","properties":{"cover_note":{"type":"string"}},"required":["cover_note"]}';
+    $provider->structured([new UserMessage('give me json')], $bareSchema);
+
+    $jsonSchema = $requestPayload['response_format']['json_schema'];
+
+    expect($requestPayload['response_format']['type'])->toBe('json_schema')
+        ->and($jsonSchema)->toHaveKeys(['name', 'schema', 'strict'])
+        ->and($jsonSchema['name'])->toBe('structured_output')
+        ->and($jsonSchema['strict'])->toBeTrue()
+        ->and($jsonSchema['schema']['type'])->toBe('object')
+        ->and($jsonSchema['schema']['properties'])->toHaveKey('cover_note')
+        ->and($jsonSchema['schema']['required'])->toBe(['cover_note']);
+});
+
+test('structured output derives json_schema name from a schema title', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOpenAIResponse();
+    });
+
+    $provider = new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient);
+    $bareSchema = '{"title":"cover_note","type":"object","properties":{"cover_note":{"type":"string"}}}';
+    $provider->structured([new UserMessage('give me json')], $bareSchema);
+
+    expect($requestPayload['response_format']['json_schema']['name'])->toBe('cover_note');
+});
+
 test('options are spread into chat payload', function () {
     $requestPayload = null;
     $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {

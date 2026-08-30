@@ -224,12 +224,34 @@ class OpenAICompatibleProvider extends AbstractProvider
     public function structured(array $messages, string $schema, array $options = []): mixed
     {
         $schemaData = json_decode($schema, true);
+        if (!is_array($schemaData)) {
+            return $this->chat($messages, [], $options);
+        }
+
+        // The OpenAI (and Ollama OpenAI-compat) spec REQUIRES the schema to be
+        // wrapped: response_format.json_schema = {name, schema, strict}. A bare
+        // schema is silently ignored by the server, so the model returns
+        // free-form prose instead of schema-constrained JSON.
+        //
+        // Accept both shapes, mirroring AnthropicProvider/OpenAIResponsesProvider:
+        //   - a bare JSON Schema (the common case), or
+        //   - a pre-wrapped {name, schema/parameters, ...} envelope.
+        $name = $schemaData['name'] ?? $schemaData['title'] ?? 'structured_output';
+        $innerSchema = $schemaData['schema'] ?? $schemaData['parameters'] ?? $schemaData;
+
+        if (!isset($innerSchema['type'])) {
+            $innerSchema['type'] = 'object';
+        }
 
         return $this->chat($messages, [], [
             ...$options,
             'response_format' => [
                 'type' => 'json_schema',
-                'json_schema' => $schemaData,
+                'json_schema' => [
+                    'name' => $name,
+                    'schema' => $innerSchema,
+                    'strict' => true,
+                ],
             ],
         ]);
     }
