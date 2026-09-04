@@ -290,12 +290,12 @@ final class OpenAIResponsesProvider extends AbstractProvider
             $schema = $tool->toFunctionSchema();
             $parameters = $schema['function']['parameters'] ?? ['type' => 'object', 'properties' => new \stdClass()];
 
-            $strict = !$this->containsOpenObjectSchema($parameters);
+            $strict = !StrictSchemaNormalizer::containsOpenObject($parameters);
 
             if ($strict) {
                 // Strict mode requires every key in properties to be listed in
                 // required, with optional properties typed as nullable (anyOf null).
-                $parameters = $this->normalizeSchemaForStrictMode($parameters);
+                $parameters = StrictSchemaNormalizer::normalize($parameters);
             }
 
             return [
@@ -306,100 +306,6 @@ final class OpenAIResponsesProvider extends AbstractProvider
                 'strict' => $strict,
             ];
         }, $tools);
-    }
-
-    /**
-     * @param array<string, mixed> $schema
-     */
-    private function containsOpenObjectSchema(array $schema): bool
-    {
-        if (($schema['type'] ?? null) === 'object' && array_key_exists('additionalProperties', $schema) && $schema['additionalProperties'] !== false) {
-            return true;
-        }
-
-        $properties = $schema['properties'] ?? null;
-        if (is_array($properties)) {
-            foreach ($properties as $property) {
-                if (is_array($property) && $this->containsOpenObjectSchema($property)) {
-                    return true;
-                }
-            }
-        }
-
-        $items = $schema['items'] ?? null;
-        if (is_array($items) && $this->containsOpenObjectSchema($items)) {
-            return true;
-        }
-
-        $additionalProperties = $schema['additionalProperties'] ?? null;
-        if (is_array($additionalProperties) && $this->containsOpenObjectSchema($additionalProperties)) {
-            return true;
-        }
-
-        foreach (['anyOf', 'oneOf', 'allOf'] as $combinator) {
-            $variants = $schema[$combinator] ?? null;
-            if (!is_array($variants)) {
-                continue;
-            }
-
-            foreach ($variants as $variant) {
-                if (is_array($variant) && $this->containsOpenObjectSchema($variant)) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Normalize a JSON Schema object for OpenAI strict mode.
-     *
-     * Strict mode rules:
-     * - `required` must list every key present in `properties`.
-     * - Optional properties (those not originally required) must be typed
-     *   as nullable via `anyOf: [{...original}, {type: "null"}]`.
-     * - `additionalProperties` must be `false`.
-     *
-     * Applied recursively to nested object schemas.
-     *
-     * @param array<string, mixed> $schema
-     * @return array<string, mixed>
-     */
-    private function normalizeSchemaForStrictMode(array $schema): array
-    {
-        if (!isset($schema['properties']) || !is_array($schema['properties'])) {
-            $schema['additionalProperties'] = false;
-            $schema['required'] = $schema['required'] ?? [];
-
-            return $schema;
-        }
-
-        $allKeys = array_keys($schema['properties']);
-        $required = isset($schema['required']) && is_array($schema['required'])
-            ? $schema['required']
-            : [];
-        $optionalKeys = array_diff($allKeys, $required);
-
-        // Wrap optional properties as nullable so the schema stays valid
-        foreach ($optionalKeys as $key) {
-            $prop = $schema['properties'][$key];
-            if (!isset($prop['anyOf'])) {
-                $schema['properties'][$key] = ['anyOf' => [$prop, ['type' => 'null']]];
-            }
-        }
-
-        // Recurse into nested object properties
-        foreach ($schema['properties'] as $key => $prop) {
-            if (is_array($prop) && ($prop['type'] ?? '') === 'object') {
-                $schema['properties'][$key] = $this->normalizeSchemaForStrictMode($prop);
-            }
-        }
-
-        $schema['required'] = $allKeys;
-        $schema['additionalProperties'] = false;
-
-        return $schema;
     }
 
     protected function formatMessages(array $messages): array

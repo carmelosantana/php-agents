@@ -243,6 +243,15 @@ class OpenAICompatibleProvider extends AbstractProvider
             $innerSchema['type'] = 'object';
         }
 
+        // Strict mode requires every object to be closed (additionalProperties:
+        // false). A schema that intentionally uses an open map cannot satisfy
+        // that, so only enable strict when the schema qualifies; otherwise
+        // forward it intact with strict:false so the open map still works.
+        $strict = !StrictSchemaNormalizer::containsOpenObject($innerSchema);
+        if ($strict) {
+            $innerSchema = StrictSchemaNormalizer::normalize($innerSchema);
+        }
+
         return $this->chat($messages, [], [
             ...$options,
             'response_format' => [
@@ -250,7 +259,7 @@ class OpenAICompatibleProvider extends AbstractProvider
                 'json_schema' => [
                     'name' => $name,
                     'schema' => $innerSchema,
-                    'strict' => true,
+                    'strict' => $strict,
                 ],
             ],
         ]);

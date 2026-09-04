@@ -427,6 +427,78 @@ test('structured output derives json_schema name from a schema title', function 
     expect($requestPayload['response_format']['json_schema']['name'])->toBe('cover_note');
 });
 
+// ── strict-mode schema normalization ────────────────────────────────────────
+// OpenAI's real Chat Completions endpoint enforces strict Structured Outputs:
+// a closed object schema that omits `additionalProperties: false` is rejected
+// with an HTTP 400. Ollama's OpenAI-compat endpoint does NOT enforce this, which
+// is why v0.15.1 (which introduced strict:true) passed against LAN Ollama but
+// broke real ChatGPT. structured() must normalize the wrapped schema so it is
+// valid under strict mode.
+
+function structuredSchemaPayload(string $bareSchema): array
+{
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOpenAIResponse();
+    });
+
+    $provider = new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient);
+    $provider->structured([new UserMessage('go')], $bareSchema);
+
+    return $requestPayload['response_format']['json_schema'];
+}
+
+test('structured output closes a closed object schema with additionalProperties:false', function () {
+    $jsonSchema = structuredSchemaPayload('{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}');
+
+    expect($jsonSchema['strict'])->toBeTrue()
+        ->and($jsonSchema['schema']['additionalProperties'])->toBeFalse();
+});
+
+test('structured output lists every property in required for strict mode', function () {
+    // Strict mode requires `required` to enumerate every key in `properties`,
+    // even ones the caller left optional.
+    $jsonSchema = structuredSchemaPayload('{"type":"object","properties":{"summary":{"type":"string"},"highlights":{"type":"array","items":{"type":"string"}}},"required":["summary"]}');
+
+    $required = $jsonSchema['schema']['required'];
+    sort($required);
+    expect($required)->toBe(['highlights', 'summary']);
+});
+
+test('structured output wraps an optional property as nullable', function () {
+    // A property the caller left out of `required` is now forced into required
+    // (strict rule), so it must be typed nullable to stay satisfiable when the
+    // model has nothing to put there.
+    $jsonSchema = structuredSchemaPayload('{"type":"object","properties":{"summary":{"type":"string"},"note":{"type":"string"}},"required":["summary"]}');
+
+    expect($jsonSchema['schema']['properties']['note'])->toBe([
+        'anyOf' => [['type' => 'string'], ['type' => 'null']],
+    ])
+        ->and($jsonSchema['schema']['properties']['summary'])->toBe(['type' => 'string']);
+});
+
+test('structured output normalizes nested object schemas recursively', function () {
+    // Strict mode applies to every object in the tree, not just the root.
+    $jsonSchema = structuredSchemaPayload('{"type":"object","properties":{"meta":{"type":"object","properties":{"author":{"type":"string"}}}},"required":["meta"]}');
+
+    $meta = $jsonSchema['schema']['properties']['meta'];
+    expect($meta['additionalProperties'])->toBeFalse()
+        ->and($meta['required'])->toBe(['author']);
+});
+
+test('structured output disables strict for a schema with an intentional open map', function () {
+    // A schema that intentionally uses an open map (additionalProperties is a
+    // schema, not false) cannot satisfy strict mode. Rather than corrupt it by
+    // force-closing, structured() drops strict and forwards the schema intact so
+    // the open map still works.
+    $bare = '{"type":"object","properties":{"data":{"type":"object","additionalProperties":{"type":"string"}}},"required":["data"]}';
+    $jsonSchema = structuredSchemaPayload($bare);
+
+    expect($jsonSchema['strict'])->toBeFalse()
+        ->and($jsonSchema['schema']['properties']['data']['additionalProperties'])->toBe(['type' => 'string']);
+});
+
 test('options are spread into chat payload', function () {
     $requestPayload = null;
     $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
