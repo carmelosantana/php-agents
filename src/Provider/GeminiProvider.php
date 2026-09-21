@@ -658,26 +658,45 @@ final class GeminiProvider extends AbstractProvider
         if (isset($schema['properties']) && is_array($schema['properties'])) {
             foreach ($schema['properties'] as $key => $property) {
                 if (is_array($property)) {
-                    $schema['properties'][$key] = $this->normalizeSchemaForGemini($property);
+                    $schema['properties'][$key] = $this->normalizeChildForGemini($property);
                 }
             }
         }
 
         if (isset($schema['items']) && is_array($schema['items'])) {
-            $schema['items'] = $this->normalizeSchemaForGemini($schema['items']);
+            $schema['items'] = $this->normalizeChildForGemini($schema['items']);
         }
 
         foreach (['anyOf', 'oneOf', 'allOf'] as $combinator) {
             if (isset($schema[$combinator]) && is_array($schema[$combinator])) {
                 foreach ($schema[$combinator] as $index => $variant) {
                     if (is_array($variant)) {
-                        $schema[$combinator][$index] = $this->normalizeSchemaForGemini($variant);
+                        $schema[$combinator][$index] = $this->normalizeChildForGemini($variant);
                     }
                 }
             }
         }
 
         return SchemaUtils::stripKeywords($schema, self::UNSUPPORTED_KEYWORDS);
+    }
+
+    /**
+     * Normalize a subschema, keeping it an object when nothing survives.
+     *
+     * A node built only of UNSUPPORTED_KEYWORDS — `{"$ref": "#/$defs/x"}` from an MCP
+     * server — normalizes to an empty array, which json_encode() writes as `[]`. A
+     * subschema position must carry an object, so an emptied node becomes `{}`: the
+     * schema that accepts anything, which is what is left once the keyword that
+     * constrained it is gone.
+     *
+     * @param array<array-key, mixed> $schema
+     * @return array<array-key, mixed>|\stdClass
+     */
+    private function normalizeChildForGemini(array $schema): array|\stdClass
+    {
+        $normalized = $this->normalizeSchemaForGemini($schema);
+
+        return $normalized === [] ? new \stdClass() : $normalized;
     }
 
     /**

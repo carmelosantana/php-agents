@@ -57,18 +57,50 @@ function rawSchemaFormatters(): array
     ];
 }
 
-/** Walk a json_decode(..., false) tree; report every map/schema position that decoded as a list. */
+/**
+ * Walk a json_decode(..., false) tree; report every map/schema position that decoded as a list.
+ *
+ * A position is a map (`properties` and friends) or a subschema. Both must encode as a JSON
+ * object, so an array at either is a defect — including a *member* of a map, which is where a
+ * node that a provider stripped down to nothing ends up. The keyword lists come from the JSON
+ * Schema 2020-12 vocabulary, not from any list a provider keeps, so a keyword a provider
+ * forgot is still checked here.
+ */
 function listsWhereObjectsBelong(mixed $node, string $path = '$'): array
 {
+    $maps = ['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas'];
+    $subschemas = ['additionalProperties', 'unevaluatedProperties', 'unevaluatedItems', 'contains', 'not', 'if', 'then', 'else', 'propertyNames', 'contentSchema', 'additionalItems'];
+    $subschemaLists = ['anyOf', 'oneOf', 'allOf', 'prefixItems'];
+
     $bad = [];
     if ($node instanceof stdClass) {
         foreach (get_object_vars($node) as $key => $value) {
-            $objectOnly = in_array($key, ['properties', 'patternProperties', '$defs', 'definitions', 'additionalProperties', 'not'], true)
-                || ($key === 'items' && is_array($value) && $value === []);
-            if ($objectOnly && is_array($value)) {
-                $bad[] = "{$path}.{$key}";
+            $here = "{$path}.{$key}";
+            if (in_array($key, $maps, true)) {
+                if (is_array($value)) {
+                    $bad[] = $here;
+                }
+                foreach ((array) $value as $name => $member) {
+                    if (is_array($member)) {
+                        $bad[] = "{$here}.{$name}";
+                    }
+                }
+            } elseif (in_array($key, $subschemas, true) && is_array($value)) {
+                $bad[] = $here;
+            } elseif (in_array($key, $subschemaLists, true) && is_array($value)) {
+                foreach ($value as $index => $member) {
+                    if (is_array($member)) {
+                        $bad[] = "{$here}[{$index}]";
+                    }
+                }
+            } elseif ($key === 'items' && is_array($value)) {
+                // `items` is a subschema, except for the draft-04 tuple form, a non-empty
+                // list whose members are each a subschema.
+                $bad = $value === []
+                    ? [...$bad, $here]
+                    : [...$bad, ...array_map(static fn(int|string $i): string => "{$here}[{$i}]", array_keys(array_filter($value, is_array(...))))];
             }
-            $bad = [...$bad, ...listsWhereObjectsBelong($value, "{$path}.{$key}")];
+            $bad = [...$bad, ...listsWhereObjectsBelong($value, $here)];
         }
     } elseif (is_array($node)) {
         foreach ($node as $i => $value) {
