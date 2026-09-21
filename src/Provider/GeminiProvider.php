@@ -35,6 +35,8 @@ final class GeminiProvider extends AbstractProvider
         '$schema',
         '$ref',
         '$defs',
+        'definitions',
+        'patternProperties',
         'default',
     ];
 
@@ -608,22 +610,44 @@ final class GeminiProvider extends AbstractProvider
     }
 
     /**
-     * Normalize JSON Schema for Gemini compatibility.
+     * Normalize JSON Schema for Gemini compatibility, at every depth.
      *
-     * Gemini expects uppercase type names (STRING, NUMBER, OBJECT, etc.)
-     * and doesn't support some JSON Schema keywords.
+     * Gemini expects upper-case type names (STRING, OBJECT, …), a single type per
+     * node with `nullable` for "or null", and none of UNSUPPORTED_KEYWORDS. The
+     * walk descends through `properties`, `items` and the `anyOf`/`oneOf`/`allOf`
+     * branches, so a raw schema's nested nodes are normalised as well as its top
+     * level. Subschemas sitting under an UNSUPPORTED_KEYWORDS keyword — `$defs`
+     * and `additionalProperties` among them — are not descended into, since
+     * stripKeywords unsets that keyword on the node it is reached from. Other
+     * subschema positions the JSON Schema vocabulary allows (`if`/`then`/`else`,
+     * `not`, `contains`, `prefixItems`, `propertyNames`, …) are passed through
+     * unchanged.
      *
-     * @param array<string, mixed> $schema
-     * @return array<string, mixed>
+     * JsonSchemaRepair restores an empty `{}` as a `\stdClass`, so a subschema
+     * here may not be an array. Each descent tests is_array() first and leaves
+     * anything else alone rather than raising a TypeError.
+     *
+     * @param array<array-key, mixed> $schema
+     * @return array<array-key, mixed>
      */
     private function normalizeSchemaForGemini(array $schema): array
     {
-        // Convert type to uppercase (Gemini requirement)
+        if (isset($schema['type']) && is_array($schema['type'])) {
+            $types = array_values(array_filter($schema['type'], static fn(mixed $t): bool => $t !== 'null'));
+            if (count($types) < count($schema['type'])) {
+                $schema['nullable'] = true;
+            }
+            if (count($types) === 1 && is_string($types[0])) {
+                $schema['type'] = $types[0];
+            } else {
+                unset($schema['type']);
+            }
+        }
+
         if (isset($schema['type']) && is_string($schema['type'])) {
             $schema['type'] = strtoupper($schema['type']);
         }
 
-        // Recurse into properties
         if (isset($schema['properties']) && is_array($schema['properties'])) {
             foreach ($schema['properties'] as $key => $property) {
                 if (is_array($property)) {
@@ -632,9 +656,18 @@ final class GeminiProvider extends AbstractProvider
             }
         }
 
-        // Recurse into items
         if (isset($schema['items']) && is_array($schema['items'])) {
             $schema['items'] = $this->normalizeSchemaForGemini($schema['items']);
+        }
+
+        foreach (['anyOf', 'oneOf', 'allOf'] as $combinator) {
+            if (isset($schema[$combinator]) && is_array($schema[$combinator])) {
+                foreach ($schema[$combinator] as $index => $variant) {
+                    if (is_array($variant)) {
+                        $schema[$combinator][$index] = $this->normalizeSchemaForGemini($variant);
+                    }
+                }
+            }
         }
 
         return SchemaUtils::stripKeywords($schema, self::UNSUPPORTED_KEYWORDS);

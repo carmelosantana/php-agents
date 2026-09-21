@@ -1016,3 +1016,48 @@ test('dummy thoughtSignature emitted when metadata is empty', function () {
     expect($functionCallPart)->not->toBeNull()
         ->and($functionCallPart['thoughtSignature'])->toBe('skip_thought_signature_validator');
 });
+
+test('gemini normalises raw schemas inside combinators, defs and type arrays', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $schema = json_decode('{"type":"object","additionalProperties":false,"properties":{"when":{"type":["string","null"]},"pick":{"anyOf":[{"type":"object","additionalProperties":false,"properties":{"x":{"type":"string","default":"a"}}},{"type":"integer"}]},"list":{"type":"array","items":{"type":"object","additionalProperties":true}}},"$defs":{"z":{"type":"string"}}}', true);
+    $tool = new \CarmeloSantana\PHPAgents\Tool\SchemaTool('raw', 'Raw.', $schema, fn(array $a) => \CarmeloSantana\PHPAgents\Tool\ToolResult::success('x'));
+
+    $provider->chat([new \CarmeloSantana\PHPAgents\Message\UserMessage('hi')], [$tool]);
+    $params = $requestPayload['tools'][0]['functionDeclarations'][0]['parameters'];
+
+    expect($params)->not->toHaveKey('additionalProperties')
+        ->and($params)->not->toHaveKey('$defs')
+        ->and($params['properties']['when'])->toBe(['type' => 'STRING', 'nullable' => true])
+        ->and($params['properties']['pick']['anyOf'][0]['type'])->toBe('OBJECT')
+        ->and($params['properties']['pick']['anyOf'][0])->not->toHaveKey('additionalProperties')
+        ->and($params['properties']['pick']['anyOf'][0]['properties']['x'])->toBe(['type' => 'STRING'])
+        ->and($params['properties']['pick']['anyOf'][1]['type'])->toBe('INTEGER')
+        ->and($params['properties']['list']['items'])->toBe(['type' => 'OBJECT']);
+});
+
+test('gemini tool formatting survives stdClass nodes inside parameters', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $mockClient);
+    // Every {} below is restored to a \stdClass by JsonSchemaRepair, so the walk
+    // meets a non-array node at a property, at items and inside a combinator.
+    $schema = json_decode('{"type":"object","additionalProperties":{},"properties":{"blank":{},"arr":{"type":"array","items":{}},"pick":{"anyOf":[{},{"type":"string"}]}}}', true);
+    $tool = new \CarmeloSantana\PHPAgents\Tool\SchemaTool('blanks', 'Blanks.', $schema, fn(array $a) => \CarmeloSantana\PHPAgents\Tool\ToolResult::success('x'));
+
+    $provider->chat([new \CarmeloSantana\PHPAgents\Message\UserMessage('hi')], [$tool]);
+    $params = $requestPayload['tools'][0]['functionDeclarations'][0]['parameters'];
+
+    expect($params['type'])->toBe('OBJECT')
+        ->and($params)->not->toHaveKey('additionalProperties')
+        ->and($params['properties']['blank'])->toBe([])
+        ->and($params['properties']['arr'])->toBe(['type' => 'ARRAY', 'items' => []])
+        ->and($params['properties']['pick']['anyOf'])->toBe([[], ['type' => 'STRING']]);
+});
