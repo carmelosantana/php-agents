@@ -24,7 +24,10 @@ use CarmeloSantana\PHPAgents\Schema\JsonSchemaRepair;
  * - execute() calls the closure and does not validate. A throw, or a return value
  *   that is not a ToolResult, becomes an error naming the tool and not quoting the
  *   exception: a tool result is text the model reads and may repeat, and a
- *   transport exception can quote an endpoint.
+ *   transport exception can quote an endpoint. The cause is not discarded — it rides
+ *   on the result's errorCode and metadata, which ToolResultMessage::toArray() does
+ *   not copy into the message it sends, so a caller and its logs can reach the cause
+ *   without the model seeing it.
  */
 final class SchemaTool implements ToolInterface
 {
@@ -60,8 +63,8 @@ final class SchemaTool implements ToolInterface
         try {
             /** @var mixed $result */
             $result = ($this->run)($input);
-        } catch (\Throwable) {
-            return $this->failure();
+        } catch (\Throwable $cause) {
+            return $this->failure($cause);
         }
 
         return $result instanceof ToolResult ? $result : $this->failure();
@@ -82,8 +85,18 @@ final class SchemaTool implements ToolInterface
         ];
     }
 
-    private function failure(): ToolResult
+    private function failure(?\Throwable $cause = null): ToolResult
     {
-        return ToolResult::error(sprintf('The %s tool failed before it could answer.', $this->name));
+        $result = ToolResult::error(sprintf('The %s tool failed before it could answer.', $this->name))
+            ->withErrorCode('schema_tool_error');
+
+        if ($cause === null) {
+            return $result;
+        }
+
+        return $result->withMetadata([
+            'exception' => $cause::class,
+            'message' => $cause->getMessage(),
+        ]);
     }
 }

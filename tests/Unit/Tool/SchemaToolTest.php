@@ -58,3 +58,32 @@ test('a closure that returns something other than a ToolResult is an error, not 
 
     expect($tool->execute([])->status)->toBe(ToolResultStatus::Error);
 });
+
+test('an MCP tool that publishes inputSchema {} still encodes parameters as an object', function () {
+    $tool = new SchemaTool('noop', 'd', json_decode('{}', true), fn(array $a): ToolResult => ToolResult::success('x'));
+
+    expect(json_encode($tool->toFunctionSchema()['function']['parameters']))->toBe('{"type":"object"}');
+});
+
+test('the cause of a throw is carried out of band, never in the content', function () {
+    $tool = new SchemaTool('remote__search', 'd', ['type' => 'object'], function (array $a): ToolResult {
+        throw new RuntimeException('POST https://secret.example/mcp failed');
+    });
+    $result = $tool->execute([]);
+
+    expect($result->content)->toBe('The remote__search tool failed before it could answer.')
+        ->and($result->content)->not->toContain('secret.example')
+        ->and($result->errorCode)->toBe('schema_tool_error')
+        ->and($result->metadata)->toBe([
+            'exception' => RuntimeException::class,
+            'message' => 'POST https://secret.example/mcp failed',
+        ]);
+});
+
+test('a non-ToolResult return carries the same error code and no exception metadata', function () {
+    $result = (new SchemaTool('t', 'd', ['type' => 'object'], fn(array $a) => 'not a result'))->execute([]);
+
+    expect($result->status)->toBe(ToolResultStatus::Error)
+        ->and($result->errorCode)->toBe('schema_tool_error')
+        ->and($result->metadata)->toBe([]);
+});
