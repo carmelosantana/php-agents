@@ -64,7 +64,7 @@ final class LlamaCppToolSchemaNormalizer
                 description: is_string($function['description'] ?? null) ? $function['description'] : $tool->description(),
                 parameters: is_array($parameters)
                     ? $this->sanitizeSchema($parameters)
-                    : ['type' => 'object', 'properties' => [], 'additionalProperties' => false, 'required' => []],
+                    : ['type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => false, 'required' => []],
             );
         }, $tools);
     }
@@ -87,19 +87,40 @@ final class LlamaCppToolSchemaNormalizer
         if (isset($schema['properties']) && is_array($schema['properties'])) {
             foreach ($schema['properties'] as $key => $property) {
                 if (is_array($property)) {
-                    $schema['properties'][$key] = $this->sanitizeSchema($property);
+                    $schema['properties'][$key] = $this->sanitizeChild($property);
                 }
             }
         }
 
         if (isset($schema['items']) && is_array($schema['items'])) {
-            $schema['items'] = $this->sanitizeSchema($schema['items']);
+            $schema['items'] = $this->sanitizeChild($schema['items']);
         }
 
-        if (!isset($schema['required']) || !is_array($schema['required'])) {
+        $isObject = ($schema['type'] ?? null) === 'object'
+            || (is_array($schema['type'] ?? null) && in_array('object', $schema['type'], true));
+        if ($isObject && (!isset($schema['required']) || !is_array($schema['required']))) {
             $schema['required'] = [];
         }
 
         return $schema;
+    }
+
+    /**
+     * Sanitize a subschema, keeping it an object when nothing survives.
+     *
+     * A node built only of UNSUPPORTED_SCHEMA_KEYWORDS — `{"$ref": "#/$defs/x"}` from
+     * an MCP server — sanitizes to an empty array, which json_encode() writes as `[]`.
+     * A subschema position must carry an object, so an emptied node becomes `{}`: the
+     * schema that accepts anything, which is what is left once the keyword that
+     * constrained it is gone.
+     *
+     * @param array<string, mixed> $schema
+     * @return array<string, mixed>|\stdClass
+     */
+    private function sanitizeChild(array $schema): array|\stdClass
+    {
+        $sanitized = $this->sanitizeSchema($schema);
+
+        return $sanitized === [] ? new \stdClass() : $sanitized;
     }
 }

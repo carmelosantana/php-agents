@@ -1,0 +1,1 @@
+{"type":"object","properties":{"who":{"$ref":"#/$defs/person"}},"$defs":{"person":{"type":"object","properties":{"name":{"type":"string"}}}}}
