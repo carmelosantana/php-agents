@@ -10,21 +10,33 @@ namespace CarmeloSantana\PHPAgents\Schema;
  * A decoded `{}` and a decoded `[]` are the same PHP value, and json_encode() writes
  * both back as `[]`. A schema from outside (an MCP server's `inputSchema`, an ability's
  * input schema) is decoded that way, and providers reject `"properties": []`. repair()
- * turns an array back into an object only at the JSON Schema 2020-12 keywords whose
- * value must be an object:
+ * turns an array back into an object only at the keywords whose value must be an
+ * object. Those are the JSON Schema 2020-12 keywords plus the older spellings still
+ * met in the wild — `definitions`, superseded by `$defs`, and `additionalItems`,
+ * removed in 2020-12:
  *
  * - map-valued (`properties`, `patternProperties`, `$defs`, `definitions`,
  *   `dependentSchemas`): always an object, including a non-empty map whose keys
  *   are numeric strings, which PHP stores as a list;
  * - schema-valued (`additionalProperties`, `unevaluatedProperties`, `items`,
  *   `additionalItems`, `unevaluatedItems`, `contains`, `not`, `if`, `then`, `else`,
- *   `propertyNames`): an empty array becomes `{}`, and anything else is recursed
- *   into. The exception is `items` as a non-empty list, the draft-04 tuple form,
- *   which is a list of schemas.
+ *   `propertyNames`, `contentSchema`): an empty array becomes `{}`, and anything else
+ *   is recursed into. The exception is `items` as a non-empty list, the draft-04 tuple
+ *   form, which is a list of schemas.
  *
  * Schema lists (`anyOf`, `oneOf`, `allOf`, `prefixItems`) are recursed into and stay
  * lists. Value keywords (`enum`, `const`, `default`, `examples`, `required`, `type`)
- * are never touched: their `[]` may really be an empty list.
+ * are never touched: their `[]` may really be an empty list. Draft-07 `dependencies`
+ * is left alone for that same reason — its values mix schemas with string lists, so
+ * which `[]` was an object cannot be told from the decoded value.
+ *
+ * repair() fires only on a keyword it finds, which makes the root a precondition on
+ * the caller rather than something this class can fix. A schema with no keywords at
+ * all — the `{}` an MCP tool that takes no input publishes — has nothing to fire on
+ * and is returned, and re-encoded, as `[]`; the signature returns an array, so a root
+ * `\stdClass` is not a value repair() can produce. A caller that may be handed such a
+ * schema must establish a root `type` before calling, the way
+ * SchemaTool::toFunctionSchema() does with `$schema['type'] ??= 'object'`.
  */
 final class JsonSchemaRepair
 {
@@ -32,7 +44,7 @@ final class JsonSchemaRepair
 
     private const SCHEMA_KEYWORDS = [
         'additionalProperties', 'unevaluatedProperties', 'items', 'additionalItems', 'unevaluatedItems',
-        'contains', 'not', 'if', 'then', 'else', 'propertyNames',
+        'contains', 'not', 'if', 'then', 'else', 'propertyNames', 'contentSchema',
     ];
 
     private const LIST_KEYWORDS = ['anyOf', 'oneOf', 'allOf', 'prefixItems'];

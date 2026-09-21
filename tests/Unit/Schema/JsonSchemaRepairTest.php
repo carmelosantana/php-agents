@@ -46,3 +46,45 @@ test('a schema with nothing to repair comes back unchanged', function () {
     $schema = ['type' => 'object', 'properties' => ['q' => ['type' => 'string']], 'required' => ['q']];
     expect(JsonSchemaRepair::repair($schema))->toBe($schema);
 });
+
+test('a schema with no keywords at all cannot be repaired and comes back as a list', function () {
+    // repair() only ever fires on a keyword it finds, and its signature returns an array,
+    // so the root `{}` an MCP tool that takes no input publishes has nothing to fire on.
+    // Establishing a root `type` is the caller's job — SchemaTool::toFunctionSchema() does it.
+    expect(encodedRepair('{}'))->toBe('[]')
+        ->and(encodedRepair('{"type":"object"}'))->toBe('{"type":"object"}');
+});
+
+test('contentSchema is repaired', function () {
+    $json = '{"type":"string","contentMediaType":"application/json","contentSchema":{}}';
+    expect(encodedRepair($json))->toBe($json);
+});
+
+test('every map-valued keyword is repaired', function (string $keyword) {
+    $nested = '{"' . $keyword . '":{"a":{"properties":{}}}}';
+    expect(encodedRepair('{"' . $keyword . '":{}}'))->toBe('{"' . $keyword . '":{}}')
+        ->and(encodedRepair($nested))->toBe($nested);
+})->with(['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas']);
+
+test('every schema-valued keyword is repaired', function (string $keyword) {
+    $nested = '{"' . $keyword . '":{"properties":{}}}';
+    expect(encodedRepair('{"' . $keyword . '":{}}'))->toBe('{"' . $keyword . '":{}}')
+        ->and(encodedRepair($nested))->toBe($nested);
+})->with([
+    'additionalProperties', 'unevaluatedProperties', 'items', 'additionalItems', 'unevaluatedItems',
+    'contains', 'not', 'if', 'then', 'else', 'propertyNames', 'contentSchema',
+]);
+
+test('every schema-list keyword is recursed into and stays a list', function (string $keyword) {
+    $json = '{"' . $keyword . '":[{"properties":{}},{"type":"null"}]}';
+    expect(encodedRepair($json))->toBe($json);
+})->with(['anyOf', 'oneOf', 'allOf', 'prefixItems']);
+
+test('a keyword in no table is left exactly as decoded', function () {
+    // The negative control for the three tests above: repair() discriminates by keyword
+    // rather than objectifying every empty array. `default` and `examples` losing their
+    // `{}` is the known, accepted cost of an assoc decode; `dependencies` is left alone
+    // because its values mix schemas and string lists.
+    expect(encodedRepair('{"default":{},"examples":[{}],"dependencies":{"a":{}},"x-vendor":{}}'))
+        ->toBe('{"default":[],"examples":[[]],"dependencies":{"a":[]},"x-vendor":[]}');
+});
