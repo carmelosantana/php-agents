@@ -284,6 +284,16 @@ test('every subschema position is either disqualified or fully closed by normali
     $map = ['$defs', 'definitions', 'patternProperties', 'dependentSchemas', 'dependencies'];
 
     $cases = ['properties' => [['type' => 'object', 'properties' => ['x' => $unclosed], 'required' => ['x']]]];
+
+    // Not a keyword row: the other axis of the same position. `properties` is walked
+    // unconditionally but only rewritten behind the object-node gate, so a parent with
+    // an explicit non-object `type` is walked, never rewritten and never judged.
+    $cases['properties on a non-object node'] = [[
+        'type' => 'object',
+        'additionalProperties' => false,
+        'required' => ['a'],
+        'properties' => ['a' => ['type' => 'string', 'properties' => ['x' => $unclosed]]],
+    ]];
     foreach ($single as $keyword) {
         $cases[$keyword] = [$root + [$keyword => $unclosed]];
     }
@@ -295,4 +305,39 @@ test('every subschema position is either disqualified or fully closed by normali
     }
 
     return $cases;
+});
+
+test('qualifies rejects properties on a node typed as something other than an object', function () {
+    // children() walks `properties` unconditionally, but normalize() only rewrites it
+    // behind the object-node gate. A `type: string` node carrying `properties` was
+    // therefore walked, never rewritten and never judged, leaking unclosed objects
+    // under strict:true. Disqualify rather than rewrite: writing
+    // `additionalProperties: false` onto a string node would be meaningless.
+    $schema = [
+        'type' => 'object',
+        'additionalProperties' => false,
+        'required' => ['a'],
+        'properties' => [
+            'a' => [
+                'type' => 'string',
+                'properties' => ['x' => ['type' => 'object', 'properties' => ['b' => ['type' => 'string']]]],
+            ],
+        ],
+    ];
+
+    expect(StrictSchemaNormalizer::qualifies($schema))->toBeFalse();
+});
+
+test('qualifies accepts a nullable object given as a type array', function () {
+    // The boundary of the rule above: `type: ["object","null"]` IS an object node, and
+    // spec section 4 lists nullable objects among the shapes normalize() closes, so
+    // this must keep qualifying rather than be caught as a non-object bearing properties.
+    $schema = [
+        'type' => 'object',
+        'properties' => ['meta' => ['type' => ['object', 'null'], 'properties' => ['a' => ['type' => 'string']]]],
+        'required' => ['meta'],
+    ];
+
+    expect(StrictSchemaNormalizer::qualifies($schema))->toBeTrue()
+        ->and(StrictSchemaNormalizer::normalize($schema)['properties']['meta']['additionalProperties'])->toBeFalse();
 });

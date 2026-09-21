@@ -28,6 +28,10 @@ namespace CarmeloSantana\PHPAgents\Provider;
  * - a `$ref`, or has `patternProperties`, whose targets normalize() cannot close;
  * - a node whose non-empty `properties` is a stdClass (a map with numeric-string
  *   keys, as JsonSchemaRepair leaves it), which normalize() cannot walk;
+ * - a node carrying `properties` that is not an object node, i.e. one with an
+ *   explicit non-object `type`: normalize()'s gate skips it, so nothing under its
+ *   `properties` would ever be closed. `type: ["object", "null"]` is an object
+ *   node and is unaffected;
  * - an object anywhere under a position normalize() does not rewrite — every
  *   single-subschema keyword ({@see SINGLE_SCHEMA_KEYWORDS}) and every schema map
  *   in {@see UNREWRITTEN_SCHEMA_MAP_KEYWORDS}: leaving one in would send an
@@ -44,8 +48,11 @@ namespace CarmeloSantana\PHPAgents\Provider;
  *
  * `normalize()` rewrites a strictly smaller set: properties, items, prefixItems,
  * `$defs`/`definitions` and the combinator branches. Every other position above
- * is left as written, which is why an object there disqualifies the schema
- * rather than being normalized.
+ * is left as written, which is why an object there disqualifies the schema rather
+ * than being normalized. Two of those positions disqualify for a stronger reason
+ * than the object they hold: `patternProperties` disqualifies outright, and
+ * `additionalProperties` disqualifies as soon as it is present and not `false`,
+ * object or not.
  *
  * Those two sets are restated in more than one place here, so the invariant that
  * matters is pinned by a test rather than by this comment: "every subschema
@@ -216,6 +223,15 @@ final class StrictSchemaNormalizer
                     return true;
                 }
             }
+        }
+
+        // children() walks `properties` on any node, but normalize() only rewrites it
+        // behind the object-node gate. A node with an explicit non-object `type` that
+        // still carries `properties` therefore falls between the two: walked, never
+        // rewritten, never judged. Disqualify — closing a `type: string` node would
+        // be meaningless, so refuse to vouch for it.
+        if (isset($schema['properties']) && !self::isObjectNode($schema)) {
+            return true;
         }
 
         if (self::isObjectNode($schema) && ($schema['additionalProperties'] ?? null) !== false) {
