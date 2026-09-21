@@ -1,0 +1,1 @@
+{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"},"q":{"type":"string"}},"required":["q"]}

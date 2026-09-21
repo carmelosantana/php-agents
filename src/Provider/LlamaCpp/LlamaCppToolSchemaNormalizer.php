@@ -64,7 +64,7 @@ final class LlamaCppToolSchemaNormalizer
                 description: is_string($function['description'] ?? null) ? $function['description'] : $tool->description(),
                 parameters: is_array($parameters)
                     ? $this->sanitizeSchema($parameters)
-                    : ['type' => 'object', 'properties' => [], 'additionalProperties' => false, 'required' => []],
+                    : ['type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => false, 'required' => []],
             );
         }, $tools);
     }
@@ -96,7 +96,9 @@ final class LlamaCppToolSchemaNormalizer
             $schema['items'] = $this->sanitizeSchema($schema['items']);
         }
 
-        if (!isset($schema['required']) || !is_array($schema['required'])) {
+        $isObject = ($schema['type'] ?? null) === 'object'
+            || (is_array($schema['type'] ?? null) && in_array('object', $schema['type'], true));
+        if ($isObject && (!isset($schema['required']) || !is_array($schema['required']))) {
             $schema['required'] = [];
         }
 
