@@ -173,13 +173,20 @@ final class GeminiProvider extends AbstractProvider
         // Use generationConfig with response_mime_type for structured output
         $responseSchema = $schemaData['schema'] ?? $schemaData['parameters'] ?? $schemaData;
 
-        // Strip unsupported schema fields for Gemini
-        unset($responseSchema['name'], $responseSchema['description']);
-        if (!isset($responseSchema['type'])) {
-            $responseSchema['type'] = 'OBJECT';
-        } else {
-            $responseSchema['type'] = strtoupper($responseSchema['type']);
+        if (!is_array($responseSchema)) {
+            return $this->chat($messages, [], $options);
         }
+
+        // responseSchema is the same Gemini Schema a function declaration's parameters are,
+        // and arrives from outside with the same shapes — a `type` that is an array, a
+        // lower-case type on a nested node. normalizeSchemaForGemini() is what the tool path
+        // already does with those, so this defers to it rather than upper-casing the root
+        // `type` alone, which raised a TypeError on a type array. A type array that does not
+        // collapse to a single non-null type comes back with no `type` at all, so the OBJECT
+        // default is applied after the walk, not before it.
+        unset($responseSchema['name'], $responseSchema['description']);
+        $responseSchema = $this->normalizeSchemaForGemini($responseSchema);
+        $responseSchema['type'] ??= 'OBJECT';
 
         $options['generationConfig'] = array_merge(
             $options['generationConfig'] ?? [],
