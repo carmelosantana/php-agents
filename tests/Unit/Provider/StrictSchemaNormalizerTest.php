@@ -122,7 +122,7 @@ test('qualifies rejects an object under a conditional branch', function () {
         'type' => 'object',
         'properties' => ['a' => ['type' => 'string']],
         'required' => ['a'],
-        'if' => ['properties' => ['a' => ['const' => 'x']]],
+        'if' => ['required' => ['a']],
         'then' => ['type' => 'object', 'properties' => ['b' => ['type' => 'string']]],
     ];
     $negated = [
@@ -167,4 +167,51 @@ test('qualifies rejects a typeless properties map under a conditional branch', f
     ];
 
     expect(StrictSchemaNormalizer::qualifies($schema))->toBeFalse();
+});
+
+test('qualifies rejects a typeless node that is open or free-form', function () {
+    // JsonSchemaRepair defaults only the ROOT `type`, so a server-supplied MCP schema
+    // can carry nested nodes with `properties` and no `type`. normalize() rewrites
+    // those as objects, so the predicates have to judge them as objects too — or an
+    // explicit `additionalProperties: true` gets flipped to false under strict:true.
+    $open = [
+        'type' => 'object',
+        'properties' => ['a' => ['properties' => ['b' => ['type' => 'string']], 'additionalProperties' => true]],
+        'required' => ['a'],
+    ];
+    $freeForm = [
+        'type' => 'object',
+        'properties' => ['a' => ['properties' => new stdClass()]],
+        'required' => ['a'],
+    ];
+
+    expect(StrictSchemaNormalizer::qualifies($open))->toBeFalse()
+        ->and(StrictSchemaNormalizer::qualifies($freeForm))->toBeFalse();
+});
+
+test('containsOpenObject finds an open map under contains', function () {
+    $schema = [
+        'type' => 'object',
+        'properties' => ['a' => ['type' => 'array', 'contains' => ['type' => 'object', 'additionalProperties' => true]]],
+        'required' => ['a'],
+    ];
+
+    expect(StrictSchemaNormalizer::containsOpenObject($schema))->toBeTrue();
+});
+
+test('qualifies rejects an object under a position normalize does not rewrite', function () {
+    // Same reasoning as the conditional branches: normalize() leaves these positions
+    // alone, so an object there would ship unclosed under strict:true.
+    $object = ['type' => 'object', 'properties' => ['b' => ['type' => 'string']]];
+    $wrap = fn(array $extra): array => [
+        'type' => 'object',
+        'properties' => ['a' => ['type' => 'array'] + $extra],
+        'required' => ['a'],
+    ];
+
+    expect(StrictSchemaNormalizer::qualifies($wrap(['contains' => $object])))->toBeFalse()
+        ->and(StrictSchemaNormalizer::qualifies($wrap(['additionalItems' => $object])))->toBeFalse()
+        ->and(StrictSchemaNormalizer::qualifies($wrap(['unevaluatedProperties' => $object])))->toBeFalse()
+        ->and(StrictSchemaNormalizer::qualifies($wrap(['propertyNames' => $object])))->toBeFalse()
+        ->and(StrictSchemaNormalizer::qualifies($wrap(['dependentSchemas' => ['x' => $object]])))->toBeFalse();
 });
