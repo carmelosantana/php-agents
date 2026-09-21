@@ -186,8 +186,10 @@ test('sse streams a comment then event: message frames, and only legacy injects 
         ->and($legacyMessages[2]['result']['tools'])->toBe([])
         ->and(sseShape($modernMessages))->toBe(['notifications/progress:null', 'result:7'])
         ->and($modernMessages[1]['result']['resultType'])->toBe('complete')
-        // Every data-carrying frame is labelled, so a parser that only scans for `data:` lines
-        // cannot pass here while ignoring the field a real server sends.
+        // The label changes no message, but it does stop a parser that assumes each frame
+        // *begins* with `data: ` — the shape sseMessages() had until this change. Pin the
+        // field so the fake cannot quietly stop sending it; a parser that scans a frame's
+        // lines, as sseMessages() now does, passes either way.
         ->and(sseEventNames($legacyBody))->toBe(['message', 'message', 'message'])
         ->and(sseEventNames($modernBody))->toBe(['message', 'message']);
 });

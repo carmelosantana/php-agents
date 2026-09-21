@@ -64,9 +64,12 @@ final class FakeMcpServer
      *
      * Every frame that carries data is labelled `event: message`. Neither revision of
      * Streamable HTTP names the SSE event type, so `message` is the SSE default an unnamed
-     * frame already has; labelling it changes no message, and it keeps a parser that only
-     * scans for `data:` lines from passing here and then meeting a labelled frame in the
-     * wild. The comment line carries no `event:`, since an SSE comment is not an event.
+     * frame already has; the label changes no message, and it keeps a parser that assumes
+     * each frame *begins* with `data: ` from passing here — the shape the sseMessages()
+     * helper in FakeMcpServerTest had until the label was added — and then meeting a
+     * labelled frame in the wild. A parser that scans a frame's lines for a `data: ` prefix
+     * is unaffected either way, which is what that helper does now. The comment line carries
+     * no `event:`, since an SSE comment is not an event.
      * Only reply() reads this flag; every error() answer stays application/json.
      */
     public bool $sse = false;
