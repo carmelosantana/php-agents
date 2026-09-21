@@ -215,3 +215,84 @@ test('qualifies rejects an object under a position normalize does not rewrite', 
         ->and(StrictSchemaNormalizer::qualifies($wrap(['propertyNames' => $object])))->toBeFalse()
         ->and(StrictSchemaNormalizer::qualifies($wrap(['dependentSchemas' => ['x' => $object]])))->toBeFalse();
 });
+
+// ── invariant: every subschema position is judged or rewritten, never neither ──
+
+/**
+ * Paths of every object node in $node that OpenAI strict mode would reject: one
+ * not closed with `additionalProperties: false`, or not listing every key of
+ * `properties` in `required`.
+ *
+ * This walks every nested array generically and keeps no keyword list of its own,
+ * so it cannot inherit a blind spot from the class under test.
+ *
+ * @return list<string>
+ */
+function strictUnclosedObjectPaths(mixed $node, string $path = '$'): array
+{
+    if (!is_array($node)) {
+        return [];
+    }
+
+    $paths = [];
+    $type = $node['type'] ?? null;
+    $isObject = $type === 'object'
+        || (is_array($type) && in_array('object', $type, true))
+        || array_key_exists('properties', $node);
+
+    if ($isObject) {
+        $properties = $node['properties'] ?? [];
+        $keys = is_array($properties) ? array_keys($properties) : [];
+        $required = is_array($node['required'] ?? null) ? $node['required'] : [];
+
+        if (($node['additionalProperties'] ?? null) !== false || array_diff($keys, $required) !== []) {
+            $paths[] = $path;
+        }
+    }
+
+    foreach ($node as $key => $child) {
+        $paths = [...$paths, ...strictUnclosedObjectPaths($child, $path . '.' . $key)];
+    }
+
+    return $paths;
+}
+
+test('every subschema position is either disqualified or fully closed by normalize', function (array $schema) {
+    // The contract this class owes its callers: a schema it accepts for strict mode
+    // must come back with every object closed. A position walked but never rewritten,
+    // or rewritten but never judged, breaks exactly this — which is how every bug in
+    // this class so far has looked. The dataset is keyed by keyword, so a failure
+    // names the offending one.
+    $qualifies = StrictSchemaNormalizer::qualifies($schema);
+    $unclosed = $qualifies ? strictUnclosedObjectPaths(StrictSchemaNormalizer::normalize($schema)) : [];
+
+    expect($unclosed)->toBe([]);
+})->with(function (): array {
+    $unclosed = ['type' => 'object', 'properties' => ['b' => ['type' => 'string']]];
+    $root = ['type' => 'object', 'properties' => ['a' => ['type' => 'string']], 'required' => ['a']];
+
+    // Sourced from the JSON Schema 2020-12 vocabularies, NOT from this class's
+    // constants: core (`$defs`); applicator (`prefixItems`, `items`, `contains`,
+    // `additionalProperties`, `properties`, `patternProperties`, `dependentSchemas`,
+    // `propertyNames`, `if`/`then`/`else`, `allOf`/`anyOf`/`oneOf`, `not`);
+    // unevaluated (`unevaluatedItems`, `unevaluatedProperties`); content
+    // (`contentSchema`). Plus the older spellings this codebase honours:
+    // `definitions`, `additionalItems` and draft-07 `dependencies`.
+    $single = ['items', 'additionalItems', 'contains', 'additionalProperties', 'propertyNames',
+        'unevaluatedItems', 'unevaluatedProperties', 'contentSchema', 'if', 'then', 'else', 'not'];
+    $list = ['prefixItems', 'allOf', 'anyOf', 'oneOf'];
+    $map = ['$defs', 'definitions', 'patternProperties', 'dependentSchemas', 'dependencies'];
+
+    $cases = ['properties' => [['type' => 'object', 'properties' => ['x' => $unclosed], 'required' => ['x']]]];
+    foreach ($single as $keyword) {
+        $cases[$keyword] = [$root + [$keyword => $unclosed]];
+    }
+    foreach ($list as $keyword) {
+        $cases[$keyword] = [$root + [$keyword => [$unclosed]]];
+    }
+    foreach ($map as $keyword) {
+        $cases[$keyword] = [$root + [$keyword => ['x' => $unclosed]]];
+    }
+
+    return $cases;
+});

@@ -28,26 +28,30 @@ namespace CarmeloSantana\PHPAgents\Provider;
  * - a `$ref`, or has `patternProperties`, whose targets normalize() cannot close;
  * - a node whose non-empty `properties` is a stdClass (a map with numeric-string
  *   keys, as JsonSchemaRepair leaves it), which normalize() cannot walk;
- * - an object anywhere under a position normalize() does not rewrite — `not`,
- *   `if`/`then`/`else`, `contains`, `propertyNames`, `dependentSchemas`,
- *   `additionalItems`, `additionalProperties`, `unevaluatedProperties` or
- *   `unevaluatedItems`: leaving one in would send an unclosed object with
- *   `strict: true`, which OpenAI rejects outright. The rule is uniform, so even an
- *   object already closed and fully required there makes the schema not qualify.
+ * - an object anywhere under a position normalize() does not rewrite — every
+ *   single-subschema keyword ({@see SINGLE_SCHEMA_KEYWORDS}) and every schema map
+ *   in {@see UNREWRITTEN_SCHEMA_MAP_KEYWORDS}: leaving one in would send an
+ *   unclosed object with `strict: true`, which OpenAI rejects outright. The rule
+ *   is uniform, so even an object already closed and fully required there makes
+ *   the schema not qualify.
  *
  * Unlike {@see SchemaUtils} (per-node helpers), these methods recurse over the
- * tree, but not over the same positions. `qualifies()` walks every subschema
- * position this class knows: properties, patternProperties, `$defs`,
- * `definitions`, dependentSchemas, items (schema or tuple), prefixItems,
- * additionalItems, contains, propertyNames, additionalProperties,
- * unevaluatedProperties, unevaluatedItems, `anyOf`/`oneOf`/`allOf`, `not` and
- * `if`/`then`/`else`. It does not walk draft-07 `dependencies`, and it does not
- * follow a `$ref` — a `$ref` disqualifies the schema outright instead.
+ * tree, but not over the same positions. `qualifies()` walks every position that
+ * can hold a subschema in the JSON Schema 2020-12 core, applicator, unevaluated
+ * and content vocabularies, plus the older spellings `definitions`,
+ * `additionalItems` and draft-07 `dependencies`. It does not follow a `$ref`; a
+ * `$ref` disqualifies the schema outright instead.
  *
  * `normalize()` rewrites a strictly smaller set: properties, items, prefixItems,
  * `$defs`/`definitions` and the combinator branches. Every other position above
  * is left as written, which is why an object there disqualifies the schema
  * rather than being normalized.
+ *
+ * Those two sets are restated in more than one place here, so the invariant that
+ * matters is pinned by a test rather than by this comment: "every subschema
+ * position is either disqualified or fully closed by normalize" enumerates the
+ * keywords from the specification and fails if any position is neither rewritten
+ * nor judged.
  */
 final class StrictSchemaNormalizer
 {
@@ -57,16 +61,26 @@ final class StrictSchemaNormalizer
      */
     private const SINGLE_SCHEMA_KEYWORDS = [
         'additionalProperties', 'additionalItems', 'contains', 'propertyNames',
-        'unevaluatedProperties', 'unevaluatedItems', 'not', 'if', 'then', 'else',
+        'unevaluatedProperties', 'unevaluatedItems', 'contentSchema', 'not', 'if',
+        'then', 'else',
     ];
 
     /**
      * Keywords whose value is a map of subschemas. normalize() rewrites `properties`,
-     * `$defs` and `definitions`. `patternProperties` disqualifies a schema outright;
-     * `dependentSchemas` normalize() leaves alone, so an object there disqualifies it
-     * the same way a `contains` object does.
+     * `$defs` and `definitions`; `patternProperties` disqualifies a schema outright;
+     * the rest are in {@see UNREWRITTEN_SCHEMA_MAP_KEYWORDS}.
      */
-    private const SCHEMA_MAP_KEYWORDS = ['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas'];
+    private const SCHEMA_MAP_KEYWORDS = [
+        'properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas', 'dependencies',
+    ];
+
+    /**
+     * Schema-map keywords normalize() does not rewrite, so an object under one
+     * disqualifies the schema the same way a `contains` object does. Draft-07
+     * `dependencies` may hold a list of property names instead of a subschema;
+     * such a list simply contains no object and does not disqualify anything.
+     */
+    private const UNREWRITTEN_SCHEMA_MAP_KEYWORDS = ['dependentSchemas', 'dependencies'];
 
     /**
      * @param array<array-key, mixed> $schema
@@ -193,8 +207,11 @@ final class StrictSchemaNormalizer
             }
         }
 
-        if (isset($schema['dependentSchemas']) && is_array($schema['dependentSchemas'])) {
-            foreach ($schema['dependentSchemas'] as $node) {
+        foreach (self::UNREWRITTEN_SCHEMA_MAP_KEYWORDS as $keyword) {
+            if (!isset($schema[$keyword]) || !is_array($schema[$keyword])) {
+                continue;
+            }
+            foreach ($schema[$keyword] as $node) {
                 if (is_array($node) && self::containsObject($node)) {
                     return true;
                 }
@@ -272,7 +289,10 @@ final class StrictSchemaNormalizer
     }
 
     /**
-     * Every subschema directly under this node.
+     * The subschemas directly under this node, for every keyword this class knows:
+     * {@see SCHEMA_MAP_KEYWORDS}, {@see SINGLE_SCHEMA_KEYWORDS}, the combinators,
+     * `prefixItems` and `items`. A keyword absent from those is not walked at all —
+     * add it there and to the invariant test's keyword list together.
      *
      * @param array<array-key, mixed> $schema
      * @return list<array<array-key, mixed>>
