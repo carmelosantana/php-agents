@@ -21,8 +21,10 @@ namespace CarmeloSantana\PHPAgents\Mcp;
  * whose stored pins must keep matching; the test pins a shared digest. The top-level
  * `title` is outside the hash because it is a display label. `annotations` is hashed as
  * sent, `annotations.title` included. `outputSchema`, `icons` and `_meta` are not kept.
- * Invalid UTF-8 is substituted rather than thrown on, so a bad byte withholds a tool
- * instead of failing a turn.
+ * JSON_INVALID_UTF8_SUBSTITUTE is what lets a definition carrying an invalid UTF-8 byte
+ * encode at all, so it gets a stable digest of its own. Without the flag json_encode()
+ * returns false, `(string) false` is `''`, and every definition with a bad byte would
+ * collapse onto the one digest of the empty string.
  *
  * The hint methods read the MCP ToolAnnotations with the specification's defaults: a
  * missing hint means readOnly false, destructive true, idempotent false, openWorld true;

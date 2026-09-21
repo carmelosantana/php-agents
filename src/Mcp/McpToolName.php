@@ -7,8 +7,9 @@ namespace CarmeloSantana\PHPAgents\Mcp;
 /**
  * Fits a tool name to what the providers php-agents reaches accept: at most 64
  * characters of `[A-Za-z0-9_-]`, first character a letter or `_` (OpenAI's limit
- * and the strictest first-character rule). MCP allows names of up to 128 characters
- * with dots.
+ * and the strictest first-character rule). MCP is looser: its tool names SHOULD be 1 to
+ * 128 characters of ASCII letters, digits, `_`, `-` and `.` (MCP 2026-07-28, Server
+ * Features > Tools, "Tool Names").
  *
  * A name that already fits comes back unchanged. Any other name is changed and
  * marked: disallowed characters become `_`, a leading `_` is added when needed, and

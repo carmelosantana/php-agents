@@ -28,12 +28,38 @@ function modernMeta(): array
     ];
 }
 
+/** @return list<list<string>> the lines of every SSE frame that carries at least one `data:` line, in order */
+function sseDataFrames(string $body): array
+{
+    $frames = [];
+    foreach (explode("\n\n", $body) as $frame) {
+        $lines = explode("\n", $frame);
+        if (array_filter($lines, static fn (string $line): bool => str_starts_with($line, 'data: ')) !== []) {
+            $frames[] = $lines;
+        }
+    }
+
+    return $frames;
+}
+
 /** @return list<array<string, mixed>> the decoded `data:` messages of an SSE body, in order */
 function sseMessages(string $body): array
 {
-    $frames = array_values(array_filter(explode("\n\n", $body), static fn (string $frame): bool => str_starts_with($frame, 'data: ')));
+    return array_map(static function (array $lines): array {
+        $data = array_filter($lines, static fn (string $line): bool => str_starts_with($line, 'data: '));
 
-    return array_map(static fn (string $frame): array => (array) json_decode(substr($frame, 6), true), $frames);
+        return (array) json_decode(implode("\n", array_map(static fn (string $line): string => substr($line, 6), $data)), true);
+    }, sseDataFrames($body));
+}
+
+/** @return list<string> the `event:` name of every data-carrying frame, '' when the frame has none */
+function sseEventNames(string $body): array
+{
+    return array_map(static function (array $lines): string {
+        $named = array_values(array_filter($lines, static fn (string $line): bool => str_starts_with($line, 'event: ')));
+
+        return $named === [] ? '' : substr($named[0], 7);
+    }, sseDataFrames($body));
 }
 
 /** @param list<array<string, mixed>> $messages "<method or result>:<id>" for each message, in order */
@@ -136,7 +162,7 @@ test('pageSize pages tools/list, with nextCursor on every page but the last', fu
         ->toBe(['a', 'b', 'c', 'd']);
 });
 
-test('sse streams a comment, a notification and the response, and only legacy injects a server request', function () {
+test('sse streams a comment then event: message frames, and only legacy injects a server request', function () {
     $legacy = new FakeMcpServer(FakeMcpServer::LEGACY);
     $legacy->sse = true;
     $legacyResponse = $legacy->client()->request('POST', 'https://mcp.example.test/mcp', [
@@ -148,17 +174,22 @@ test('sse streams a comment, a notification and the response, and only legacy in
 
     $modern = new FakeMcpServer();
     $modern->sse = true;
-    $modernMessages = sseMessages($modern->client()->request('POST', 'https://mcp.example.test/mcp', [
+    $modernBody = $modern->client()->request('POST', 'https://mcp.example.test/mcp', [
         'json' => ['jsonrpc' => '2.0', 'id' => 7, 'method' => 'tools/list', 'params' => ['_meta' => modernMeta()]],
         'headers' => ['MCP-Protocol-Version' => '2026-07-28', 'Mcp-Method' => 'tools/list'],
-    ])->getContent(false));
+    ])->getContent(false);
+    $modernMessages = sseMessages($modernBody);
 
     expect($legacyResponse->getHeaders(false)['content-type'][0])->toBe('text/event-stream')
         ->and($legacyBody)->toStartWith(": keep-alive\n\n")
         ->and(sseShape($legacyMessages))->toBe(['notifications/progress:null', 'ping:7', 'result:7'])
         ->and($legacyMessages[2]['result']['tools'])->toBe([])
         ->and(sseShape($modernMessages))->toBe(['notifications/progress:null', 'result:7'])
-        ->and($modernMessages[1]['result']['resultType'])->toBe('complete');
+        ->and($modernMessages[1]['result']['resultType'])->toBe('complete')
+        // Every data-carrying frame is labelled, so a parser that only scans for `data:` lines
+        // cannot pass here while ignoring the field a real server sends.
+        ->and(sseEventNames($legacyBody))->toBe(['message', 'message', 'message'])
+        ->and(sseEventNames($modernBody))->toBe(['message', 'message']);
 });
 
 test('a scripted results closure sees the arguments, and its own resultType survives', function () {

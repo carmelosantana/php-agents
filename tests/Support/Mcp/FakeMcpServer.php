@@ -13,15 +13,27 @@ use Symfony\Component\HttpClient\Response\MockResponse;
  * MODERN speaks 2026-07-28. It checks `MCP-Protocol-Version` (a mismatch gets -32022), then
  * `Mcp-Method` against the body's method and the three `params._meta` fields by shape (either
  * gets -32020), and on `tools/call` also `Mcp-Name` against the tool name (-32020). An unknown
- * method gets 404/-32601, and an unknown tool gets HTTP 200 carrying -32602.
+ * method gets 404/-32601, and an unknown tool gets HTTP 200 carrying -32602 — but only while no
+ * $results closure is registered under that name, since call() takes a registered closure as
+ * proof the tool exists and never reaches the unknown-tool branch.
+ *
+ * The two modern headers are not compared the same way: `Mcp-Name` is run through decodeName(),
+ * `Mcp-Method` is compared raw. The MCP spec asks for the `=?base64?…?=` sentinel encoding on
+ * `Mcp-Name` and `Mcp-Param-*` only, while this repo's spec line 158 puts `Mcp-Method` under it
+ * too. A shared encoder that follows the sentinel rules is invisible here, because a JSON-RPC
+ * method name is always header-safe and passes through unencoded; a client that encodes
+ * `Mcp-Method` unconditionally gets -32020 on every modern request. Which of the two the client
+ * owes is a spec question this fake does not settle, so do not read the raw comparison as a
+ * ruling.
  *
  * LEGACY speaks 2025-11-25 the way the WordPress MCP Adapter (trunk 4ff9806) does:
  * - `initialize` issues `Mcp-Session-Id`, unless $session is null;
  * - while $session is not null, a request other than `initialize` that omits that header gets
  *   400/-32600, and one carrying any other id gets 404/-32005;
  * - past that session gate, a version header other than 2025-11-25 or 2025-06-18 gets
- *   400/-32600 as well, with a different message;
- * - an unknown tool gets 404/-32003.
+ *   400/-32600 as well, with a different message — an absent version header does not, it is
+ *   accepted;
+ * - an unknown tool gets 404/-32003, again only while no $results closure is registered for it.
  *
  * Every request is recorded in $requests, with headers keyed by lower-case name.
  * once() queues a one-shot answer that wins over the scripted server.
@@ -49,6 +61,12 @@ final class FakeMcpServer
      * the response; MODERN does not, because under 2026-07-28 "servers do not initiate
      * JSON-RPC requests" (basic/transports, Messages), which that page's Backward
      * Compatibility section calls out as a change from the earlier revisions.
+     *
+     * Every frame that carries data is labelled `event: message`. Neither revision of
+     * Streamable HTTP names the SSE event type, so `message` is the SSE default an unnamed
+     * frame already has; labelling it changes no message, and it keeps a parser that only
+     * scans for `data:` lines from passing here and then meeting a labelled frame in the
+     * wild. The comment line carries no `event:`, since an SSE comment is not an event.
      * Only reply() reads this flag; every error() answer stays application/json.
      */
     public bool $sse = false;
@@ -70,7 +88,15 @@ final class FakeMcpServer
         return new MockHttpClient($this);
     }
 
-    /** @param \Closure(array<string, mixed>): ?MockResponse $answer */
+    /**
+     * Queue a one-shot answer that wins over the scripted server. The queue is tried
+     * first-matching, not first-in: every queued closure is offered the request in the order
+     * it was added, and the first one returning non-null answers and is removed. A closure
+     * that returns null for a request is skipped and stays queued, so a later closure can
+     * fire before an earlier one.
+     *
+     * @param \Closure(array<string, mixed>): ?MockResponse $answer
+     */
     public function once(\Closure $answer): self
     {
         $this->scripted[] = $answer;
@@ -91,6 +117,11 @@ final class FakeMcpServer
     }
 
     /**
+     * A tools/list entry. $extra is merged with `+`, which keeps the left-hand value, so it can
+     * only add keys: it cannot override `name`, `description` or `inputSchema`, and passing
+     * ['description' => 'OVERRIDE'] still yields the generated "Name." description. A test that
+     * needs a tool without a `description`, or with a non-string one, builds the array by hand.
+     *
      * @param array<string, mixed> $inputSchema
      * @param array<string, mixed> $extra
      * @return array<string, mixed>
@@ -221,7 +252,13 @@ final class FakeMcpServer
         return $page;
     }
 
-    /** @param array<string, mixed> $params */
+    /**
+     * A MODERN reply always carries a `resultType`: a result without one is stamped `complete`.
+     * So this server cannot produce spec step 4's "resultType absent means complete" branch,
+     * and a test for it has to script the whole response through once().
+     *
+     * @param array<string, mixed> $params
+     */
     private function call(mixed $id, array $params, bool $modern): MockResponse
     {
         $name = (string) ($params['name'] ?? '');
@@ -248,13 +285,14 @@ final class FakeMcpServer
         if (!$this->sse) {
             return self::json(200, $message, $headers);
         }
+        $frame = static fn(mixed $payload): string => "event: message\n" . 'data: ' . json_encode($payload) . "\n\n";
         $serverRequest = $this->mode === self::LEGACY
-            ? 'data: ' . json_encode(['jsonrpc' => '2.0', 'id' => $id, 'method' => 'ping']) . "\n\n"
+            ? $frame(['jsonrpc' => '2.0', 'id' => $id, 'method' => 'ping'])
             : '';
         $body = ": keep-alive\n\n"
-            . 'data: ' . json_encode(['jsonrpc' => '2.0', 'method' => 'notifications/progress', 'params' => ['progress' => 1]]) . "\n\n"
+            . $frame(['jsonrpc' => '2.0', 'method' => 'notifications/progress', 'params' => ['progress' => 1]])
             . $serverRequest
-            . 'data: ' . json_encode($message) . "\n\n";
+            . $frame($message);
 
         return new MockResponse($body, ['http_code' => 200, 'response_headers' => ['Content-Type: text/event-stream', ...$headers]]);
     }

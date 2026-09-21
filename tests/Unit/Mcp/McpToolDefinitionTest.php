@@ -65,7 +65,7 @@ test('list order is part of the definition', function () {
 // shape assertion could not catch, because without that flag json_encode() returns false and every
 // tool carrying a bad byte would collapse onto the one digest of the empty string.
 
-test('invalid UTF-8 is substituted, not thrown on', function () {
+test('a definition carrying invalid UTF-8 still gets its own stable digest', function () {
     expect((new McpToolDefinition("bad\xC3", 'd', []))->fingerprint())->toBe('7ecef2972fbe322976c3560797a5b14bbb636e7fae0b7099a57fd7b73269cd13');
 });
 
