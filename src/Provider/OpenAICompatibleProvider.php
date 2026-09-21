@@ -245,7 +245,7 @@ class OpenAICompatibleProvider extends AbstractProvider
 
         // Strict mode requires every object to be closed and fully required.
         // StrictSchemaNormalizer::qualifies() says whether normalize() can do
-        // that without changing what the schema accepts; when it can't (an open
+        // that without changing what the schema accepts; when it can't (e.g. an open
         // map, a free-form object, a $ref), forward the schema intact with strict:false.
         $strict = StrictSchemaNormalizer::qualifies($innerSchema);
         if ($strict) {

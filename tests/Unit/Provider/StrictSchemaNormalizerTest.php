@@ -114,3 +114,57 @@ test('normalize closes a nullable object given as a type array', function () {
 
     expect($out['properties']['meta']['additionalProperties'])->toBeFalse();
 });
+
+test('qualifies rejects an object under a conditional branch', function () {
+    // normalize() never rewrites `not`/`if`/`then`/`else`, so an object there would
+    // go out unclosed under strict:true and OpenAI rejects the request outright.
+    $conditional = [
+        'type' => 'object',
+        'properties' => ['a' => ['type' => 'string']],
+        'required' => ['a'],
+        'if' => ['properties' => ['a' => ['const' => 'x']]],
+        'then' => ['type' => 'object', 'properties' => ['b' => ['type' => 'string']]],
+    ];
+    $negated = [
+        'type' => 'object',
+        'properties' => ['a' => ['type' => 'string']],
+        'required' => ['a'],
+        'not' => ['type' => 'object', 'properties' => ['b' => ['type' => 'string']]],
+    ];
+
+    expect(StrictSchemaNormalizer::qualifies($conditional))->toBeFalse()
+        ->and(StrictSchemaNormalizer::qualifies($negated))->toBeFalse();
+});
+
+test('qualifies rejects even an already closed object under then', function () {
+    // The rule is uniform: any object under a conditional branch disqualifies the
+    // schema. Admitting an already-closed one would need a second predicate that
+    // proves a whole subtree strict-clean at every depth, which nothing else needs.
+    $schema = [
+        'type' => 'object',
+        'properties' => ['a' => ['type' => 'string']],
+        'required' => ['a'],
+        'additionalProperties' => false,
+        'then' => [
+            'type' => 'object',
+            'properties' => ['b' => ['type' => 'string']],
+            'required' => ['b'],
+            'additionalProperties' => false,
+        ],
+    ];
+
+    expect(StrictSchemaNormalizer::qualifies($schema))->toBeFalse();
+});
+
+test('qualifies rejects a typeless properties map under a conditional branch', function () {
+    // normalize() treats a node with `properties` and no `type` as an object, so
+    // qualifies() must too, or the same unclosed-object request gets sent.
+    $schema = [
+        'type' => 'object',
+        'properties' => ['a' => ['type' => 'string']],
+        'required' => ['a'],
+        'then' => ['properties' => ['b' => ['type' => 'string']]],
+    ];
+
+    expect(StrictSchemaNormalizer::qualifies($schema))->toBeFalse();
+});

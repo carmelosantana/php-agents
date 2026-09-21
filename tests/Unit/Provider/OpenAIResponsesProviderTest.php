@@ -562,3 +562,37 @@ test('responses keeps strict mode for a native Tool with nested object parameter
         ->and($requestPayload['tools'][0]['parameters']['required'])->toBe(['title', 'author'])
         ->and($requestPayload['tools'][0]['parameters']['properties']['author']['anyOf'][0]['additionalProperties'])->toBeFalse();
 });
+
+test('responses deliberately drops strict mode for a native Tool declaring a free-form object parameter', function () {
+    // Intended, not accidental. ObjectParameter::toSchema() emits `properties: []`
+    // with no additionalProperties, which JSON Schema reads as "any keys". Closing
+    // that to additionalProperties:false would mean "no keys at all", so strict mode
+    // would silently reject the very arguments the tool was declared to accept.
+    // Dropping strict and forwarding the schema keeps the parameter usable.
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockResponsesApiResponse();
+    });
+
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
+
+    $tool = new Tool(
+        name: 'forward',
+        description: 'Forward an arbitrary payload',
+        parameters: [
+            new ObjectParameter('payload', 'Any payload'),
+        ],
+        callback: fn(array $args): ToolResult => ToolResult::success('ok'),
+    );
+
+    $provider->chat([new UserMessage('Forward it')], [$tool]);
+
+    expect($requestPayload['tools'][0]['strict'])->toBeFalse()
+        ->and($requestPayload['tools'][0]['parameters']['properties']['payload'])->toBe([
+            'type' => 'object',
+            'description' => 'Any payload',
+            'properties' => [],
+            'required' => [],
+        ]);
+});

@@ -20,7 +20,11 @@ namespace CarmeloSantana\PHPAgents\Provider;
  *   allow no arguments at all;
  * - a `$ref`, or has `patternProperties`, whose targets normalize() cannot close;
  * - a node whose non-empty `properties` is a stdClass (a map with numeric-string
- *   keys, as JsonSchemaRepair leaves it), which normalize() cannot walk.
+ *   keys, as JsonSchemaRepair leaves it), which normalize() cannot walk;
+ * - an object anywhere under `not`, `if`, `then` or `else`: normalize() does not
+ *   rewrite those positions, so leaving one in would send an unclosed object with
+ *   `strict: true`, which OpenAI rejects outright. The rule is uniform, so even an
+ *   object already closed and fully required there makes the schema not qualify.
  *
  * Unlike {@see SchemaUtils} (per-node helpers), these methods recurse over the
  * tree, but not over the same positions. `qualifies()` inspects every subschema
@@ -28,7 +32,8 @@ namespace CarmeloSantana\PHPAgents\Provider;
  * or tuple), prefixItems, additionalProperties, `anyOf`/`oneOf`/`allOf`, `not`
  * and `if`/`then`/`else`. `normalize()` rewrites only the positions it closes:
  * properties, items, prefixItems, `$defs`/`definitions` and the combinator
- * branches; objects under `not` or `if`/`then`/`else` are left as written.
+ * branches. It never touches `not` or `if`/`then`/`else`, which is why an object
+ * there disqualifies the schema rather than being normalized.
  */
 final class StrictSchemaNormalizer
 {
@@ -67,9 +72,10 @@ final class StrictSchemaNormalizer
      * An object node gets `additionalProperties: false` and a `required` that
      * lists every key in `properties`. A property the caller left optional is
      * normalized first and then typed nullable via `anyOf: [{...}, {type: "null"}]`,
-     * so the schema stays satisfiable. A non-object node is returned with the
-     * subschemas under `items`, `prefixItems`, `$defs`/`definitions` and the
-     * combinators normalized.
+     * so the schema stays satisfiable. A node with `properties` and no `type` counts
+     * as an object here, as {@see isObjectNode()} defines it. A non-object node is
+     * returned with the subschemas under `items`, `prefixItems`, `$defs`/`definitions`
+     * and the combinators normalized.
      *
      * @param array<array-key, mixed> $schema
      * @return array<array-key, mixed>
@@ -101,7 +107,7 @@ final class StrictSchemaNormalizer
                 : self::normalize($schema['items']);
         }
 
-        if (!self::isObject($schema) && !(!isset($schema['type']) && isset($schema['properties']))) {
+        if (!self::isObjectNode($schema)) {
             return $schema;
         }
 
@@ -147,6 +153,15 @@ final class StrictSchemaNormalizer
             return true;
         }
 
+        // normalize() never rewrites a conditional branch, so an object under one
+        // can only go out as written — unclosed, under strict:true, which the API
+        // refuses. Disqualify uniformly rather than prove the branch already strict.
+        foreach (['not', 'if', 'then', 'else'] as $keyword) {
+            if (isset($schema[$keyword]) && is_array($schema[$keyword]) && self::containsObject($schema[$keyword])) {
+                return true;
+            }
+        }
+
         if (self::isObject($schema) && ($schema['additionalProperties'] ?? null) !== false) {
             $properties = $schema['properties'] ?? null;
             $empty = $properties === null || $properties === [] || ($properties instanceof \stdClass && get_object_vars($properties) === []);
@@ -165,6 +180,26 @@ final class StrictSchemaNormalizer
     }
 
     /**
+     * Whether this node or any node beneath it is an object.
+     *
+     * @param array<array-key, mixed> $schema
+     */
+    private static function containsObject(array $schema): bool
+    {
+        if (self::isObjectNode($schema)) {
+            return true;
+        }
+
+        foreach (self::children($schema) as $child) {
+            if (self::containsObject($child)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * @param array<array-key, mixed> $schema
      */
     private static function isObject(array $schema): bool
@@ -172,6 +207,17 @@ final class StrictSchemaNormalizer
         $type = $schema['type'] ?? null;
 
         return $type === 'object' || (is_array($type) && in_array('object', $type, true));
+    }
+
+    /**
+     * An object node as normalize() rewrites one: declared `type: object` (possibly
+     * nullable), or carrying `properties` with no `type` at all.
+     *
+     * @param array<array-key, mixed> $schema
+     */
+    private static function isObjectNode(array $schema): bool
+    {
+        return self::isObject($schema) || (!isset($schema['type']) && isset($schema['properties']));
     }
 
     /**
