@@ -10,16 +10,18 @@ use Symfony\Component\HttpClient\Response\MockResponse;
 /**
  * A scripted MCP server for unit tests, handed to MockHttpClient as its response factory.
  *
- * MODERN speaks 2026-07-28. It checks `MCP-Protocol-Version` (a mismatch gets -32022),
- * `Mcp-Method`, `Mcp-Name` and `params._meta` (a mismatch gets -32020), and answers an
- * unknown method with 404/-32601.
+ * MODERN speaks 2026-07-28. It checks `MCP-Protocol-Version` (a mismatch gets -32022), then
+ * `Mcp-Method` against the body's method and the three `params._meta` fields by shape (either
+ * gets -32020), and on `tools/call` also `Mcp-Name` against the tool name (-32020). An unknown
+ * method gets 404/-32601, and an unknown tool gets HTTP 200 carrying -32602.
  *
  * LEGACY speaks 2025-11-25 the way the WordPress MCP Adapter (trunk 4ff9806) does:
- * - `initialize` issues `Mcp-Session-Id` (unless $session is null);
- * - a request without that header gets 400/-32600;
- * - a stale id gets 404/-32005;
- * - an unknown tool gets 404/-32003;
- * - a version header other than 2025-11-25 or 2025-06-18 gets 400/-32600.
+ * - `initialize` issues `Mcp-Session-Id`, unless $session is null;
+ * - while $session is not null, a request other than `initialize` that omits that header gets
+ *   400/-32600, and one carrying any other id gets 404/-32005;
+ * - past that session gate, a version header other than 2025-11-25 or 2025-06-18 gets
+ *   400/-32600 as well, with a different message;
+ * - an unknown tool gets 404/-32003.
  *
  * Every request is recorded in $requests, with headers keyed by lower-case name.
  * once() queues a one-shot answer that wins over the scripted server.
@@ -41,7 +43,14 @@ final class FakeMcpServer
     /** Tools per tools/list page; 0 puts every tool on one page. */
     public int $pageSize = 0;
 
-    /** Answer with text/event-stream, with a comment, a notification and a same-id server request before the response. */
+    /**
+     * Answer a result with text/event-stream: a comment line, a notifications/progress
+     * notification, then the response. LEGACY also injects a same-id server request before
+     * the response; MODERN does not, because under 2026-07-28 "servers do not initiate
+     * JSON-RPC requests" (basic/transports, Messages), which that page's Backward
+     * Compatibility section calls out as a change from the earlier revisions.
+     * Only reply() reads this flag; every error() answer stays application/json.
+     */
     public bool $sse = false;
 
     /** The session id the next initialize issues and later requests must carry; null means sessionless. */
@@ -141,7 +150,7 @@ final class FakeMcpServer
             return self::error(400, $id, -32022, 'Unsupported protocol version', ['supported' => ['2026-07-28'], 'requested' => $version]);
         }
         $meta = $body['params']['_meta'] ?? [];
-        if (($meta['io.modelcontextprotocol/protocolVersion'] ?? null) !== '2026-07-28' || ($request['headers']['mcp-method'] ?? null) !== $method) {
+        if (!self::metaIsWellFormed(is_array($meta) ? $meta : []) || ($request['headers']['mcp-method'] ?? null) !== $method) {
             return self::error(400, $id, -32020, 'Header mismatch');
         }
 
@@ -239,12 +248,34 @@ final class FakeMcpServer
         if (!$this->sse) {
             return self::json(200, $message, $headers);
         }
+        $serverRequest = $this->mode === self::LEGACY
+            ? 'data: ' . json_encode(['jsonrpc' => '2.0', 'id' => $id, 'method' => 'ping']) . "\n\n"
+            : '';
         $body = ": keep-alive\n\n"
             . 'data: ' . json_encode(['jsonrpc' => '2.0', 'method' => 'notifications/progress', 'params' => ['progress' => 1]]) . "\n\n"
-            . 'data: ' . json_encode(['jsonrpc' => '2.0', 'id' => $id, 'method' => 'ping']) . "\n\n"
+            . $serverRequest
             . 'data: ' . json_encode($message) . "\n\n";
 
         return new MockResponse($body, ['http_code' => 200, 'response_headers' => ['Content-Type: text/event-stream', ...$headers]]);
+    }
+
+    /**
+     * The three `params._meta` fields a 2026-07-28 request carries, checked by shape: the
+     * protocol version verbatim, `clientCapabilities` as an object, and `clientInfo` with a
+     * string name and a string version. Neither the name nor the version string is pinned, so
+     * a client may change either without this fake noticing.
+     *
+     * @param array<string, mixed> $meta
+     */
+    private static function metaIsWellFormed(array $meta): bool
+    {
+        $info = $meta['io.modelcontextprotocol/clientInfo'] ?? null;
+
+        return ($meta['io.modelcontextprotocol/protocolVersion'] ?? null) === '2026-07-28'
+            && is_array($meta['io.modelcontextprotocol/clientCapabilities'] ?? null)
+            && is_array($info)
+            && is_string($info['name'] ?? null)
+            && is_string($info['version'] ?? null);
     }
 
     private static function decodeName(string $value): string
