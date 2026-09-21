@@ -63,8 +63,9 @@ function rawSchemaFormatters(): array
  * A position is a map (`properties` and friends) or a subschema. Both must encode as a JSON
  * object, so an array at either is a defect — including a *member* of a map, which is where a
  * node that a provider stripped down to nothing ends up. The keyword lists come from the JSON
- * Schema 2020-12 vocabulary, not from any list a provider keeps, so a keyword a provider
- * forgot is still checked here.
+ * Schema vocabulary — 2020-12 plus the older spellings JsonSchemaRepair also restores,
+ * `definitions` and `additionalItems` — and not from any list a provider keeps, so a keyword
+ * a provider forgot is still checked here.
  */
 function listsWhereObjectsBelong(mixed $node, string $path = '$'): array
 {
