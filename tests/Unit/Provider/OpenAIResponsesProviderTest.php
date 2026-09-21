@@ -10,6 +10,7 @@ use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Provider\OpenAIResponsesProvider;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\Parameter\MapParameter;
+use CarmeloSantana\PHPAgents\Tool\Parameter\ObjectParameter;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
@@ -501,4 +502,63 @@ test('structured output uses function tool trick and returns arguments', functio
         ->and($requestPayload['tools'][0]['name'])->toBe('extract')
         ->and($requestPayload['tool_choice'])->toBe(['type' => 'function', 'name' => 'extract'])
         ->and($result)->toBe(['name' => 'Alice', 'age' => 30]);
+});
+
+test('responses sends a raw free-form schema tool with strict off and untouched', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockResponsesApiResponse();
+    });
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
+    $tool = new \CarmeloSantana\PHPAgents\Tool\SchemaTool('remote', 'Remote.', ['type' => 'object'], fn(array $a): ToolResult => ToolResult::success('x'));
+
+    $provider->chat([new UserMessage('hi')], [$tool]);
+
+    expect($requestPayload['tools'][0]['strict'])->toBeFalse()
+        ->and($requestPayload['tools'][0]['parameters'])->toBe(['type' => 'object']);
+});
+
+test('responses keeps strict mode for a raw schema it can close, including nested array objects', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockResponsesApiResponse();
+    });
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
+    $schema = ['type' => 'object', 'properties' => ['rows' => ['type' => 'array', 'items' => ['type' => 'object', 'properties' => ['id' => ['type' => 'string']]]]], 'required' => ['rows']];
+    $tool = new \CarmeloSantana\PHPAgents\Tool\SchemaTool('rows', 'Rows.', $schema, fn(array $a): ToolResult => ToolResult::success('x'));
+
+    $provider->chat([new UserMessage('hi')], [$tool]);
+
+    expect($requestPayload['tools'][0]['strict'])->toBeTrue()
+        ->and($requestPayload['tools'][0]['parameters']['properties']['rows']['items']['additionalProperties'])->toBeFalse();
+});
+
+test('responses keeps strict mode for a native Tool with nested object parameters', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockResponsesApiResponse();
+    });
+
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
+
+    $tool = new Tool(
+        name: 'publish',
+        description: 'Publish a post',
+        parameters: [
+            new StringParameter('title', 'Post title'),
+            new ObjectParameter('author', 'Author details', required: false, properties: [
+                new StringParameter('name', 'Author name'),
+            ]),
+        ],
+        callback: fn(array $args): ToolResult => ToolResult::success('ok'),
+    );
+
+    $provider->chat([new UserMessage('Publish it')], [$tool]);
+
+    expect($requestPayload['tools'][0]['strict'])->toBeTrue()
+        ->and($requestPayload['tools'][0]['parameters']['required'])->toBe(['title', 'author'])
+        ->and($requestPayload['tools'][0]['parameters']['properties']['author']['anyOf'][0]['additionalProperties'])->toBeFalse();
 });

@@ -243,11 +243,11 @@ class OpenAICompatibleProvider extends AbstractProvider
             $innerSchema['type'] = 'object';
         }
 
-        // Strict mode requires every object to be closed (additionalProperties:
-        // false). A schema that intentionally uses an open map cannot satisfy
-        // that, so only enable strict when the schema qualifies; otherwise
-        // forward it intact with strict:false so the open map still works.
-        $strict = !StrictSchemaNormalizer::containsOpenObject($innerSchema);
+        // Strict mode requires every object to be closed and fully required.
+        // StrictSchemaNormalizer::qualifies() says whether normalize() can do
+        // that without changing what the schema accepts; when it can't (an open
+        // map, a free-form object, a $ref), forward the schema intact with strict:false.
+        $strict = StrictSchemaNormalizer::qualifies($innerSchema);
         if ($strict) {
             $innerSchema = StrictSchemaNormalizer::normalize($innerSchema);
         }
