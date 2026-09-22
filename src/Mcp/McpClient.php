@@ -403,14 +403,10 @@ final class McpClient implements McpClientInterface
      *   32 764 bytes, and the limit moves with the number of alternations too — 1 985 values of
      *   15 bytes compile and 1 986 do not, 500 of 64 bytes compile and 501 do not. A 32 KiB byte
      *   threshold sat *above* the first ceiling and was blind to the second. Cost instead is a
-     *   single scan of the text, and what it costs is the product of two things: how many
-     *   distinct needle lengths the map holds, and how often the text holds a byte that begins
-     *   some needle. A position beginning no needle is skipped; a position that does is tried
-     *   once per distinct length. So either alone stays cheap and only the two together bite.
-     *   Neither is a concern at the sizes this class works at: redact() runs once per JSON-RPC
-     *   error, over the headers one server is configured with. No timing figure is quoted here,
-     *   deliberately — each one that was written here turned out to be a best case that a
-     *   differently shaped text falsified.
+     *   single scan of the text, and it is not a concern at the sizes this class works at:
+     *   redact() runs once per JSON-RPC error, over the headers one server is configured with.
+     *   No timing figure is quoted here, deliberately — each one that was written here turned
+     *   out to be a best case that a differently shaped text falsified.
      *
      * What it does not cover:
      * - McpRpcException::$data. That property is server-supplied and public, and no part of
