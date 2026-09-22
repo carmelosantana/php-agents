@@ -224,10 +224,13 @@ final class McpClient implements McpClientInterface
      * each of the four method names in the class docblock unchanged.
      *
      * The -32020 HeaderMismatch arm is a deliberate, documented deviation from upstream
-     * too. 2026-07-28 says a client SHOULD re-run `tools/list` and retry once on -32020;
-     * this client throws instead, because a -32020 here means its own header encoding
-     * disagrees with the server's and a retry through the same encoder would repeat it.
-     * Spec §2 step 2 is what is implemented.
+     * too, and it is spec §2 step 2 that is implemented: upstream's 2026-07-28 text says a
+     * client SHOULD re-run `tools/list` and retry once on -32020, and this client throws
+     * McpRpcException without retrying. Upstream says SHOULD, not MUST, and no server this
+     * repo can reach takes the 2026-07-28 path at all — the WordPress MCP Adapter answers a
+     * 2026 probe with 400/-32600 (HttpSessionValidator.php:50-53, trunk 4ff9806) — so a
+     * retry would carry no live coverage. McpClientModernTest's "a modern header error is
+     * an RPC error, never a fallback" pins the throw.
      *
      * @param array<string, mixed> $params
      * @param array<string, mixed> $arguments
@@ -284,10 +287,10 @@ final class McpClient implements McpClientInterface
      * speaks and no pin contradicts it.
      *
      * hold() records the id an adopted entry carries. This instance never ran the handshake
-     * that issued that id, so nothing else would have it, and a server can still reflect it
-     * back in an error text (spec §2, amendment 3). McpClientLegacyTest's "a session id
-     * resumed from the store is redacted after it goes stale" is the test that fails when
-     * this line goes.
+     * that issued that id, so this line is the only thing that records it, and a server can
+     * still reflect it back in an error text (spec §2, amendment 3). McpClientLegacyTest's
+     * "a session id resumed from the store is redacted after it goes stale" is the test
+     * that fails when this line goes.
      */
     private function session(): ?McpSession
     {
