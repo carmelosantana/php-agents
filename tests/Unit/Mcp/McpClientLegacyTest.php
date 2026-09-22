@@ -285,7 +285,10 @@ test('a credential and the session id a server reflects are redacted from the ex
     }
 });
 
-test('redaction skips an empty header value rather than replacing between every character', function () {
+test('an empty header value leaves the server text untouched', function () {
+    // The outcome, not the mechanism: str_replace('', …) would have spliced the marker between
+    // every character, while strtr() ignores an empty needle (with a diagnostic the call-site
+    // guard avoids). Removing that guard keeps this test green and adds a PHP warning.
     $fake = legacyFake();
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'plain text')));
     $server = legacyServer(['headers' => ['Authorization' => 'Bearer t', 'X-Empty' => '']]);
@@ -375,24 +378,36 @@ test('the session id the handshake just issued is redacted from a refused notifi
     }
 });
 
-test('a configuration too large to build a pattern from drops the server text entirely', function () {
-    // The pattern is an alternation of every configured header value, so a large enough
-    // configuration is one PCRE will not compile: 20 000 headers raise "regular expression is
-    // too large" and preg_replace() returns null. The client refuses an oversized pattern
-    // before PCRE sees it, so the failure is deterministic and raises no PHP warning. Either
-    // way it fails closed: the server's whole text goes, not just the secret in it.
+test('a configuration past PCRE\'s alternation limit still redacts, and keeps the rest of the text', function () {
+    // 2 000 configured values of 15 bytes. Measured on this box (PCRE2 10.42), an alternation
+    // of more than 1 985 such values will not compile — "regular expression is too large" —
+    // so the preg_replace() draft this replaced dropped the whole message here, by design but
+    // needlessly. strtr() has no compile step, so the credential goes and the text stays.
     $headers = ['Authorization' => 'Bearer t'];
-    for ($i = 0; $i < 40; $i++) {
-        $headers['X-H' . $i] = str_repeat('s', 1024);
+    for ($i = 0; $i < 2000; $i++) {
+        $headers['X-H' . $i] = str_pad((string) $i, 15, 'z');
     }
     $fake = legacyFake();
-    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'nothing secret here')));
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'sent Bearer t and kept the rest')));
 
     try {
         (new McpClient(legacyServer(['headers' => $headers]), $fake->client()))->listTools();
         $this->fail('expected an RPC error');
     } catch (McpRpcException $e) {
-        expect($e->getMessage())->toBe('MCP tools/list failed with JSON-RPC error -32603: [redacted]');
+        expect($e->getMessage())->toBe('MCP tools/list failed with JSON-RPC error -32603: sent [redacted] and kept the rest');
+    }
+});
+
+test('a credential of digits only is redacted, though PHP makes it an integer array key', function () {
+    $fake = legacyFake();
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'key 86753099 refused')));
+    $server = legacyServer(['headers' => ['X-Api-Key' => '86753099']]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toEndWith(': key [redacted] refused');
     }
 });
 
@@ -422,6 +437,36 @@ test('a session id the client has since forgotten is still redacted', function (
         expect($e->getMessage())->not->toContain('sess-1')
             ->not->toContain('sess-2')
             ->and($e->getMessage())->toEndWith(': session [redacted] is gone; use [redacted]');
+    }
+});
+
+test('a session id resumed from the store is redacted after it goes stale', function () {
+    // The id never passes through initialize() in this instance: the store hands it over and
+    // the server then rejects it. hold() in session() is the only thing that records it, and
+    // without that line the error text below publishes it.
+    $fake = legacyFake();
+    $fake->expireSession();
+    $store = new ArraySessionStore();
+    $store->sessions[legacyServer()->sessionKey()] = new McpSession(McpServer::PROTOCOL_2025, 'sess-1');
+    $client = new McpClient(legacyServer(), $fake->client(), $store);
+    $seen = 0;
+    $fake->once(static function (array $request) use (&$seen): ?MockResponse {
+        if (($request['body']['method'] ?? null) !== 'tools/call') {
+            return null;
+        }
+
+        return ++$seen === 2
+            ? FakeMcpServer::error(200, $request['body']['id'] ?? null, -32603, 'the session sess-1 you resumed is gone')
+            : null;
+    });
+
+    try {
+        $client->callTool('search', []);
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->not->toContain('sess-1')
+            ->and($e->getMessage())->toEndWith(': the session [redacted] you resumed is gone')
+            ->and($fake->initializeCount)->toBe(1);
     }
 });
 

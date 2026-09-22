@@ -50,8 +50,6 @@ final class McpClient implements McpClientInterface
 
     private const REDACTED = '[redacted]';
 
-    private const MAX_PATTERN_BYTES = 32_768;
-
     private readonly HttpExchange $exchange;
 
     private ?McpSession $session = null;
@@ -164,10 +162,11 @@ final class McpClient implements McpClientInterface
      * issued as well, when it issued one.
      *
      * That step says the notification answers 202, and spec §2's status table accepts a 202
-     * from it alone. This method reads no status value of its own: the notification is
-     * accepted on any 2xx (a server answering 200 is tolerated), while a 202 to `initialize`
-     * is refused by result() with every other method's. A non-2xx on either becomes the same
-     * error a data request would get.
+     * from it alone. This method compares no status itself: it tests isSuccess() on both
+     * replies and passes `initialize`'s status to result(), which is where a 202 to any method
+     * but the notification is refused. So the notification is accepted on any 2xx (a server
+     * answering 200 is tolerated) and a 202 to `initialize` is not. A non-2xx on either becomes
+     * the same error a data request would get.
      */
     private function initialize(): McpSession
     {
@@ -274,6 +273,9 @@ final class McpClient implements McpClientInterface
      * complete JSON-RPC result — or a JSON-RPC error — is refused on the status alone. This
      * method is not called for the notification today (legacy() and initialize() are its only
      * callers), so the method test is what keeps the rule true rather than the call graph.
+     * This class compares a status in exactly three places, and each is a spec §2 row: the
+     * 404 of the stale-session rule in legacy(), the 400 of the rejected-request rule in
+     * statusError(), and the 202 here.
      *
      * `isset($message['error'])` is deliberate, and differs from the array_key_exists()
      * HttpReply::message() uses to recognise an envelope: a body of `{"error": null}` carries
@@ -364,37 +366,36 @@ final class McpClient implements McpClientInterface
      *
      * What this covers, exactly:
      * - every non-empty value in McpServer::$headers, whatever the header is named. An empty
-     *   value is skipped: as an empty alternative in the pattern it would match at every
-     *   position and splice the marker between every character of the text.
+     *   value is skipped. strtr() would not splice the marker between every character for it —
+     *   it ignores an empty needle — but it says so with a diagnostic, "strtr(): Ignoring
+     *   replacement of empty string", which PHPUnit raises as a test warning and a host would
+     *   find in its log. Dropping the guard is what that costs; the text is unchanged either way.
      * - every session id this instance has ever held — $held, filled by hold() when the store
      *   hands one over and when `initialize` issues one, and never emptied. forget() stops the
      *   client sending an id; it does not stop a server echoing that id back afterwards, and
-     *   spec §2's promise covers the message either way. This also covers the id issued by a
-     *   handshake whose `notifications/initialized` POST then failed, which is held before
-     *   that POST goes out and only stored after it succeeds.
-     * - the longest secret first, so a secret that starts with another (a header value of
-     *   `Bearer` beside a credential of `Bearer abc`) is not matched by the shorter one with
-     *   its tail left published.
+     *   spec §2's promise covers the message either way. Both fillings are pinned by tests: an
+     *   id issued by a handshake whose `notifications/initialized` POST then failed, and an id
+     *   resumed from the store that the server then rejected as stale.
      *
-     * It replaces in one pass, over the server's text only. An array of needles handed to
-     * str_replace() is applied one after another to the output of the last, so a secret that
-     * occurs inside the marker rewrites a marker already written — a header value of `red`
-     * turned `[redacted]` into `[reda[redacted]ted]` in the first draft of this method.
-     * The pattern carries no `u` modifier: a configured header value may be any byte string,
-     * and under `u` an invalid byte in it fails the compile and preg_replace() returns null,
-     * which would cost the whole message. Matching is byte-wise instead.
-     *
-     * Failing closed, twice. The pattern is an alternation of every configured header value
-     * and every held session id, so a large enough configuration is a pattern PCRE will not
-     * compile: measured here, 20 000 headers raise "regular expression is too large" at about
-     * 400 KB and preg_replace() returns null. That is reachable from configuration alone, so
-     * a pattern over MAX_PATTERN_BYTES is refused before the call — deterministically, and
-     * without the PHP warning a failed compile raises, which PHPUnit turns into a test
-     * warning and which a host could do nothing about. MAX_PATTERN_BYTES sits well below the
-     * size at which that measurement failed, and well above any real configuration: HTTP
-     * would not carry 32 KB of header values. A null return from preg_replace() is still checked, as a second
-     * guard for whatever else PCRE may refuse; nothing in the suite reaches it. Either way the
-     * server's text is dropped for the marker, never passed through unredacted.
+     * strtr() with a needle map, rather than a regular expression or str_replace():
+     * - it scans once and never re-reads what it has written, so a secret occurring inside the
+     *   marker cannot rewrite a marker already placed. str_replace() with an array of needles
+     *   does re-read, and a header value of `red` turned `[redacted]` into `[reda[redacted]ted]`
+     *   in the first draft of this method;
+     * - at each position it tries the longest needle first, whatever order the map is in
+     *   (measured both ways), so a value of `Bearer` beside a credential of `Bearer abc` cannot
+     *   match first and leave the tail published. Nothing here sorts; that guarantee is strtr's
+     *   and a test pins it;
+     * - it is byte-wise, so a configured header value may be any byte string, valid UTF-8 or not;
+     * - a secret of digits only becomes an *integer* array key, which strtr() still matches as
+     *   its decimal string. Pinned, because the coercion is PHP's and not obvious;
+     * - it has no compile step, so there is no pattern for an engine to refuse. The preg_replace()
+     *   alternation this replaced did have one, and PCRE's ceiling is far lower than that draft
+     *   assumed: measured on this box (PCRE2 10.42), a single literal stops compiling past
+     *   32 764 bytes, and the limit moves with the number of alternations too — 1 985 values of
+     *   15 bytes compile and 1 986 do not, 500 of 64 bytes compile and 501 do not. A 32 KiB byte
+     *   threshold sat *above* the first ceiling and was blind to the second. Cost instead is a
+     *   scan: 20 000 secrets over a 1 MB text measured at about 1 ms.
      *
      * What it does not cover:
      * - McpRpcException::$data. That property is server-supplied and public, and no part of
@@ -407,23 +408,17 @@ final class McpClient implements McpClientInterface
      */
     private function redact(string $text): string
     {
-        $secrets = $this->held;
+        $secrets = [];
+        foreach ($this->held as $sessionId) {
+            $secrets[$sessionId] = self::REDACTED;
+        }
         foreach ($this->server->headers as $value) {
             if ($value !== '') {
-                $secrets[] = $value;
+                $secrets[$value] = self::REDACTED;
             }
         }
-        if ($secrets === []) {
-            return $text;
-        }
-        usort($secrets, static fn(string $a, string $b): int => strlen($b) <=> strlen($a));
-        $pattern = '/' . implode('|', array_map(static fn(string $s): string => preg_quote($s, '/'), $secrets)) . '/';
-        if (strlen($pattern) > self::MAX_PATTERN_BYTES) {
-            return self::REDACTED;
-        }
-        $redacted = preg_replace($pattern, self::REDACTED, $text);
 
-        return is_string($redacted) ? $redacted : self::REDACTED;
+        return $secrets === [] ? $text : strtr($text, $secrets);
     }
 
     /** @param array<array-key, mixed>|null $message */
