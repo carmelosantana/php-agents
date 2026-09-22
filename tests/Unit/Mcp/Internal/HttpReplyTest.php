@@ -44,6 +44,27 @@ test('an event stream yields the response for this id, skipping comments, notifi
         ->and(SseReader::find($body, 6))->toBeNull();
 });
 
+test('an event ends at any two line ends, and never at one', function (string $boundary) {
+    // The response's payload is continued across a single CRLF and a single CR on purpose:
+    // the tempting (?:\r\n|\r|\n){2} backtracks and ends the event at the CRLF, which
+    // joins the two events into one unparseable payload and loses the response.
+    $body = "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}{$boundary}"
+        . "data: {\"jsonrpc\":\"2.0\",\r\ndata: \"id\":5,\rdata: \"result\":{\"ok\":true}}\n\n";
+
+    expect(SseReader::find($body, 5))->toBe(['jsonrpc' => '2.0', 'id' => 5, 'result' => ['ok' => true]]);
+})->with([
+    // Every pair of the three line ends the SSE grammar allows. "CR LF" is absent because
+    // "\r\n" is one line end, not two, so it ends no event.
+    'CRLF CRLF' => ["\r\n\r\n"],
+    'CRLF CR' => ["\r\n\r"],
+    'CRLF LF' => ["\r\n\n"],
+    'CR CRLF' => ["\r\r\n"],
+    'CR CR' => ["\r\r"],
+    'LF CRLF' => ["\n\r\n"],
+    'LF CR' => ["\n\r"],
+    'LF LF' => ["\n\n"],
+]);
+
 test('an SSE frame carrying a null method is still carrying a method, and is skipped', function () {
     $body = "data: {\"jsonrpc\":\"2.0\",\"id\":7,\"method\":null}\n\n"
         . "data: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true}}\n\n";
