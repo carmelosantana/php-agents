@@ -24,9 +24,15 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  *   carrying a blob, and a bare `[resource <uri>]` for one carrying neither `text` nor
  *   `blob`; and `[resource_link <name> <uri>]`. A type this mapper has no shape for is
  *   `[<type> block]`, or `[unknown block]` when `type` is absent or is not a string.
- *   `<mime>` is the literal `unknown` when the block carries no string `mimeType`, and
- *   `<n>` is 0 when the base64 is absent or fails a strict decode. A placeholder tells
- *   the model the block arrived, without handing it any base64.
+ *   Every field a shape interpolates falls back rather than dropping the block, and the
+ *   shape keeps its own spaces either way. There are five, which is all of them: `<mime>`
+ *   is the literal `unknown` when the block carries no string `mimeType`; `<type>` is
+ *   `unknown` as above; `<n>` is 0 when the base64 is absent or fails a strict decode;
+ *   and `<uri>` and `<name>` are the empty string, so a `resource_link` carrying neither
+ *   reads `[resource_link  ]`, both spaces intact, a blob resource with no `uri` reads
+ *   `[resource  (<mime>), <n> bytes]`, and an embedded resource with no `uri` — or with
+ *   no `resource` object at all — reads `[resource ]`. A placeholder tells the model the
+ *   block arrived, without handing it any base64.
  * - The joined string is cut to $maxBytes with mb_strcut, which does not split a UTF-8
  *   character — though it cannot repair a block the server sent as invalid UTF-8. The
  *   truncation note is appended after the cut, so a truncated content runs past

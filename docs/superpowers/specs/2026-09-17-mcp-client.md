@@ -206,7 +206,7 @@ Content:
   - `[resource_link <name> <uri>]`;
   - `[<type> block]` for an unknown type.
 
-  `<mime>` is the literal `unknown` when the block carries no string `mimeType`, `<n>` is 0 when the base64 is absent or fails a strict decode, and the last shape reads `[unknown block]` when `type` is absent or is not a string (amendment 4, 2026-09-22).
+  Every field a shape interpolates falls back rather than dropping the block, and the shape keeps its own spaces either way. There are five, which is all of them: `<mime>` is the literal `unknown` when the block carries no string `mimeType`; `<type>` is `unknown` when `type` is absent or is not a string, so the last shape reads `[unknown block]`; `<n>` is 0 when the base64 is absent or fails a strict decode; and `<uri>` and `<name>` are the empty string, so a `resource_link` carrying neither reads `[resource_link  ]` with both spaces, a blob resource with no `uri` reads `[resource  (<mime>), <n> bytes]`, and an embedded resource with no `uri` — or with no `resource` object at all — reads `[resource ]` (amendment 4, 2026-09-22).
 
 Metadata: `metadata['mcp']` holds `content` (the blocks as sent), `structuredContent` (when present), `isError`, `bytes` (the content size before the cap) and `truncated`.
 

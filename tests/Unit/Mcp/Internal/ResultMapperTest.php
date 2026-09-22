@@ -103,3 +103,16 @@ test('an embedded resource with neither text nor blob is a bare placeholder', fu
 
     expect($result->content)->toBe('[resource file:///empty.dat]');
 });
+
+test('every field a placeholder interpolates has a fallback', function (array $block, string $expected) {
+    expect(ResultMapper::toToolResult(['content' => [$block]], 1000)->content)->toBe($expected);
+})->with([
+    'mime and size' => [['type' => 'image'], '[image unknown, 0 bytes]'],
+    'size, on a base64 that does not decode' => [['type' => 'audio', 'mimeType' => 'audio/wav', 'data' => '!!!'], '[audio audio/wav, 0 bytes]'],
+    'type' => [['label' => 'nope'], '[unknown block]'],
+    'name and uri, both spaces kept' => [['type' => 'resource_link'], '[resource_link  ]'],
+    'name only' => [['type' => 'resource_link', 'uri' => 'file:///a.txt'], '[resource_link  file:///a.txt]'],
+    'uri, on a blob resource' => [['type' => 'resource', 'resource' => ['blob' => 'eHl6']], '[resource  (unknown), 3 bytes]'],
+    'uri, on a bare resource' => [['type' => 'resource', 'resource' => []], '[resource ]'],
+    'the resource object itself' => [['type' => 'resource'], '[resource ]'],
+]);
