@@ -69,13 +69,37 @@ test('content past the cap is cut on a UTF-8 boundary and says so', function () 
 });
 
 test('truncated JSON is not labelled as JSON', function () {
-    $result = ResultMapper::toToolResult(['content' => [], 'structuredContent' => ['k' => str_repeat('v', 100)]], 20);
+    $payload = ['content' => [], 'structuredContent' => ['k' => str_repeat('v', 100)]];
+    $untruncated = ResultMapper::toToolResult($payload, 1000);
+    $result = ResultMapper::toToolResult($payload, 20);
 
-    expect($result->mimeType)->toBeNull()->and($result->metadata['mcp']['truncated'])->toBeTrue();
+    expect($untruncated->mimeType)->toBe('application/json')
+        ->and($untruncated->metadata['mcp']['truncated'])->toBeFalse()
+        ->and($result->mimeType)->toBeNull()
+        ->and($result->metadata['mcp']['truncated'])->toBeTrue();
 });
 
 test('an empty or malformed result is an empty success', function () {
     expect(ResultMapper::toToolResult([], 10)->content)->toBe('')
         ->and(ResultMapper::toToolResult(['content' => 'nope'], 10)->content)->toBe('')
         ->and(ResultMapper::toToolResult(['content' => ['x', ['type' => 'text']]], 10)->content)->toBe('');
+});
+
+test('structuredContent joined with a non-text block is not typed as JSON', function () {
+    $structured = ['temp' => 21.5];
+    $result = ResultMapper::toToolResult(['content' => [
+        ['type' => 'image', 'data' => base64_encode(str_repeat('p', 48)), 'mimeType' => 'image/png'],
+    ], 'structuredContent' => $structured], 1000);
+
+    expect($result->mimeType)->toBeNull()
+        ->and($result->content)->toBe("{\n    \"temp\": 21.5\n}\n\n[image image/png, 48 bytes]")
+        ->and($result->metadata['mcp']['structuredContent'])->toBe($structured);
+});
+
+test('an embedded resource with neither text nor blob is a bare placeholder', function () {
+    $result = ResultMapper::toToolResult(['content' => [
+        ['type' => 'resource', 'resource' => ['uri' => 'file:///empty.dat', 'mimeType' => 'application/octet-stream']],
+    ]], 1000);
+
+    expect($result->content)->toBe('[resource file:///empty.dat]');
 });

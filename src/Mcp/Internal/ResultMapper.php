@@ -18,12 +18,15 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  *   line.
  * - With no `text` block, a non-null `structuredContent` is pretty-printed JSON, placed
  *   first, and typed application/json when it ends up being the only part.
- * - Every other block becomes a one-line placeholder: `[image <mime>, <n> bytes]` and
- *   the same shape for `audio`, where n is the decoded size of the base64;
- *   `[resource <uri> (<mime>), <n> bytes]` for a resource blob; `[resource_link <name>
- *   <uri>]`; and `[<type> block]` for a type this mapper has no shape for, which reads
- *   `[unknown block]` when `type` is absent or is not a string. The model learns the
- *   block arrived without being handed its base64.
+ * - The placeholder shapes, for the block types this mapper knows, are
+ *   `[image <mime>, <n> bytes]` and the same for `audio`, where n is the decoded size
+ *   of the base64; `[resource <uri> (<mime>), <n> bytes]` for an embedded resource
+ *   carrying a blob, and a bare `[resource <uri>]` for one carrying neither `text` nor
+ *   `blob`; and `[resource_link <name> <uri>]`. A type this mapper has no shape for is
+ *   `[<type> block]`, or `[unknown block]` when `type` is absent or is not a string.
+ *   `<mime>` is the literal `unknown` when the block carries no string `mimeType`, and
+ *   `<n>` is 0 when the base64 is absent or fails a strict decode. A placeholder tells
+ *   the model the block arrived, without handing it any base64.
  * - The joined string is cut to $maxBytes with mb_strcut, which does not split a UTF-8
  *   character — though it cannot repair a block the server sent as invalid UTF-8. The
  *   truncation note is appended after the cut, so a truncated content runs past
