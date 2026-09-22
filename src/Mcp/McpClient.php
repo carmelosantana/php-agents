@@ -384,12 +384,12 @@ final class McpClient implements McpClientInterface
      * strtr() with a needle map, rather than a regular expression or str_replace():
      * - it scans once and never re-reads what it has written, so a secret occurring inside the
      *   marker cannot rewrite a marker already placed. str_replace() with an array of needles
-     *   does re-read: the first draft of this method, handed a credential of `Bearer abc` and a
-     *   second header value of `c`, answered "sent Bearer abc" with "sent [reda[redacted]ted]",
-     *   because `c` then matched inside the marker `Bearer abc` had just been replaced with.
-     *   That is the observed failure, reproduced. A header value of `red` on that draft hits
-     *   the same defect at another offset, turning a marker already written into
-     *   "[[redacted]acted]";
+     *   does re-read, which is why it is not used here: str_replace(['Bearer abc', 'c'],
+     *   '[redacted]', 'sent Bearer abc') gives "sent [reda[redacted]ted]", the `c` matching
+     *   inside the marker `Bearer abc` had just been replaced with. A header value of `red`
+     *   hits the same defect at another offset, turning a marker already written into
+     *   "[[redacted]acted]". An early draft of this method redacted with str_replace and failed
+     *   this way; it was never committed, so the probe above is the evidence, not the repo;
      * - at each position it tries the longest needle first, whatever order the map is in
      *   (measured both ways), so a value of `Bearer` beside a credential of `Bearer abc` cannot
      *   match first and leave the tail published. Nothing here sorts; that guarantee is strtr's
@@ -403,9 +403,14 @@ final class McpClient implements McpClientInterface
      *   32 764 bytes, and the limit moves with the number of alternations too — 1 985 values of
      *   15 bytes compile and 1 986 do not, 500 of 64 bytes compile and 501 do not. A 32 KiB byte
      *   threshold sat *above* the first ceiling and was blind to the second. Cost instead is a
-     *   scan, a few milliseconds at absurd sizes: 20 000 needles over a 1 MB text measured at
-     *   1.1 ms with needles all one length and 2.6 ms with their lengths spread over 4-200
-     *   bytes, worst of five runs each. It is the spread of needle *lengths* that moves it.
+     *   single scan of the text, and what it costs is the product of two things: how many
+     *   distinct needle lengths the map holds, and how often the text holds a byte that begins
+     *   some needle. A position beginning no needle is skipped; a position that does is tried
+     *   once per distinct length. So either alone stays cheap and only the two together bite.
+     *   Neither is a concern at the sizes this class works at: redact() runs once per JSON-RPC
+     *   error, over the headers one server is configured with. No timing figure is quoted here,
+     *   deliberately — each one that was written here turned out to be a best case that a
+     *   differently shaped text falsified.
      *
      * What it does not cover:
      * - McpRpcException::$data. That property is server-supplied and public, and no part of
