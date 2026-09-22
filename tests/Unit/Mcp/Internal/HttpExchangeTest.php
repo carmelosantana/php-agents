@@ -7,6 +7,7 @@ use CarmeloSantana\PHPAgents\Mcp\McpAuthException;
 use CarmeloSantana\PHPAgents\Mcp\McpRedirectException;
 use CarmeloSantana\PHPAgents\Mcp\McpServer;
 use CarmeloSantana\PHPAgents\Mcp\McpTransportException;
+use Symfony\Component\HttpClient\Exception\TransportException;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -110,6 +111,21 @@ test('a timeout is a transport error that does not quote the URL', function () {
     }
 });
 
+test('a transport error whose text says "timed out" is a timeout', function () {
+    // The shape a real curl timeout takes: max_duration becomes CURLOPT_TIMEOUT_MS
+    // (CurlHttpClient.php:299) and CurlResponse.php:343 raises a plain TransportException
+    // carrying curl_error() — no TimeoutExceptionInterface, and the text says "timed out",
+    // never "timeout".
+    $http = new MockHttpClient([new MockResponse([new TransportException('Operation timed out after 30000 milliseconds for "https://mcp.example.test/mcp".')])]);
+
+    try {
+        exchangeOver($http)->post('tools/list', [], []);
+        $this->fail('expected a timeout');
+    } catch (McpTransportException $e) {
+        expect($e->getMessage())->toBe('MCP tools/list timed out.');
+    }
+});
+
 test('a body over the cap is refused', function () {
     $http = new MockHttpClient([new MockResponse([str_repeat('x', 600), str_repeat('x', 600)])]);
 
@@ -126,9 +142,9 @@ test('the cap holds even when a wrapper drops on_progress', function () {
 
 test('a followed redirect is refused even when a wrapper drops max_redirects', function () {
     // An inner client that follows a 3xx unless max_redirects forbids it, and reports the
-    // follow the way v8.1.7's real clients do: CurlResponse fills redirect_count from
-    // CURLINFO_REDIRECT_COUNT and NativeHttpClient increments its own, and both leave the
-    // effective URL in getInfo('url').
+    // follow the way v8.1.7's real clients do: CurlResponse::getInfo() merges curl_getinfo(),
+    // which always carries redirect_count, NativeHttpClient increments its own, and both
+    // leave the effective URL in getInfo('url').
     $following = new MockHttpClient(static function (string $method, string $url, array $options): MockResponse {
         if (($options['max_redirects'] ?? 20) < 1) {
             return new MockResponse('', ['http_code' => 302, 'response_headers' => ['Location: https://169.254.169.254/']]);

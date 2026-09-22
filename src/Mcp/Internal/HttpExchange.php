@@ -157,13 +157,22 @@ final class HttpExchange
      * `on_progress`, and symfony/http-client v8.1.7 re-wraps what that callback throws
      * in its own TransportException (observed against MockResponse), so the flag, not
      * $e's type, is what tells the cap apart from a network failure.
+     *
+     * The timeout arm reads the text as well as the type because a real curl timeout is
+     * neither a TimeoutExceptionInterface nor called a "timeout": $timeout reaches curl as
+     * CURLOPT_TIMEOUT_MS (CurlHttpClient.php:299) and the failure comes back through
+     * CurlResponse.php:343 as a plain TransportException carrying curl_error(), which reads
+     * "Operation timed out after ..." or "Connection timed out after ...". Both spellings
+     * are matched. The classification is all $e is read for; none of its text, and so none
+     * of the URL it quotes, reaches the message.
      */
     private static function reason(string $method, TransportExceptionInterface $e, bool $exceeded, int $max): string
     {
         if ($exceeded) {
             return sprintf('MCP %s response exceeded %d bytes.', $method, $max);
         }
-        if ($e instanceof TimeoutExceptionInterface || stripos($e->getMessage(), 'timeout') !== false) {
+        $text = $e->getMessage();
+        if ($e instanceof TimeoutExceptionInterface || stripos($text, 'timeout') !== false || stripos($text, 'timed out') !== false) {
             return sprintf('MCP %s timed out.', $method);
         }
 

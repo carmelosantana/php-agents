@@ -116,3 +116,14 @@ test('every field a placeholder interpolates has a fallback', function (array $b
     'uri, on a bare resource' => [['type' => 'resource', 'resource' => []], '[resource ]'],
     'the resource object itself' => [['type' => 'resource'], '[resource ]'],
 ]);
+
+test('structuredContent json_encode refuses is an empty object, not an empty string', function () {
+    // Reachable from the wire: a server's 1e999 overflows to INF in json_decode, and
+    // json_encode refuses INF whatever the flags.
+    $structured = json_decode('{"overflow":1e999}', true);
+
+    $result = ResultMapper::toToolResult(['content' => [], 'structuredContent' => $structured], 1000);
+
+    expect($result->content)->toBe('{}')
+        ->and($result->mimeType)->toBe('application/json');
+});

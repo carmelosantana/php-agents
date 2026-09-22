@@ -17,7 +17,11 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  * - An embedded `resource` with text contributes that text after a `[resource <uri>]`
  *   line.
  * - With no `text` block, a non-null `structuredContent` is pretty-printed JSON, placed
- *   first, and typed application/json when it ends up being the only part.
+ *   first, and typed application/json when it ends up being the only part. One json_encode
+ *   refuses becomes `{}` rather than the empty string, so what carries that type is always
+ *   JSON. A server reaches that with `1e999`: json_decode overflows it to INF, which no
+ *   flag encodes. Depth is the other way in, and json_decode's own 512 levels stop it at
+ *   the door.
  * - The placeholder shapes, for the block types this mapper knows, are
  *   `[image <mime>, <n> bytes]` and the same for `audio`, where n is the decoded size
  *   of the base64; `[resource <uri> (<mime>), <n> bytes]` for an embedded resource
@@ -76,7 +80,7 @@ final class ResultMapper
         $mimeType = null;
         $structured = array_key_exists('structuredContent', $result) ? $result['structuredContent'] : null;
         if (!$hasText && $structured !== null) {
-            array_unshift($parts, (string) json_encode($structured, self::JSON_FLAGS));
+            array_unshift($parts, json_encode($structured, self::JSON_FLAGS) ?: '{}');
             $mimeType = count($parts) === 1 ? 'application/json' : null;
         }
 
