@@ -152,13 +152,25 @@ test('a namer replaces the naming rule, and a namer that answers nothing is an e
 
 /**
  * The namer's failure is deliberately outside the McpException tree: it is the host's
- * closure misbehaving, not the server. Both assertions below name concrete classes.
- * `expect(...)->toThrow($name)` only type-checks when `class_exists($name)` is true
- * (vendor/pestphp/pest/src/Mixins/Expectation.php, the `! class_exists($exception)`
- * branch); handed an interface name it falls through to a substring match on the
- * exception message instead, so an interface must never be the argument to toThrow().
- * McpException is a class, so `not->toBeInstanceOf(McpException::class)` is a real
- * instanceof — and toBeInstanceOf does not share toThrow()'s class_exists() branch.
+ * closure misbehaving, not the server. UnexpectedValueException and McpException are
+ * siblings under RuntimeException, so McpException is the type to name here; asserting
+ * `not` against RuntimeException would fail.
+ *
+ * No assertion in this file hands an interface name to toThrow(). `toThrow($name)` only
+ * type-checks when `class_exists($name)` is true (vendor/pestphp/pest/src/Mixins/
+ * Expectation.php, the `! class_exists($exception)` branch); handed an interface name it
+ * falls through to a substring match on the exception message, which passes for any
+ * exception whose message happens to contain that name. McpException is a class, so
+ * `not->toBeInstanceOf(McpException::class)` is a real instanceof, and toBeInstanceOf
+ * does not share toThrow()'s class_exists() branch.
+ *
+ * A `not->toBeInstanceOf(McpTransportException::class)` sibling was removed rather than
+ * kept, and this records why: McpTransportException extends McpException, so nothing
+ * makes it fail while the assertion above it still passes. Stripped to itself it stays
+ * green under the mutation that moves the throw to McpProtocolException — the mutation
+ * that kills the assertion above — and goes red only under one that moves the throw to
+ * McpTransportException, which kills that assertion too. It could not carry anything of
+ * its own.
  */
 test('the namer failure is not an McpException', function () {
     $search = definitionNamed('search');
