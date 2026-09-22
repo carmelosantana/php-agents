@@ -27,17 +27,18 @@ namespace CarmeloSantana\PHPAgents\Mcp\Internal;
  * counts the `x-mcp-header` keys in the schema array, walk() collects those it reached
  * through `properties`, and an annotation under `items`, under a combinator or a
  * conditional, in `$defs` or behind a `$ref` lifts the first number without lifting the
- * second, so the tool is dropped. count() descends into neither the value of an
- * `x-mcp-header` key nor `default`, `const`, `enum` and `examples`: JSON Schema defines
- * those four as instance data rather than schema, so a key of that name sitting in a
- * default value, a constant, an enum member or an example is not an annotation and must
- * not cost the tool its listing.
+ * second, so the tool is dropped.
  *
- * count() reads key names without being told whether a name is a keyword or a property
- * name, and where the two collide over an annotation the tool is dropped: a property
- * whose own name is `x-mcp-header` is counted as an annotation walk() never found, and
- * an annotation on or under a property named after one of the instance-data keywords is
- * skipped by count() while walk() finds it. Both fail closed, and a test pins each.
+ * count() reads a schema and a `properties` map as two different positions, and that is
+ * what keeps it honest about names. In a schema, `x-mcp-header` is an annotation and every other value is descended into
+ * whatever keyword holds it, with two exceptions: `default`, `const`, `enum` and
+ * `examples` hold instance data rather than subschemas and are not entered at all, so a
+ * key of that name sitting in a default value or an example is not an annotation; and
+ * the value of `properties` is entered as a map of names. In a name map no key is a
+ * keyword — a property may be called `x-mcp-header` or `default` without either reading
+ * as one — and each value is a schema again. So the two sides read the same chain the
+ * same way, and the difference the check is looking for is left to an annotation walk()
+ * could not reach.
  *
  * headers() converts values the way §Value Encoding does: strings through HeaderValue,
  * integers as decimals, booleans as `true`/`false`. A null or absent value sends no
@@ -162,9 +163,28 @@ final class ParamHeaders
         }
         $count = array_key_exists('x-mcp-header', $node) ? 1 : 0;
         foreach ($node as $key => $child) {
-            if ($key !== 'x-mcp-header' && !in_array($key, self::INSTANCE_DATA, true)) {
-                $count += self::count($child);
+            if ($key === 'x-mcp-header' || in_array($key, self::INSTANCE_DATA, true)) {
+                continue;
             }
+            $count += $key === 'properties' ? self::countNames($child) : self::count($child);
+        }
+
+        return $count;
+    }
+
+    /**
+     * The same count over a `properties` map, whose keys are property names rather than
+     * keywords: nothing here is read as `x-mcp-header` or as instance data, and every
+     * value is a schema again.
+     */
+    private static function countNames(mixed $node): int
+    {
+        if (!is_array($node)) {
+            return 0;
+        }
+        $count = 0;
+        foreach ($node as $child) {
+            $count += self::count($child);
         }
 
         return $count;

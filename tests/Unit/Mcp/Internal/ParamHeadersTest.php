@@ -85,17 +85,25 @@ test('an x-mcp-header key inside instance data is not an annotation, so the tool
     ],
 ]);
 
-test('a property named after a key the count reads is dropped, the same name collision as a property named x-mcp-header', function () {
-    $schema = ['type' => 'object', 'properties' => ['default' => ['type' => 'string', 'x-mcp-header' => 'Default']]];
-
-    expect(ParamHeaders::extract($schema))->toBeNull();
-});
-
-test('a property literally named x-mcp-header is counted as an annotation and drops the tool, which is the count check paying for not walking every keyword', function () {
-    $schema = ['type' => 'object', 'properties' => ['x-mcp-header' => ['type' => 'string']]];
-
-    expect(ParamHeaders::extract($schema))->toBeNull();
-});
+test('a property may be named like a keyword, because under properties every key is a name', function (array $schema, array $expected) {
+    expect(ParamHeaders::extract($schema))->toBe($expected);
+})->with([
+    'named x-mcp-header, beside a real annotation' => [
+        ['type' => 'object', 'properties' => [
+            'x-mcp-header' => ['type' => 'string'],
+            'region' => ['type' => 'string', 'x-mcp-header' => 'Region'],
+        ]],
+        [['path' => ['region'], 'header' => 'Region']],
+    ],
+    'named default, carrying the annotation itself' => [
+        ['type' => 'object', 'properties' => ['default' => ['type' => 'string', 'x-mcp-header' => 'Default']]],
+        [['path' => ['default'], 'header' => 'Default']],
+    ],
+    'named default, holding a nested annotated property' => [
+        ['type' => 'object', 'properties' => ['default' => ['type' => 'object', 'properties' => ['x' => ['type' => 'string', 'x-mcp-header' => 'X']]]]],
+        [['path' => ['default', 'x'], 'header' => 'X']],
+    ],
+]);
 
 test('arguments become Mcp-Param headers with the spec conversions, skipping absent and null values', function () {
     $map = [
