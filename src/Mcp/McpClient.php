@@ -154,7 +154,11 @@ final class McpClient implements McpClientInterface
             if ($type !== 'input_required') {
                 throw new McpProtocolException('MCP tools/call returned an unknown resultType.');
             }
-            if (!empty($result['inputRequests'])) {
+            // The key, not its truthiness: spec §2 step 4 refuses `inputRequests`, and a
+            // server that sends an empty one has still asked. Probed: with !empty() here,
+            // `inputRequests: []` reached the requestState loop and ended as "did not
+            // complete" after four calls. The same reading HttpReply gives `error`/`method`.
+            if (array_key_exists('inputRequests', $result)) {
                 throw new McpProtocolException('MCP tools/call asked for client input, which this client does not provide.');
             }
             if (!is_string($result['requestState'] ?? null) || $round >= self::MAX_INPUT_ROUNDS) {
@@ -226,10 +230,10 @@ final class McpClient implements McpClientInterface
      * The -32020 HeaderMismatch arm is a deliberate, documented deviation from upstream
      * too, and it is spec §2 step 2 that is implemented: upstream's 2026-07-28 text says a
      * client SHOULD re-run `tools/list` and retry once on -32020, and this client throws
-     * McpRpcException without retrying. Upstream says SHOULD, not MUST, and no server this
-     * repo can reach takes the 2026-07-28 path at all — the WordPress MCP Adapter answers a
-     * 2026 probe with 400/-32600 (HttpSessionValidator.php:50-53, trunk 4ff9806) — so a
-     * retry would carry no live coverage. McpClientModernTest's "a modern header error is
+     * McpRpcException without retrying. Upstream says SHOULD, not MUST, and the only server
+     * this repo has live coverage against does not take the 2026-07-28 path — the WordPress
+     * MCP Adapter answers a 2026 probe with 400/-32600 (HttpSessionValidator.php:50-53,
+     * trunk 4ff9806) — so a retry would carry no live coverage. McpClientModernTest's "a modern header error is
      * an RPC error, never a fallback" pins the throw.
      *
      * @param array<string, mixed> $params
@@ -381,9 +385,10 @@ final class McpClient implements McpClientInterface
             self::sessionHeaders($session->sessionId),
         );
         if (!$ack->isSuccess()) {
-            // $this->session is null here — call() initializes only when it is, and legacy()
-            // forgets before re-initializing — so the id this answer is about is $session's,
-            // stored only below. hold() above is what keeps the redaction able to see it.
+            // $this->session is null here, so the id this answer is about is $session's,
+            // stored only below, and hold() above is what keeps the redaction able to see
+            // it. Probed rather than argued from the call graph: a temporary throw at the
+            // top of this method when $this->session !== null left the whole suite green.
             throw $this->statusError('notifications/initialized', $ack, $ack->message(0));
         }
         $this->remember($session);
@@ -599,11 +604,9 @@ final class McpClient implements McpClientInterface
      *   out to be a best case that a differently shaped text falsified.
      *
      * What it does not cover:
-     * - McpRpcException::$data. That property is server-supplied and public, and no part of
-     *   it reaches any message, which is what spec §2 constrains; it is passed through with
-     *   its structure and types intact because supportedVersions() reads `data.supported`
-     *   off the same envelope on the -32022 path. A host
-     *   that logs $data itself can still log something a server reflected into it.
+     * - McpRpcException::$data. rpcError() passes that property through untouched, and no
+     *   part of it reaches any message, which is what spec §2 constrains. A host that logs
+     *   $data itself can still log something a server reflected into it.
      * - anything but a literal occurrence. A server that base64-encodes, URL-encodes, cases
      *   differently or truncates a credential before reflecting it is not caught by
      *   substring replacement.

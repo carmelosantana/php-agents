@@ -118,11 +118,19 @@ test('a modern header error is an RPC error, never a fallback', function () {
         ->and($fake->initializeCount)->toBe(0);
 });
 
-test('a pinned 2026-07-28 never falls back', function () {
+test('a pinned 2026-07-28 never falls back, and is never written to the store', function () {
+    // McpRpcException, not the McpProtocolException the plan's listing asked for: the
+    // fallback 400 carries the Adapter's -32600, and the parent class cannot tell "the pin
+    // refused the fallback" from any other protocol error. Probed, the class is the
+    // subclass. The empty store is the other half: session() builds a pinned 2026-07-28
+    // session in memory and nothing detected anything, so remember() is never reached.
     $fake = new FakeMcpServer(FakeMcpServer::LEGACY);
+    $store = new ArraySessionStore();
+    $server = autoServer(['protocolVersion' => '2026-07-28']);
 
-    expect(fn() => (new McpClient(autoServer(['protocolVersion' => '2026-07-28']), $fake->client()))->listTools())->toThrow(McpProtocolException::class)
-        ->and($fake->initializeCount)->toBe(0);
+    expect(fn() => (new McpClient($server, $fake->client(), $store))->listTools())->toThrow(McpRpcException::class)
+        ->and($fake->initializeCount)->toBe(0)
+        ->and($store->sessions)->toBe([]);
 });
 
 test('a remembered 2026-07-28 that the server no longer accepts is forgotten and detection runs again', function () {
@@ -307,8 +315,8 @@ test('a credential a 2026-07-28 server reflects in a 404 is redacted', function 
 });
 
 test('a credential in the 400 a pinned 2026-07-28 refuses to fall back on is redacted', function () {
-    // The third seam: call() turns the fallback signal into an error when a pin forbids the
-    // fallback, and re-reads the envelope with message(0) to do it.
+    // The last of the four seams: call() turns the fallback signal into an error when a pin
+    // forbids the fallback, and re-reads the envelope with message(0) to do it.
     $fake = modernFake();
     $fake->once(static fn(array $r) => FakeMcpServer::error(400, $r['body']['id'], -32600, 'Bearer sk-modern is not welcome here'));
     $server = autoServer(['headers' => ['Authorization' => 'Bearer sk-modern'], 'protocolVersion' => '2026-07-28']);
@@ -329,4 +337,43 @@ test('a JSON-RPC error a 2026-07-28 server answers 200 with is an error, not a r
 
     expect(fn() => (new McpClient(autoServer(), $fake->client()))->callTool('ghost', []))
         ->toThrow(McpRpcException::class, 'MCP tools/call failed with JSON-RPC error -32602: Unknown tool: ghost');
+});
+
+test('a 202 to a 2026-07-28 tools/list is refused, complete result and all', function () {
+    // modern() hands result() the reply's own status, the way legacy() does. With 200
+    // hard-coded there instead, this body would be accepted as a listing.
+    $fake = modernFake();
+    $fake->once(static fn(array $r) => FakeMcpServer::json(202, ['jsonrpc' => '2.0', 'id' => $r['body']['id'], 'result' => ['resultType' => 'complete', 'tools' => []]]));
+
+    expect(fn() => (new McpClient(autoServer(), $fake->client()))->listTools())
+        ->toThrow(McpProtocolException::class, 'MCP tools/list returned HTTP 202, which only notifications/initialized may answer.');
+});
+
+test('a credential in the 400 of a modern header error is redacted', function () {
+    // The fourth seam: a 400 whose code is in MODERN_RPC_ERRORS goes to statusError() from
+    // inside modern()'s loop, one branch below the 404 seam above and through the same
+    // expression. A regression on this branch alone would show up nowhere else.
+    $fake = modernFake();
+    $fake->once(static fn(array $r) => FakeMcpServer::error(400, $r['body']['id'], -32020, 'header Bearer sk-modern mismatch'));
+    $client = new McpClient(autoServer(['headers' => ['Authorization' => 'Bearer sk-modern']]), $fake->client());
+
+    try {
+        $client->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->not->toContain('sk-modern')
+            ->and($e->getMessage())->toEndWith(': header [redacted] mismatch');
+    }
+});
+
+test('an inputRequests key is refused even when what it holds is empty', function () {
+    // Spec §2 step 4 refuses `inputRequests`, on the key. A truthiness test instead lets
+    // `inputRequests: []` through into the requestState loop, where it ends as "did not
+    // complete" after MAX_INPUT_ROUNDS + 1 calls rather than being refused on sight.
+    $fake = modernFake();
+    $fake->results['search'] = static fn(array $a) => ['resultType' => 'input_required', 'inputRequests' => [], 'requestState' => 'again'];
+
+    expect(fn() => (new McpClient(autoServer(), $fake->client()))->callTool('search', []))
+        ->toThrow(McpProtocolException::class, 'MCP tools/call asked for client input, which this client does not provide.')
+        ->and(array_values(array_filter($fake->methods(), static fn($m) => $m === 'tools/call')))->toHaveCount(1);
 });
