@@ -11,6 +11,7 @@ use CarmeloSantana\PHPAgents\Mcp\McpServer;
 use CarmeloSantana\PHPAgents\Mcp\McpSession;
 use CarmeloSantana\PHPAgents\Mcp\McpTransportException;
 use CarmeloSantana\PHPAgents\Mcp\McpUnsupportedVersionException;
+use Symfony\Component\HttpClient\Response\MockResponse;
 use Tests\Support\Mcp\ArraySessionStore;
 use Tests\Support\Mcp\FakeMcpServer;
 
@@ -38,10 +39,17 @@ function answerFor(string $method, Closure $respond): Closure
 }
 
 /**
- * The request envelope spec §2 requires, asserted off every recorded request — the
- * handshake, the notification and the data requests alike. FakeMcpServer enforces none
- * of it, so without this a client that sent neither Accept nor the configured headers
- * would still pass every other test in this file.
+ * All four header bullets of spec §2's "Every request", asserted off every recorded
+ * request — the handshake, the notification and the data requests alike: Content-Type,
+ * Accept, MCP-Protocol-Version, and everything in McpServer::$headers.
+ *
+ * FakeMcpServer enforces none of the four (its legacy gate accepts an absent version
+ * header, and it never looks at Accept or Content-Type). Two of them are pinned only
+ * here: a client that stopped sending Accept or Content-Type passes every other test in
+ * this file. The other two are not unique to this helper — the first test asserts
+ * `authorization` on every request itself, and the session-carrying tests read
+ * `mcp-protocol-version` off the data requests — but nothing else asserts the version
+ * header on the `initialize` POST, which is the one the plan's listing left off.
  *
  * @param array<string, string> $configured McpServer::$headers, keyed by lower-case name
  */
@@ -52,7 +60,8 @@ function expectEnvelope(FakeMcpServer $fake, array $configured = ['authorization
         expect($request['method'])->toBe('POST')
             ->and($request['url'])->toBe('https://mcp.example.test/mcp')
             ->and($request['headers']['accept'] ?? null)->toBe('application/json, text/event-stream')
-            ->and($request['headers']['content-type'] ?? null)->toBe('application/json');
+            ->and($request['headers']['content-type'] ?? null)->toBe('application/json')
+            ->and($request['headers']['mcp-protocol-version'] ?? null)->toBe('2025-11-25');
         foreach ($configured as $name => $value) {
             expect($request['headers'][$name] ?? null)->toBe($value);
         }
@@ -289,16 +298,21 @@ test('redaction skips an empty header value rather than replacing between every 
     }
 });
 
-test('a credential reflected past the 200-byte cut is redacted before the cut, not after', function () {
+test('a credential straddling the 200-byte cut is redacted before the cut, not after', function () {
     $fake = legacyFake();
-    $reflected = str_repeat('x', 190) . ' Bearer t';
+    // McpRpcException cuts the server's text at 200 bytes. The credential starts at byte 196,
+    // so cutting first would keep its first four bytes, "Bear", and publish them; redacting
+    // first replaces the whole of it and the cut lands inside the marker. A credential that
+    // sat wholly inside or wholly outside the window would not tell the two orders apart.
+    $reflected = str_repeat('x', 195) . ' Bearer t';
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, $reflected)));
 
     try {
         (new McpClient(legacyServer(), $fake->client()))->listTools();
         $this->fail('expected an RPC error');
     } catch (McpRpcException $e) {
-        expect($e->getMessage())->not->toContain('Bearer t');
+        // 195 x's, a space and "[redacted]" is 206 bytes; the cut keeps 200, ending mid-marker.
+        expect($e->getMessage())->not->toContain('Bear')->and($e->getMessage())->toEndWith('x [red');
     }
 });
 
@@ -359,6 +373,94 @@ test('the session id the handshake just issued is redacted from a refused notifi
         expect($e->getMessage())->not->toContain('sess-1')
             ->and($e->getMessage())->toBe('MCP notifications/initialized failed with JSON-RPC error -32600: session [redacted] was rejected');
     }
+});
+
+test('a configuration too large to build a pattern from drops the server text entirely', function () {
+    // The pattern is an alternation of every configured header value, so a large enough
+    // configuration is one PCRE will not compile: 20 000 headers raise "regular expression is
+    // too large" and preg_replace() returns null. The client refuses an oversized pattern
+    // before PCRE sees it, so the failure is deterministic and raises no PHP warning. Either
+    // way it fails closed: the server's whole text goes, not just the secret in it.
+    $headers = ['Authorization' => 'Bearer t'];
+    for ($i = 0; $i < 40; $i++) {
+        $headers['X-H' . $i] = str_repeat('s', 1024);
+    }
+    $fake = legacyFake();
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'nothing secret here')));
+
+    try {
+        (new McpClient(legacyServer(['headers' => $headers]), $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toBe('MCP tools/list failed with JSON-RPC error -32603: [redacted]');
+    }
+});
+
+test('a session id the client has since forgotten is still redacted', function () {
+    $fake = legacyFake();
+    $client = new McpClient(legacyServer(), $fake->client());
+    $client->listTools();
+    $fake->expireSession();
+    // Answer the *second* tools/call — the one after the stale-session 404 and the fresh
+    // handshake — with an error naming the id the client has just forgotten. The queued
+    // closure returns null for the first one, so the fake's own 404/-32005 drives the retry.
+    $seen = 0;
+    $fake->once(static function (array $request) use (&$seen): ?MockResponse {
+        if (($request['body']['method'] ?? null) !== 'tools/call') {
+            return null;
+        }
+
+        return ++$seen === 2
+            ? FakeMcpServer::error(200, $request['body']['id'] ?? null, -32603, 'session sess-1 is gone; use sess-2')
+            : null;
+    });
+
+    try {
+        $client->callTool('search', []);
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->not->toContain('sess-1')
+            ->not->toContain('sess-2')
+            ->and($e->getMessage())->toEndWith(': session [redacted] is gone; use [redacted]');
+    }
+});
+
+test('a 202 is accepted for notifications/initialized and refused for every other method', function () {
+    // FakeMcpServer::legacy() answers the notification with 202, so a client that refused 202
+    // outright would never reach tools/list here.
+    $fake = legacyFake();
+    expect((new McpClient(legacyServer(), $fake->client()))->listTools()[0]->name)->toBe('search');
+
+    $listed = legacyFake();
+    $listed->once(answerFor('tools/list', static fn($id) => FakeMcpServer::json(202, ['jsonrpc' => '2.0', 'id' => $id, 'result' => ['tools' => []]])));
+    $shook = legacyFake();
+    $shook->once(answerFor('initialize', static fn($id) => FakeMcpServer::json(202, ['jsonrpc' => '2.0', 'id' => $id, 'result' => ['protocolVersion' => '2025-11-25']])));
+
+    expect(fn() => (new McpClient(legacyServer(), $listed->client()))->listTools())
+        ->toThrow(McpProtocolException::class, 'MCP tools/list returned HTTP 202, which only notifications/initialized may answer.')
+        ->and(fn() => (new McpClient(legacyServer(), $shook->client()))->listTools())
+        ->toThrow(McpProtocolException::class, 'MCP initialize returned HTTP 202, which only notifications/initialized may answer.');
+});
+
+test('a JSON-RPC error on a 2xx that is not 200 carries the status it arrived with', function () {
+    $fake = legacyFake();
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(203, $id, -32603, 'boom')));
+
+    try {
+        (new McpClient(legacyServer(), $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->httpStatus)->toBe(203)->and($e->rpcCode)->toBe(-32603);
+    }
+});
+
+test('listTools refuses a server that keeps paging past the hundredth page', function () {
+    $fake = legacyFake(array_map(static fn(int $i): string => 't' . $i, range(1, 101)));
+    $fake->pageSize = 1;
+
+    expect(fn() => (new McpClient(legacyServer(), $fake->client()))->listTools())
+        ->toThrow(McpProtocolException::class, 'MCP tools/list returned more than 100 pages.')
+        ->and(array_values(array_filter($fake->methods(), static fn($m) => $m === 'tools/list')))->toHaveCount(100);
 });
 
 test('an error key whose value is null is not a JSON-RPC error', function () {

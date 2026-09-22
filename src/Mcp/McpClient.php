@@ -50,9 +50,14 @@ final class McpClient implements McpClientInterface
 
     private const REDACTED = '[redacted]';
 
+    private const MAX_PATTERN_BYTES = 32_768;
+
     private readonly HttpExchange $exchange;
 
     private ?McpSession $session = null;
+
+    /** @var list<string> every session id this instance has held, kept for redact() alone */
+    private array $held = [];
 
     private bool $loaded = false;
 
@@ -114,6 +119,7 @@ final class McpClient implements McpClientInterface
             $this->loaded = true;
             $stored = $this->sessions?->load($this->server->sessionKey());
             if ($stored?->protocolVersion === McpServer::PROTOCOL_2025) {
+                $this->hold($stored->sessionId);
                 $this->session = $stored;
             }
         }
@@ -138,7 +144,7 @@ final class McpClient implements McpClientInterface
             $reply = $this->exchange->post($method, self::request($id, $method, $params), self::sessionHeaders($sessionId));
             $message = $reply->message($id);
             if ($reply->isSuccess()) {
-                return $this->result($method, $message);
+                return $this->result($method, $message, $reply->status);
             }
             if ($reply->status === 404 && $sessionId !== null && !$reinitialized && self::sessionExpired($message)) {
                 $reinitialized = true;
@@ -157,8 +163,11 @@ final class McpClient implements McpClientInterface
      * `MCP-Protocol-Version`; the notification carries the session id the response just
      * issued as well, when it issued one.
      *
-     * That step says the notification answers 202. Any 2xx is accepted here, since the value
-     * of the status is not read; a non-2xx becomes the same error a data request would get.
+     * That step says the notification answers 202, and spec §2's status table accepts a 202
+     * from it alone. This method reads no status value of its own: the notification is
+     * accepted on any 2xx (a server answering 200 is tolerated), while a 202 to `initialize`
+     * is refused by result() with every other method's. A non-2xx on either becomes the same
+     * error a data request would get.
      */
     private function initialize(): McpSession
     {
@@ -172,13 +181,14 @@ final class McpClient implements McpClientInterface
         if (!$reply->isSuccess()) {
             throw $this->statusError('initialize', $reply, $message);
         }
-        $result = $this->result('initialize', $message);
+        $result = $this->result('initialize', $message, $reply->status);
         if (($result['protocolVersion'] ?? null) !== McpServer::PROTOCOL_2025) {
             throw new McpUnsupportedVersionException('MCP initialize negotiated a protocol version this client does not speak.');
         }
 
         $sessionId = $reply->header('mcp-session-id');
         $session = new McpSession(McpServer::PROTOCOL_2025, $sessionId === null || $sessionId === '' ? null : $sessionId);
+        $this->hold($session->sessionId);
         $ack = $this->exchange->post(
             'notifications/initialized',
             ['jsonrpc' => '2.0', 'method' => 'notifications/initialized'],
@@ -187,8 +197,8 @@ final class McpClient implements McpClientInterface
         if (!$ack->isSuccess()) {
             // $this->session is null here — call() initializes only when it is, and legacy()
             // forgets before re-initializing — so the id this answer is about is $session's,
-            // remembered only below. It is handed to the redaction explicitly.
-            throw $this->statusError('notifications/initialized', $ack, $ack->message(0), $session->sessionId);
+            // stored only below. hold() above is what keeps the redaction able to see it.
+            throw $this->statusError('notifications/initialized', $ack, $ack->message(0));
         }
         $this->remember($session);
 
@@ -215,6 +225,19 @@ final class McpClient implements McpClientInterface
     {
         $this->session = $session;
         $this->sessions?->save($this->server->sessionKey(), $session);
+    }
+
+    /**
+     * Records a session id for the redaction, and for nothing else. An id is held from the
+     * moment the server issues it or the store hands it over, and is never dropped: forget()
+     * stops the client *sending* an id, while a server that echoes that same id back in a
+     * later error text must still not reach an exception message (spec §2).
+     */
+    private function hold(?string $sessionId): void
+    {
+        if ($sessionId !== null && $sessionId !== '' && !in_array($sessionId, $this->held, true)) {
+            $this->held[] = $sessionId;
+        }
     }
 
     private function forget(): void
@@ -246,6 +269,12 @@ final class McpClient implements McpClientInterface
     /**
      * The `result` of a successful response, or the exception its `error` object deserves.
      *
+     * The 202 arm is spec §2's status table: "202 Accepted, but only for the
+     * `notifications/initialized` POST". It is checked before the body, so a 202 carrying a
+     * complete JSON-RPC result — or a JSON-RPC error — is refused on the status alone. This
+     * method is not called for the notification today (legacy() and initialize() are its only
+     * callers), so the method test is what keeps the rule true rather than the call graph.
+     *
      * `isset($message['error'])` is deliberate, and differs from the array_key_exists()
      * HttpReply::message() uses to recognise an envelope: a body of `{"error": null}` carries
      * the key but no error object, and JSON-RPC has no error there to report. The same
@@ -257,15 +286,19 @@ final class McpClient implements McpClientInterface
      * too. It is kept so the 2026 path cannot be written without it.
      *
      * @param array<array-key, mixed>|null $message
+     * @param int $status the 2xx the reply arrived with; it is McpRpcException::$httpStatus
      * @return array<array-key, mixed>
      */
-    private function result(string $method, ?array $message): array
+    private function result(string $method, ?array $message, int $status): array
     {
+        if ($status === 202 && $method !== 'notifications/initialized') {
+            throw new McpProtocolException(sprintf('MCP %s returned HTTP 202, which only notifications/initialized may answer.', $method));
+        }
         if ($message === null) {
             throw new McpProtocolException(sprintf('MCP %s returned no response.', $method));
         }
         if (isset($message['error'])) {
-            throw $this->rpcError($method, $message, 200);
+            throw $this->rpcError($method, $message, $status);
         }
         $result = $message['result'] ?? null;
         if (!is_array($result)) {
@@ -284,14 +317,12 @@ final class McpClient implements McpClientInterface
      * 401, 403, 3xx and every other status are exceptions before they reach here
      * (HttpExchange::post()), and a 2xx never comes this way.
      *
-     * $issued is the session id initialize() has issued but not yet remembered; see redact().
-     *
      * @param array<array-key, mixed>|null $message
      */
-    private function statusError(string $method, HttpReply $reply, ?array $message, ?string $issued = null): McpException
+    private function statusError(string $method, HttpReply $reply, ?array $message): McpException
     {
         if (is_array($message) && isset($message['error'])) {
-            return $this->rpcError($method, $message, $reply->status, $issued);
+            return $this->rpcError($method, $message, $reply->status);
         }
         if ($reply->status === 400) {
             return new McpProtocolException(sprintf('MCP %s was rejected with HTTP 400.', $method));
@@ -309,14 +340,14 @@ final class McpClient implements McpClientInterface
      *
      * @param array<array-key, mixed> $message
      */
-    private function rpcError(string $method, array $message, int $status, ?string $issued = null): McpRpcException
+    private function rpcError(string $method, array $message, int $status): McpRpcException
     {
         $error = is_array($message['error'] ?? null) ? $message['error'] : [];
 
         return new McpRpcException(
             $method,
             is_int($error['code'] ?? null) ? $error['code'] : 0,
-            $this->redact(is_string($error['message'] ?? null) ? $error['message'] : '', $issued),
+            $this->redact(is_string($error['message'] ?? null) ? $error['message'] : ''),
             $error['data'] ?? null,
             $status,
         );
@@ -327,20 +358,20 @@ final class McpClient implements McpClientInterface
      * in a server's own error text. Spec §2 promises that no exception message carries a
      * header value or the session id, and McpRpcException's message is the one place server
      * text reaches a message at all: every other message in this file, in HttpExchange and in
-     * HttpReply is formatted from the method name and the HTTP status.
+     * HttpReply is formatted from the method name, the HTTP status and this client's own
+     * configured limits (maxResponseBytes and MAX_PAGES are interpolated; nothing the server
+     * sent is).
      *
      * What this covers, exactly:
      * - every non-empty value in McpServer::$headers, whatever the header is named. An empty
      *   value is skipped: as an empty alternative in the pattern it would match at every
      *   position and splice the marker between every character of the text.
-     * - the session id this instance holds when the exception is built, and $issued, the id
-     *   `initialize` has just issued but not yet remembered — during the
-     *   `notifications/initialized` POST $this->session is still null, so without $issued
-     *   that brand-new id would go unredacted out of the one error that can name it. A
-     *   *previous* id is not held any more: after a stale-session 404 the client forgets that
-     *   id before it re-initializes, so a server that echoes the forgotten id in the error
-     *   text of the retry publishes it. That id is one the server has already declared it
-     *   does not know.
+     * - every session id this instance has ever held — $held, filled by hold() when the store
+     *   hands one over and when `initialize` issues one, and never emptied. forget() stops the
+     *   client sending an id; it does not stop a server echoing that id back afterwards, and
+     *   spec §2's promise covers the message either way. This also covers the id issued by a
+     *   handshake whose `notifications/initialized` POST then failed, which is held before
+     *   that POST goes out and only stored after it succeeds.
      * - the longest secret first, so a secret that starts with another (a header value of
      *   `Bearer` beside a credential of `Bearer abc`) is not matched by the shorter one with
      *   its tail left published.
@@ -351,10 +382,19 @@ final class McpClient implements McpClientInterface
      * turned `[redacted]` into `[reda[redacted]ted]` in the first draft of this method.
      * The pattern carries no `u` modifier: a configured header value may be any byte string,
      * and under `u` an invalid byte in it fails the compile and preg_replace() returns null,
-     * which would cost the whole message. Matching is byte-wise instead. Should the call
-     * return null anyway, the text is dropped for the marker rather than passed through
-     * unredacted — the one branch here with no test, since nothing in the suite makes PCRE
-     * fail on a pattern this simple.
+     * which would cost the whole message. Matching is byte-wise instead.
+     *
+     * Failing closed, twice. The pattern is an alternation of every configured header value
+     * and every held session id, so a large enough configuration is a pattern PCRE will not
+     * compile: measured here, 20 000 headers raise "regular expression is too large" at about
+     * 400 KB and preg_replace() returns null. That is reachable from configuration alone, so
+     * a pattern over MAX_PATTERN_BYTES is refused before the call — deterministically, and
+     * without the PHP warning a failed compile raises, which PHPUnit turns into a test
+     * warning and which a host could do nothing about. MAX_PATTERN_BYTES sits well below the
+     * size at which that measurement failed, and well above any real configuration: HTTP
+     * would not carry 32 KB of header values. A null return from preg_replace() is still checked, as a second
+     * guard for whatever else PCRE may refuse; nothing in the suite reaches it. Either way the
+     * server's text is dropped for the marker, never passed through unredacted.
      *
      * What it does not cover:
      * - McpRpcException::$data. That property is server-supplied and public, and no part of
@@ -365,17 +405,12 @@ final class McpClient implements McpClientInterface
      *   differently or truncates a credential before reflecting it is not caught by
      *   substring replacement.
      */
-    private function redact(string $text, ?string $issued = null): string
+    private function redact(string $text): string
     {
-        $secrets = [];
+        $secrets = $this->held;
         foreach ($this->server->headers as $value) {
             if ($value !== '') {
                 $secrets[] = $value;
-            }
-        }
-        foreach ([$this->session?->sessionId, $issued] as $sessionId) {
-            if ($sessionId !== null && $sessionId !== '') {
-                $secrets[] = $sessionId;
             }
         }
         if ($secrets === []) {
@@ -383,6 +418,9 @@ final class McpClient implements McpClientInterface
         }
         usort($secrets, static fn(string $a, string $b): int => strlen($b) <=> strlen($a));
         $pattern = '/' . implode('|', array_map(static fn(string $s): string => preg_quote($s, '/'), $secrets)) . '/';
+        if (strlen($pattern) > self::MAX_PATTERN_BYTES) {
+            return self::REDACTED;
+        }
         $redacted = preg_replace($pattern, self::REDACTED, $text);
 
         return is_string($redacted) ? $redacted : self::REDACTED;
