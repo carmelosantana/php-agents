@@ -21,6 +21,11 @@ test('the empty string and a tab are wrapped too, which over-encodes rather than
         ->and(HeaderValue::encode("a\tb"))->toBe('=?base64?' . base64_encode("a\tb") . '?=');
 });
 
+test('the degenerate sentinel, whose prefix and suffix overlap, is wrapped as well, and the markers stay case-sensitive', function () {
+    expect(HeaderValue::encode('=?base64?='))->toBe('=?base64?' . base64_encode('=?base64?=') . '?=')
+        ->and(HeaderValue::encode('=?BASE64?x?='))->toBe('=?BASE64?x?=');
+});
+
 test('a trailing newline is wrapped: an unanchored $ would let one through and put a CR/LF into a header', function () {
     expect(HeaderValue::encode("trailing\n"))->toBe('=?base64?' . base64_encode("trailing\n") . '?=')
         ->and(HeaderValue::encode("trailing\r"))->toBe('=?base64?' . base64_encode("trailing\r") . '?=')
@@ -64,6 +69,28 @@ test('an invalid annotation drops the tool', function (array $schema) {
     'behind a $ref' => [['type' => 'object', 'properties' => ['a' => ['$ref' => '#/$defs/Opts']], '$defs' => ['Opts' => ['type' => 'object', 'properties' => ['b' => ['type' => 'string', 'x-mcp-header' => 'A']]]]]],
 ]);
 
+test('an x-mcp-header key inside instance data is not an annotation, so the tool survives', function (array $schema, array $expected) {
+    expect(ParamHeaders::extract($schema))->toBe($expected);
+})->with([
+    'in a default' => [['type' => 'object', 'properties' => ['a' => ['type' => 'object', 'default' => ['x-mcp-header' => 'A']]]], []],
+    'in a const' => [['type' => 'object', 'properties' => ['a' => ['type' => 'object', 'const' => ['x-mcp-header' => 'A']]]], []],
+    'in an enum member' => [['type' => 'object', 'properties' => ['a' => ['type' => 'object', 'enum' => [['x-mcp-header' => 'A'], ['b' => 1]]]]], []],
+    'in examples' => [['type' => 'object', 'properties' => ['a' => ['type' => 'object', 'examples' => [['x-mcp-header' => 'A']]]]], []],
+    'beside a valid annotation, which keeps its mapping' => [
+        ['type' => 'object', 'properties' => [
+            'region' => ['type' => 'string', 'x-mcp-header' => 'Region'],
+            'shape' => ['type' => 'object', 'default' => ['x-mcp-header' => 'not an annotation']],
+        ]],
+        [['path' => ['region'], 'header' => 'Region']],
+    ],
+]);
+
+test('a property named after a key the count reads is dropped, the same name collision as a property named x-mcp-header', function () {
+    $schema = ['type' => 'object', 'properties' => ['default' => ['type' => 'string', 'x-mcp-header' => 'Default']]];
+
+    expect(ParamHeaders::extract($schema))->toBeNull();
+});
+
 test('a property literally named x-mcp-header is counted as an annotation and drops the tool, which is the count check paying for not walking every keyword', function () {
     $schema = ['type' => 'object', 'properties' => ['x-mcp-header' => ['type' => 'string']]];
 
@@ -84,5 +111,22 @@ test('arguments become Mcp-Param headers with the spec conversions, skipping abs
         'Mcp-Param-Region' => '=?base64?' . base64_encode('eü') . '?=',
         'Mcp-Param-Dry-Run' => 'false',
         'Mcp-Param-Shard' => '12',
+    ]);
+});
+
+test('an integral float converts like an integer, because a server compares header and body numerically', function () {
+    $map = [
+        ['path' => ['shard'], 'header' => 'Shard'],
+        ['path' => ['back'], 'header' => 'Back'],
+        ['path' => ['big'], 'header' => 'Big'],
+        ['path' => ['ratio'], 'header' => 'Ratio'],
+        ['path' => ['endless'], 'header' => 'Endless'],
+        ['path' => ['nothing'], 'header' => 'Nothing'],
+    ];
+
+    expect(ParamHeaders::headers($map, ['shard' => 12.0, 'back' => -7.0, 'big' => 1.0e18, 'ratio' => 1.5, 'endless' => INF, 'nothing' => NAN]))->toBe([
+        'Mcp-Param-Shard' => '12',
+        'Mcp-Param-Back' => '-7',
+        'Mcp-Param-Big' => '1000000000000000000',
     ]);
 });

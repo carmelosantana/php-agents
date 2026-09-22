@@ -24,18 +24,30 @@ namespace CarmeloSantana\PHPAgents\Mcp\Internal;
  * nested object's property as long as every step of the chain is a `properties` key.
  *
  * That last check is a comparison rather than a walk of the other keywords: count()
- * counts the `x-mcp-header` keys anywhere in the schema array other than inside the
- * value of one, and walk() collects those it reached through `properties`, so an
- * annotation under `items`, under a combinator or a conditional, in `$defs` or behind
- * a `$ref` lifts the first number without lifting the second and the tool is dropped.
- * The approximation costs one false drop: a property whose own name is `x-mcp-header`
- * is a key of that name too, so count() counts it and a schema holding one is dropped
- * even when every annotation in it is valid.
+ * counts the `x-mcp-header` keys in the schema array, walk() collects those it reached
+ * through `properties`, and an annotation under `items`, under a combinator or a
+ * conditional, in `$defs` or behind a `$ref` lifts the first number without lifting the
+ * second, so the tool is dropped. count() descends into neither the value of an
+ * `x-mcp-header` key nor `default`, `const`, `enum` and `examples`: JSON Schema defines
+ * those four as instance data rather than schema, so a key of that name sitting in a
+ * default value, a constant, an enum member or an example is not an annotation and must
+ * not cost the tool its listing.
+ *
+ * count() reads key names without being told whether a name is a keyword or a property
+ * name, and where the two collide over an annotation the tool is dropped: a property
+ * whose own name is `x-mcp-header` is counted as an annotation walk() never found, and
+ * an annotation on or under a property named after one of the instance-data keywords is
+ * skipped by count() while walk() finds it. Both fail closed, and a test pins each.
  *
  * headers() converts values the way §Value Encoding does: strings through HeaderValue,
  * integers as decimals, booleans as `true`/`false`. A null or absent value sends no
- * header, which the spec requires. A value of some other type has no conversion there,
- * so it sends no header either.
+ * header, which the spec requires. A float carrying no fractional part converts as an
+ * integer, printed in full rather than cast — `json_decode` reads `{"shard": 12.0}` as
+ * a PHP float, the spec has servers compare a header with the body numerically, and
+ * `(string) 1.0e18` would say `1.0E+18`. Anything else — a fractional float, INF, NAN,
+ * an array — sends nothing. The spec does not let the annotation sit on a property that
+ * accepts one of those (it names `number` as not permitted), so such an argument is
+ * already off its schema, and omitting the header leaves the server to reject the call.
  *
  * @internal
  */
@@ -44,6 +56,9 @@ final class ParamHeaders
     private const TOKEN = '/^[!#$%&\'*+.^_`|~0-9A-Za-z-]+$/D';
 
     private const PRIMITIVES = ['string', 'integer', 'boolean'];
+
+    /** JSON Schema keywords whose values are instance data, not subschemas. */
+    private const INSTANCE_DATA = ['default', 'const', 'enum', 'examples'];
 
     /**
      * @param array<array-key, mixed> $inputSchema
@@ -57,7 +72,9 @@ final class ParamHeaders
             return null;
         }
 
-        return self::count($inputSchema) === count($found) ? $found : null;
+        $reached = count($found);
+
+        return self::count($inputSchema) === $reached ? $found : null;
     }
 
     /**
@@ -77,6 +94,7 @@ final class ParamHeaders
                 is_string($value) => HeaderValue::encode($value),
                 is_int($value) => (string) $value,
                 is_bool($value) => $value ? 'true' : 'false',
+                is_float($value) && is_finite($value) && floor($value) === $value => sprintf('%.0F', $value),
                 default => null,
             };
             if ($encoded !== null) {
@@ -144,7 +162,7 @@ final class ParamHeaders
         }
         $count = array_key_exists('x-mcp-header', $node) ? 1 : 0;
         foreach ($node as $key => $child) {
-            if ($key !== 'x-mcp-header') {
+            if ($key !== 'x-mcp-header' && !in_array($key, self::INSTANCE_DATA, true)) {
                 $count += self::count($child);
             }
         }
