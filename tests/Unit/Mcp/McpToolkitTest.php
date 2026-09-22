@@ -122,13 +122,12 @@ test('an exposed tool calls the server by the name the server knows', function (
 });
 
 /**
- * Both expectations are literals, never a McpToolName::fit() call, so neither can agree
- * with a mutated namer by construction. `search` already satisfies the fit() rule and is
- * the value that comes back; because it is a fixed point of fit(), it alone cannot tell
- * fit($tool) apart from a bare $tool. `repo.search` is not a fixed point: fit() replaces
- * its `.` and appends `_` plus the first 8 hex of sha256('repo.search'), which is
- * 65621cfa, giving repo_search_65621cfa. That case is what holds fit() in the
- * empty-prefix branch.
+ * The expected names are written as literals rather than derived from a
+ * McpToolName::fit() call. `search` already satisfies the fit() rule and is the value
+ * that comes back; because it is a fixed point of fit(), it alone cannot tell fit($tool)
+ * apart from a bare $tool. `repo.search` is not a fixed point: fit() replaces its `.` and
+ * appends `_` plus the first 8 hex of sha256('repo.search'), which is 65621cfa, giving
+ * repo_search_65621cfa. That case is what holds fit() in the empty-prefix branch.
  */
 test('with no prefix the tool name is only fitted', function () {
     $search = definitionNamed('search');
@@ -153,24 +152,22 @@ test('a namer replaces the naming rule, and a namer that answers nothing is an e
 /**
  * The namer's failure is deliberately outside the McpException tree: it is the host's
  * closure misbehaving, not the server. UnexpectedValueException and McpException are
- * siblings under RuntimeException, so McpException is the type to name here; asserting
- * `not` against RuntimeException would fail.
+ * siblings under RuntimeException, so McpException is the type to name here.
  *
- * No assertion in this file hands an interface name to toThrow(). `toThrow($name)` only
- * type-checks when `class_exists($name)` is true (vendor/pestphp/pest/src/Mixins/
- * Expectation.php, the `! class_exists($exception)` branch); handed an interface name it
- * falls through to a substring match on the exception message, which passes for any
- * exception whose message happens to contain that name. McpException is a class, so
- * `not->toBeInstanceOf(McpException::class)` is a real instanceof, and toBeInstanceOf
- * does not share toThrow()'s class_exists() branch.
+ * The check is `not->toBeInstanceOf(McpException::class)`, a real instanceof against a
+ * class: toBeInstanceOf hands its argument to assertInstanceOf
+ * (vendor/pestphp/pest/src/Mixins/Expectation.php, toBeInstanceOf()). It does not share
+ * toThrow()'s `! class_exists($exception)` branch, where a name that is not a class — an
+ * interface, say — falls through to a substring match on the exception message and
+ * passes for any exception whose message happens to contain that name.
  *
  * A `not->toBeInstanceOf(McpTransportException::class)` sibling was removed rather than
- * kept, and this records why: McpTransportException extends McpException, so nothing
- * makes it fail while the assertion above it still passes. Stripped to itself it stays
- * green under the mutation that moves the throw to McpProtocolException — the mutation
- * that kills the assertion above — and goes red only under one that moves the throw to
- * McpTransportException, which kills that assertion too. It could not carry anything of
- * its own.
+ * kept, and this records why: McpTransportException extends McpException, so anything
+ * that makes it fail makes the McpException assertion fail too. Stripped to itself it
+ * stays green under a mutation that moves the throw to McpProtocolException — which
+ * kills the McpException assertion — and goes red under one that moves the throw to
+ * McpTransportException or to a subclass of it such as McpRedirectException. It could
+ * not carry anything of its own.
  */
 test('the namer failure is not an McpException', function () {
     $search = definitionNamed('search');
