@@ -199,12 +199,14 @@ Exception messages name the method and status. They never contain a header value
 Content:
 - Text blocks are joined with a blank line.
 - An embedded `resource` with `text` adds its text after a `[resource <uri>]` prefix.
-- With no text blocks, `structuredContent` becomes pretty JSON, with mimeType `application/json`.
+- With no text blocks, `structuredContent` becomes pretty JSON, first among the parts, with mimeType `application/json` only when that JSON is the whole content. When other blocks are joined with it, the joined string is not JSON, so the mimeType is null instead (amendment 4, 2026-09-22; ruled by the Phase C session, recording what `ResultMapper` does, pending Carmelo's confirmation at merge).
 - Other blocks become one-line placeholders:
   - `[image <mime>, <n> bytes]` and `[audio <mime>, <n> bytes]`, where n is the decoded size;
-  - `[resource <uri> (<mime>), <n> bytes]` for a blob;
+  - `[resource <uri> (<mime>), <n> bytes]` for a blob, and a bare `[resource <uri>]` for an embedded resource carrying neither `text` nor `blob` (amendment 4, 2026-09-22);
   - `[resource_link <name> <uri>]`;
   - `[<type> block]` for an unknown type.
+
+  Every field a shape interpolates falls back rather than dropping the block, and the shape keeps its own spaces either way. There are five, which is all of them: `<mime>` is the literal `unknown` when the block carries no string `mimeType`; `<type>` is `unknown` when `type` is absent or is not a string, so the last shape reads `[unknown block]`; `<n>` is 0 when the base64 is absent or fails a strict decode; and `<uri>` and `<name>` are the empty string, so a `resource_link` carrying neither reads `[resource_link  ]` with both spaces, a blob resource with no `uri` reads `[resource  (<mime>), <n> bytes]`, and an embedded resource with no `uri` — or with no `resource` object at all — reads `[resource ]` (amendment 4, 2026-09-22).
 
 Metadata: `metadata['mcp']` holds `content` (the blocks as sent), `structuredContent` (when present), `isError`, `bytes` (the content size before the cap) and `truncated`.
 
@@ -212,7 +214,7 @@ Errors:
 - `isError: true` gives `ToolResult::error(<content>)->withErrorCode('mcp_tool_error')`. When the result has no content, the message is `The tool reported an error.`
 - A JSON-RPC error throws `McpRpcException`.
 
-Cap: content longer than `maxResultBytes` is cut with `mb_strcut`, followed by `\n[truncated: <shown> of <total> bytes]`.
+Cap: content longer than `maxResultBytes` is cut with `mb_strcut`, followed by `\n[truncated: <shown> of <total> bytes]`. Truncation also clears the mimeType, so truncated JSON is not labelled `application/json` (amendment 4, 2026-09-22; same ruling).
 
 Not done: validating `structuredContent` against `outputSchema`.
 
