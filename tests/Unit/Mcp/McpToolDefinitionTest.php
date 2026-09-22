@@ -80,6 +80,23 @@ test('slashes and non-ASCII text are encoded raw', function () {
     expect($definition->fingerprint())->toBe('2f202548ba2302779da6a611935c3ae53c463f21a4e5128901ff134691c1fff1');
 });
 
+// Cross-repo vector V4' (Alpaca Bot Kanboard #4364 comments 1300 and 1302). It is the only vector
+// that can catch a canonical() which ksorts lists as well as maps: a JSON object keyed "0".."10"
+// decodes to a PHP list, and SORT_STRING would put "10" before "2", so sorting it changes the
+// digest. The plugin-side transcription computed both digests independently and reported the same
+// pair, which is why this one is a cross-repo pin rather than a regression pin.
+//
+// The earlier two-key version of this vector was vacuous: ksort() on the keys 0 and 1 is a no-op
+// and both property values were identical, so it produced the same digest either way.
+test("a numeric-string key map decodes to a list and is never reordered", function () {
+    $entry = json_decode('{"name":"numbered","description":"Numeric-string keys.","inputSchema":{"type":"object","properties":{"0":{"type":"string","description":"p0"},"1":{"type":"string","description":"p1"},"2":{"type":"string","description":"p2"},"3":{"type":"string","description":"p3"},"4":{"type":"string","description":"p4"},"5":{"type":"string","description":"p5"},"6":{"type":"string","description":"p6"},"7":{"type":"string","description":"p7"},"8":{"type":"string","description":"p8"},"9":{"type":"string","description":"p9"},"10":{"type":"string","description":"p10"}}},"annotations":{"readOnlyHint":true}}', true);
+    $definition = new McpToolDefinition($entry['name'], $entry['description'], $entry['inputSchema'], $entry['annotations']);
+
+    expect(array_is_list($entry['inputSchema']['properties']))->toBeTrue()
+        ->and($definition->fingerprint())->toBe('4c31fcb49fb27b9649a639c208794c6cd4e0acc419e8093062d7167f7f5ad9c8')
+        ->and($definition->fingerprint())->not->toBe('8586a5a1b4488e0c8e8b78a4da5d3ed18926099c26b4f28fe7de865af30a190c');
+});
+
 test('hints follow the spec defaults and only count real booleans', function () {
     $plain = new McpToolDefinition('t', 'd', []);
     $readOnly = new McpToolDefinition('t', 'd', [], ['readOnlyHint' => true, 'destructiveHint' => true, 'idempotentHint' => true]);
