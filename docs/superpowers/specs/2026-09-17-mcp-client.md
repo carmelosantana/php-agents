@@ -81,7 +81,8 @@ final class McpToolName
 // Errors
 McpException extends \RuntimeException
 ├── McpTransportException          // network, timeout, byte cap, 5xx, other unexpected status
-│   └── McpRedirectException       // any 3xx; carries status and Location
+│   └── McpRedirectException       // a 3xx, or an answer the injected client reached by
+│                                  // following one; carries status, and Location when there was one
 ├── McpAuthException               // 401, 403
 └── McpProtocolException           // malformed or unexpected response
     ├── McpRpcException            // JSON-RPC error object; carries code and data
@@ -135,7 +136,7 @@ The client only calls `tools/list` and `tools/call`, over Streamable HTTP, and o
 - Any other content type is an `McpProtocolException`.
 
 **Limits and redirects.** The client enforces its own limits even if a host wrapper overrides its options:
-- `max_redirects: 0` is passed. Any 3xx status throws `McpRedirectException`, and the redirect is never followed.
+- `max_redirects: 0` is passed, so the client never asks for a follow, and any 3xx status throws `McpRedirectException`. A host wrapper may drop that option, so the client also refuses an answer that a follow produced anyway: `redirect_count` above zero throws the same exception with a null Location, on whatever status the redirect target answered with (amendment 5, 2026-09-22). It can refuse the answer; it cannot un-send the request, which is why the wrapper must keep the option.
 - `timeout` is passed as the per-request idle timeout.
 - `max_duration` is also passed and also set to `McpServer::$timeout`, so it caps the whole request.
 - An `on_progress` callback throws once the declared or received size passes `maxResponseBytes`. The body is also measured after it is read, so a wrapper that drops the callback still gets `McpTransportException`.
@@ -148,6 +149,7 @@ The client only calls `tools/list` and `tools/call`, over Streamable HTTP, and o
 | 2xx | Parsed |
 | 202 | Accepted, but only for the `notifications/initialized` POST |
 | 3xx | `McpRedirectException` |
+| any status reached by a followed redirect (`redirect_count` > 0) | `McpRedirectException`, Location null |
 | 401, 403 | `McpAuthException` |
 | 400 | Negotiation rules below, otherwise `McpRpcException` if the body carries a JSON-RPC error, otherwise `McpProtocolException` |
 | 404 | Session rule below, otherwise `McpRpcException` for a JSON-RPC error body, otherwise `McpTransportException` |
