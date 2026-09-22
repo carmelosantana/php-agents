@@ -24,21 +24,25 @@ namespace CarmeloSantana\PHPAgents\Mcp\Internal;
  * nested object's property as long as every step of the chain is a `properties` key.
  *
  * That last check is a comparison rather than a walk of the other keywords: count()
- * counts the `x-mcp-header` keys in the schema array, walk() collects those it reached
- * through `properties`, and an annotation under `items`, under a combinator or a
- * conditional, in `$defs` or behind a `$ref` lifts the first number without lifting the
- * second, so the tool is dropped.
+ * counts the annotations it can see anywhere in the schema, walk() collects the ones it
+ * reached through `properties`, and an annotation under `items`, under a combinator or
+ * a conditional, in `$defs` or behind a `$ref` lifts the first number without lifting
+ * the second, so the tool is dropped.
  *
- * count() reads a schema and a `properties` map as two different positions, and that is
- * what keeps it honest about names. In a schema, `x-mcp-header` is an annotation and every other value is descended into
- * whatever keyword holds it, with two exceptions: `default`, `const`, `enum` and
- * `examples` hold instance data rather than subschemas and are not entered at all, so a
- * key of that name sitting in a default value or an example is not an annotation; and
- * the value of `properties` is entered as a map of names. In a name map no key is a
- * keyword — a property may be called `x-mcp-header` or `default` without either reading
- * as one — and each value is a schema again. So the two sides read the same chain the
- * same way, and the difference the check is looking for is left to an annotation walk()
- * could not reach.
+ * Which `x-mcp-header` keys count() reads as annotations depends on the position it is
+ * in. In a schema, `x-mcp-header` is an annotation; `default`, `const`, `enum` and
+ * `examples` hold instance data rather than subschemas and are not entered, so a key of
+ * that name inside a default value or an example is not one; the value of `properties`
+ * is entered as a map of names; and any other value is entered as a schema, which is
+ * what leaves an unreachable annotation counted. In a name map no key is a keyword, so
+ * a property may be called `x-mcp-header` or `default` without either reading as one,
+ * and each value is read as a schema again.
+ *
+ * The two sides therefore agree along any chain of `properties`. A map keyed by names
+ * under some other keyword is still read as a schema, and can still differ: a tool
+ * whose `$defs` holds a definition named `x-mcp-header` is dropped although no
+ * annotation is involved. That behaviour is older than the name-map distinction, it
+ * fails closed, and it is left recorded for Task 12 rather than patched here.
  *
  * headers() converts values the way §Value Encoding does: strings through HeaderValue,
  * integers as decimals, booleans as `true`/`false`. A null or absent value sends no
