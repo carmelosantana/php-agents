@@ -342,6 +342,43 @@ test('a credential in the 400 a pinned 2026-07-28 refuses to fall back on is red
     }
 });
 
+test('a stored session id a pin contradicts is redacted after the entry is discarded', function () {
+    // Branch: session() finds an entry in a version this client speaks, and a pin that
+    // contradicts it. The entry is dropped and never adopted, so nothing on the adoption
+    // branch runs — the id still has to be held, because the server can name it back.
+    $fake = modernFake();
+    $store = new ArraySessionStore();
+    $server = autoServer(['headers' => ['Authorization' => 'Bearer t'], 'protocolVersion' => '2026-07-28']);
+    $store->sessions[$server->sessionKey()] = new McpSession('2025-11-25', 'ORPHAN-PINNED');
+    $fake->once(static fn(array $r) => FakeMcpServer::error(200, $r['body']['id'], -32603, 'session ORPHAN-PINNED is still open'));
+
+    try {
+        (new McpClient($server, $fake->client(), $store))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->not->toContain('ORPHAN-PINNED')
+            ->and($e->getMessage())->toEndWith(': session [redacted] is still open');
+    }
+});
+
+test('a stored session id in a version this client does not speak is redacted', function () {
+    // Branch: session() finds an entry whose version is neither of the two this client
+    // speaks, so it is ignored and detection runs. Ignoring the entry is not forgetting the
+    // id: the server that issued it can still reflect it into an error text.
+    $fake = modernFake();
+    $store = new ArraySessionStore();
+    $store->sessions[autoServer()->sessionKey()] = new McpSession('2025-06-18', 'ORPHAN-UNSPOKEN');
+    $fake->once(static fn(array $r) => FakeMcpServer::error(200, $r['body']['id'], -32603, 'session ORPHAN-UNSPOKEN is still open'));
+
+    try {
+        (new McpClient(autoServer(), $fake->client(), $store))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->not->toContain('ORPHAN-UNSPOKEN')
+            ->and($e->getMessage())->toEndWith(': session [redacted] is still open');
+    }
+});
+
 test('a JSON-RPC error a 2026-07-28 server answers 200 with is an error, not a result', function () {
     // FakeMcpServer's MODERN unknown-tool branch: HTTP 200 carrying -32602.
     $fake = modernFake();

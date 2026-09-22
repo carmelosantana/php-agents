@@ -292,11 +292,13 @@ final class McpClient implements McpClientInterface
      * answer. A stored entry is adopted only when its version is one of the two this client
      * speaks and no pin contradicts it.
      *
-     * hold() records the id an adopted entry carries. This instance never ran the handshake
-     * that issued that id, so this line is the only thing that records it, and a server can
-     * still reflect it back in an error text (spec §2, amendment 3). McpClientLegacyTest's
-     * "a session id resumed from the store is redacted after it goes stale" is the test
-     * that fails when this line goes.
+     * hold() records the id any entry carries, adopted or not: this instance never ran the
+     * handshake that issued it, so that line is what records it, and a server can still
+     * reflect it back in an error text whether the entry was adopted, dropped for
+     * contradicting a pin, or ignored for a version this client does not speak (spec §2,
+     * amendment 3). The tests that fail when that line goes are McpClientLegacyTest's "a
+     * session id resumed from the store is redacted after it goes stale" and
+     * McpClientModernTest's two "a stored session id … is redacted" cases.
      */
     private function session(): ?McpSession
     {
@@ -304,9 +306,12 @@ final class McpClient implements McpClientInterface
             $this->loaded = true;
             $pin = $this->server->protocolVersion;
             $stored = $this->sessions?->load($this->server->sessionKey());
+            // Held before the adoption decision, not inside it: an entry this client
+            // discards — for contradicting a pin, or for a version it does not speak — still
+            // names an id the server issued and can reflect back into an error text.
+            $this->hold($stored?->sessionId);
             $known = $stored !== null && in_array($stored->protocolVersion, [McpServer::PROTOCOL_2026, McpServer::PROTOCOL_2025], true);
             if ($known && ($pin === null || $stored->protocolVersion === $pin)) {
-                $this->hold($stored->sessionId);
                 $this->session = $stored;
             } elseif ($pin === McpServer::PROTOCOL_2026) {
                 $this->session = new McpSession(McpServer::PROTOCOL_2026);
@@ -369,6 +374,11 @@ final class McpClient implements McpClientInterface
             'capabilities' => new \stdClass(),
             'clientInfo' => self::clientInfo(),
         ]), self::sessionHeaders(null));
+        // Held before anything below can throw: a server may publish the id it has just
+        // minted in the same answer that carries a JSON-RPC error, on a 2xx or a 400 alike,
+        // and redact() can only remove an id hold() has recorded.
+        $sessionId = $reply->header('mcp-session-id');
+        $this->hold($sessionId);
         $message = $reply->message($id);
         if (!$reply->isSuccess()) {
             throw $this->statusError('initialize', $reply, $message);
@@ -378,9 +388,7 @@ final class McpClient implements McpClientInterface
             throw new McpUnsupportedVersionException('MCP initialize negotiated a protocol version this client does not speak.');
         }
 
-        $sessionId = $reply->header('mcp-session-id');
         $session = new McpSession(McpServer::PROTOCOL_2025, $sessionId === null || $sessionId === '' ? null : $sessionId);
-        $this->hold($session->sessionId);
         $ack = $this->exchange->post(
             'notifications/initialized',
             ['jsonrpc' => '2.0', 'method' => 'notifications/initialized'],
@@ -388,8 +396,9 @@ final class McpClient implements McpClientInterface
         );
         if (!$ack->isSuccess()) {
             // $this->session is null here, so the id this answer is about is $session's,
-            // stored only below, and hold() above is what keeps the redaction able to see
-            // it. Probed rather than argued from the call graph: a temporary throw at the
+            // stored only by remember(), and the hold() that ran before the status was
+            // judged is what keeps the redaction able to see it. Probed rather than argued
+            // from the call graph: a temporary throw at the
             // top of this method when $this->session !== null left the whole suite green.
             throw $this->statusError('notifications/initialized', $ack, $ack->message(0));
         }
@@ -421,10 +430,12 @@ final class McpClient implements McpClientInterface
     }
 
     /**
-     * Records a session id for the redaction, and for nothing else. An id is held from the
-     * moment the server issues it or the store hands it over, and is never dropped: forget()
-     * stops the client *sending* an id, while a server that echoes that same id back in a
-     * later error text must still not reach an exception message (spec §2).
+     * Records a session id for the redaction, and for nothing else. Its callers hold an id on
+     * the line it first becomes readable, before any branch that can throw: session() as the
+     * store hands the entry over and before it decides whether to adopt it, and initialize()
+     * as the reply arrives and before its status or its body is judged. Nothing removes an
+     * entry — forget() stops the client *sending* an id, while a server that echoes that same
+     * id back in a later error text must still not reach an exception message (spec §2).
      */
     private function hold(?string $sessionId): void
     {
@@ -571,12 +582,14 @@ final class McpClient implements McpClientInterface
      *   *alternative* in a regular expression: measured, preg_replace('/|Bearer t/', '[R]',
      *   'abc Bearer t') gives "[R]a[R]b[R]c[R] [R][R][R]". str_replace() does not splice on an
      *   empty needle either; only the preg draft this guard was first written for could.
-     * - every session id this instance has ever held — $held, filled by hold() when the store
-     *   hands one over and when `initialize` issues one, and never emptied. forget() stops the
-     *   client sending an id; it does not stop a server echoing that id back afterwards, and
-     *   spec §2's promise covers the message either way. Both fillings are pinned by tests: an
-     *   id issued by a handshake whose `notifications/initialized` POST then failed, and an id
-     *   resumed from the store that the server then rejected as stale.
+     * - every session id this instance has ever held — $held, filled by hold() as the store
+     *   hands an entry over and as an `initialize` reply arrives, whatever this client then
+     *   does with either, and never emptied. forget() stops the client sending an id; it does
+     *   not stop a server echoing that id back afterwards, and spec §2's promise covers the
+     *   message either way. Tests cover an id from either source, including an entry this
+     *   client discards for contradicting a pin or for a version it does not speak, and a
+     *   reply carrying both a new id and a JSON-RPC error. Making hold() record nothing reds
+     *   out those tests and nothing else in the suite — re-run that after adding a seam.
      *
      * strtr() with a needle map, rather than a regular expression or str_replace():
      * - it scans once and never re-reads what it has written, so a secret occurring inside the

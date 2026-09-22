@@ -382,6 +382,46 @@ test('the session id the handshake just issued is redacted from a refused notifi
     }
 });
 
+test('a session id issued in the same 200 that carries a JSON-RPC error is redacted', function () {
+    // Branch: `initialize` answers 2xx with an `Mcp-Session-Id` header and an `error` object
+    // together. result() builds the exception out of that body, so an id read after result()
+    // has already been handed the message is an id redact() has never seen.
+    $fake = legacyFake();
+    $fake->once(answerFor('initialize', static fn($id) => FakeMcpServer::json(
+        200,
+        ['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => -32603, 'message' => 'session SEKRIT-MINTED created then rejected']],
+        ['Mcp-Session-Id: SEKRIT-MINTED'],
+    )));
+
+    try {
+        (new McpClient(legacyServer(), $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->not->toContain('SEKRIT-MINTED')
+            ->and($e->getMessage())->toBe('MCP initialize failed with JSON-RPC error -32603: session [redacted] created then rejected');
+    }
+});
+
+test('a session id issued alongside a non-2xx initialize is redacted', function () {
+    // Branch: `initialize` answers 400 with an `Mcp-Session-Id` header and an `error` object.
+    // statusError() fires before the body is trusted at all, which is earlier still than the
+    // 200 arm above, so the two are not the same seam.
+    $fake = legacyFake();
+    $fake->once(answerFor('initialize', static fn($id) => FakeMcpServer::json(
+        400,
+        ['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => -32600, 'message' => 'session SEKRIT-REFUSED was issued then refused']],
+        ['Mcp-Session-Id: SEKRIT-REFUSED'],
+    )));
+
+    try {
+        (new McpClient(legacyServer(), $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->not->toContain('SEKRIT-REFUSED')
+            ->and($e->getMessage())->toBe('MCP initialize failed with JSON-RPC error -32600: session [redacted] was issued then refused');
+    }
+});
+
 test('a configuration past PCRE\'s alternation limit still redacts, and keeps the rest of the text', function () {
     // 2 000 configured values of 15 bytes. Measured on this box (PCRE2 10.42), an alternation
     // of more than 1 985 such values will not compile — "regular expression is too large" —
