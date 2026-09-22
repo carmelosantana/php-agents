@@ -9,7 +9,6 @@ use CarmeloSantana\PHPAgents\Mcp\McpException;
 use CarmeloSantana\PHPAgents\Mcp\McpServer;
 use CarmeloSantana\PHPAgents\Mcp\McpToolDefinition;
 use CarmeloSantana\PHPAgents\Mcp\McpToolkit;
-use CarmeloSantana\PHPAgents\Mcp\McpToolName;
 use CarmeloSantana\PHPAgents\Mcp\McpTransportException;
 use CarmeloSantana\PHPAgents\Tool\SchemaTool;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
@@ -117,15 +116,26 @@ test('an exposed tool calls the server by the name the server knows', function (
     $client = new StubMcpClient([$search]);
     $tool = (new McpToolkit($client, ['repo.search' => $search->fingerprint()], 'gh'))->tools()[0];
 
-    expect($tool->name())->toBe(McpToolName::fit('gh__repo.search'))
+    expect($tool->name())->toBe('gh__repo_search_73e4c896')
         ->and($tool->execute(['q' => 'x'])->content)->toBe('called repo.search')
         ->and($client->calls)->toBe([['repo.search', ['q' => 'x']]]);
 });
 
+/**
+ * Both expectations are literals, never a McpToolName::fit() call, so neither can agree
+ * with a mutated namer by construction. `search` already satisfies the fit() rule and is
+ * the value that comes back; because it is a fixed point of fit(), it alone cannot tell
+ * fit($tool) apart from a bare $tool. `repo.search` is not a fixed point: fit() replaces
+ * its `.` and appends `_` plus the first 8 hex of sha256('repo.search'), which is
+ * 65621cfa, giving repo_search_65621cfa. That case is what holds fit() in the
+ * empty-prefix branch.
+ */
 test('with no prefix the tool name is only fitted', function () {
     $search = definitionNamed('search');
+    $dotted = definitionNamed('repo.search');
 
-    expect((new McpToolkit(new StubMcpClient([$search]), ['search' => $search->fingerprint()]))->tools()[0]->name())->toBe('search');
+    expect((new McpToolkit(new StubMcpClient([$search]), ['search' => $search->fingerprint()]))->tools()[0]->name())->toBe('search')
+        ->and((new McpToolkit(new StubMcpClient([$dotted]), ['repo.search' => $dotted->fingerprint()]))->tools()[0]->name())->toBe('repo_search_65621cfa');
 });
 
 test('a namer replaces the naming rule, and a namer that answers nothing is an error', function () {
@@ -162,7 +172,7 @@ test('the namer failure is not an McpException', function () {
 
     expect($caught)->toBeInstanceOf(UnexpectedValueException::class)
         ->and($caught)->not->toBeInstanceOf(McpException::class)
-        ->and($caught)->not->toBeInstanceOf(McpTransportException::class);
+        ->and($caught?->getMessage())->toBe('The MCP toolkit namer must return a non-empty string.');
 });
 
 test('definition() maps an exposed name back to the live definition and its hints', function () {
@@ -197,7 +207,8 @@ test('a listing failure propagates and is not remembered', function () {
 
     expect(fn() => $kit->tools())->toThrow(McpTransportException::class)
         ->and(fn() => $kit->tools())->toThrow(McpTransportException::class)
-        ->and($client->listed)->toBe(2);
+        ->and(fn() => $kit->definition('search'))->toThrow(McpTransportException::class)
+        ->and($client->listed)->toBe(3);
 });
 
 test('a failing call becomes a fixed error result', function () {

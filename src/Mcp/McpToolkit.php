@@ -37,13 +37,14 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  * called first, and a listing that throws is not remembered: the next call lists again.
  * The one cache is the $exposed property, so a second instance over the same client lists
  * again and sees a definition that changed in between. An exception from listing leaves
- * tools() for the caller, because the library does not guess a host's failure policy. An
- * exception from a tool's call does not: SchemaTool turns it into its fixed error
- * ToolResult, putting the cause's class and message in that result's metadata under a
- * `schema_tool_error` errorCode instead of in the content the model reads.
+ * whichever call did the listing — tools() or definition() — for the caller, because the
+ * library does not guess a host's failure policy. An exception from a tool's call does
+ * not: SchemaTool turns it into its fixed error ToolResult, putting the cause's class and
+ * message in that result's metadata under a `schema_tool_error` errorCode instead of in
+ * the content the model reads.
  *
- * guidelines() returns ''. A server's `instructions` is text from outside, and handing it
- * to the model would put a second, unpinned description in front of it.
+ * guidelines() returns ''. A server's `instructions` is untrusted text, and it is not
+ * passed to the model.
  */
 final class McpToolkit implements ToolkitInterface
 {
