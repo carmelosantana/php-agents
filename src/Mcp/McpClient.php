@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Mcp;
 
+use CarmeloSantana\PHPAgents\Mcp\Internal\HeaderValue;
 use CarmeloSantana\PHPAgents\Mcp\Internal\HttpExchange;
 use CarmeloSantana\PHPAgents\Mcp\Internal\HttpReply;
+use CarmeloSantana\PHPAgents\Mcp\Internal\ParamHeaders;
 use CarmeloSantana\PHPAgents\Mcp\Internal\ResultMapper;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -13,14 +15,41 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 /**
  * An MCP client over Streamable HTTP that lists and calls a server's tools.
  *
- * 2025-11-25: a request made while this instance holds no session runs the `initialize`
- * handshake first, keeps the `Mcp-Session-Id` the server issues (if it issues one), and
- * sends it with `MCP-Protocol-Version` on every request after, the
+ * Detecting the protocol version (the 2026-07-28 streamable-http §Backward Compatibility
+ * procedure): with nothing remembered and no pin, the first request is sent as 2026-07-28,
+ * with `MCP-Protocol-Version`, `Mcp-Method`/`Mcp-Name` and `params._meta` (protocol
+ * version, `clientCapabilities: {}`, clientInfo). A 400 carrying -32020 or -32021 comes
+ * from a 2026-07-28 server and becomes an McpRpcException; a 400 carrying -32022 is
+ * retried once if the server still lists 2026-07-28, falls back if it lists only
+ * 2025-11-25, and is otherwise McpUnsupportedVersionException. Any other 400 means "not a
+ * 2026-07-28 server", and the client falls back to 2025-11-25. The version found is
+ * remembered through the McpSessionStore. A remembered 2026-07-28 that later draws a
+ * fallback 400 is forgotten, and detection runs again. McpServer::$protocolVersion pins a
+ * version instead: nothing is probed, and a pinned 2026-07-28 that draws a fallback 400 is
+ * an error. A 2026-07-28 pin is never written to the store; a 2025-11-25 pin still runs
+ * the handshake below, which stores the session it issues.
+ *
+ * 2026-07-28 calls honour `resultType`:
+ * - absent means complete;
+ * - `input_required` carrying only `requestState` is retried with the state echoed back,
+ *   at most MAX_INPUT_ROUNDS times;
+ * - `inputRequests` is refused, because this client declares no capabilities;
+ * - anything else is a protocol error.
+ * Under 2026-07-28 a tool whose `x-mcp-header` annotations are invalid is left out of
+ * listTools(), and a call sends each annotated argument as `Mcp-Param-*`
+ * (Internal\ParamHeaders). Since only the listing says which arguments those are,
+ * callTool() lists first when this instance hasn't listed yet and the server isn't known
+ * to be 2025-11-25. Under 2025-11-25 no tool is dropped for an annotation and no
+ * `Mcp-Param-*` is sent, that version having no such annotation.
+ *
+ * 2025-11-25: once the fallback or a pin has settled on this version, the `initialize`
+ * handshake runs, and the client keeps the `Mcp-Session-Id` the server issues (if it
+ * issues one) and sends it with `MCP-Protocol-Version` on every request after, the
  * `notifications/initialized` POST included. The session goes to the McpSessionStore, so a
  * new PHP request reuses it instead of shaking hands again — a store entry left by an
  * earlier instance, and recorded under 2025-11-25, means the first request here is the
- * caller's own, with no handshake before it. session() ignores an entry saved under any
- * other version, so the handshake runs and overwrites it.
+ * caller's own, with no probe and no handshake before it. session() ignores an entry saved
+ * under a version this client does not speak, so detection runs and overwrites it.
  * A 404 to a request that carried a session means the session is gone, but only
  * when the body has no JSON-RPC error or carries -32001/-32005: the WordPress MCP Adapter
  * also answers an unknown tool with 404 (-32003). In that case the client forgets the
@@ -32,11 +61,6 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * listTools() and callTool() hand to call(). Every one of them goes out through
  * HttpExchange::post(), which is the only HTTP call here.
  *
- * Task 13 adds protocol detection and the 2026-07-28 path to this class. Until then
- * McpServer::$protocolVersion is not read here: every request goes out as 2025-11-25 and
- * initialize() refuses any other negotiated version, so a server that speaks only
- * 2026-07-28 cannot be reached through this class yet.
- *
  * @see HttpExchange for the request it makes, its limits and its status mapping
  * @see ResultMapper for how a tools/call result becomes a ToolResult
  */
@@ -47,6 +71,14 @@ final class McpClient implements McpClientInterface
     private const MAX_PAGES = 100;
 
     private const EXPIRED_SESSION_ERRORS = [-32001, -32005];
+
+    private const MAX_INPUT_ROUNDS = 3;
+
+    /**
+     * The two 2026-07-28 error codes spec §2 step 2 answers with McpRpcException.
+     * -32022 is not here: modern() handles it above this test, on its own.
+     */
+    private const MODERN_RPC_ERRORS = [-32020, -32021];
 
     private const REDACTED = '[redacted]';
 
@@ -61,6 +93,9 @@ final class McpClient implements McpClientInterface
 
     private int $nextId = 1;
 
+    /** @var array<string, list<array{path: list<string>, header: string}>>|null tool name => x-mcp-header map, from the last listing */
+    private ?array $paramHeaders = null;
+
     public function __construct(
         private readonly McpServer $server,
         HttpClientInterface $http,
@@ -72,17 +107,30 @@ final class McpClient implements McpClientInterface
     public function listTools(): array
     {
         $tools = [];
+        $paramHeaders = [];
         $cursor = null;
         for ($page = 0; $page < self::MAX_PAGES; $page++) {
             $result = $this->call('tools/list', $cursor === null ? [] : ['cursor' => $cursor]);
+            // Read after call(), which is what settles the version on the first page.
+            $modern = $this->session?->protocolVersion === McpServer::PROTOCOL_2026;
             foreach (is_array($result['tools'] ?? null) ? $result['tools'] : [] as $raw) {
                 $definition = self::definition($raw);
-                if ($definition !== null) {
-                    $tools[] = $definition;
+                if ($definition === null) {
+                    continue;
                 }
+                if ($modern) {
+                    $map = ParamHeaders::extract($definition->inputSchema);
+                    if ($map === null) {
+                        continue;
+                    }
+                    $paramHeaders[$definition->name] = $map;
+                }
+                $tools[] = $definition;
             }
             $next = $result['nextCursor'] ?? null;
             if (!is_string($next) || $next === '') {
+                $this->paramHeaders = $paramHeaders;
+
                 return $tools;
             }
             $cursor = $next;
@@ -93,32 +141,168 @@ final class McpClient implements McpClientInterface
 
     public function callTool(string $name, array $arguments): ToolResult
     {
+        if ($this->paramHeaders === null && $this->session()?->protocolVersion !== McpServer::PROTOCOL_2025) {
+            $this->listTools();
+        }
         $params = ['name' => $name, 'arguments' => $arguments === [] ? new \stdClass() : $arguments];
-
-        return ResultMapper::toToolResult($this->call('tools/call', $params), $this->server->maxResultBytes);
+        for ($round = 0; ; $round++) {
+            $result = $this->call('tools/call', $params, $name, $arguments);
+            $type = $result['resultType'] ?? 'complete';
+            if ($type === 'complete') {
+                return ResultMapper::toToolResult($result, $this->server->maxResultBytes);
+            }
+            if ($type !== 'input_required') {
+                throw new McpProtocolException('MCP tools/call returned an unknown resultType.');
+            }
+            if (!empty($result['inputRequests'])) {
+                throw new McpProtocolException('MCP tools/call asked for client input, which this client does not provide.');
+            }
+            if (!is_string($result['requestState'] ?? null) || $round >= self::MAX_INPUT_ROUNDS) {
+                throw new McpProtocolException('MCP tools/call did not complete.');
+            }
+            $params['requestState'] = $result['requestState'];
+        }
     }
 
     /**
      * @param array<string, mixed> $params
+     * @param array<string, mixed> $arguments the tool arguments, for the Mcp-Param headers
      * @return array<array-key, mixed>
      */
-    private function call(string $method, array $params): array
+    private function call(string $method, array $params, ?string $toolName = null, array $arguments = []): array
     {
-        if ($this->session() === null) {
-            $this->initialize();
+        $session = $this->session();
+        if ($session === null) {
+            return $this->probe($method, $params, $toolName, $arguments);
         }
+        if ($session->protocolVersion === McpServer::PROTOCOL_2025) {
+            return $this->legacy($method, $params);
+        }
+
+        $outcome = $this->modern($method, $params, $toolName, $arguments);
+        if (is_array($outcome)) {
+            return $outcome;
+        }
+        if ($this->server->protocolVersion !== null) {
+            // A pin refuses the fallback: the 400 is the answer, not a signal.
+            throw $this->statusError($method, $outcome, $outcome->message(0));
+        }
+        $this->forget();
+
+        return $this->probe($method, $params, $toolName, $arguments);
+    }
+
+    /**
+     * Spec §2 steps 1-3: one 2026-07-28 request, and the 2025-11-25 handshake behind it.
+     *
+     * @param array<string, mixed> $params
+     * @param array<string, mixed> $arguments
+     * @return array<array-key, mixed>
+     */
+    private function probe(string $method, array $params, ?string $toolName, array $arguments): array
+    {
+        $outcome = $this->modern($method, $params, $toolName, $arguments);
+        if (is_array($outcome)) {
+            $this->remember(new McpSession(McpServer::PROTOCOL_2026));
+
+            return $outcome;
+        }
+        $this->initialize();
 
         return $this->legacy($method, $params);
     }
 
+    /**
+     * One 2026-07-28 request, or two when a -32022 is worth one retry.
+     *
+     * `Mcp-Name` goes through HeaderValue; `Mcp-Method` does not. The `=?base64?…?=`
+     * sentinel is defined for `Mcp-Name` and `Mcp-Param-*` (Internal\HeaderValue), and
+     * FakeMcpServer compares `Mcp-Method` raw while decoding `Mcp-Name`; this repo's spec
+     * §2 step 1 puts both under the encoding, and that line is the one this file departs
+     * from, proposed as a spec amendment rather than departed from silently. No request
+     * this client sends can tell the two apart: measured, HeaderValue::encode() returns
+     * each of the four method names in the class docblock unchanged.
+     *
+     * The -32020 HeaderMismatch arm is a deliberate, documented deviation from upstream
+     * too. 2026-07-28 says a client SHOULD re-run `tools/list` and retry once on -32020;
+     * this client throws instead, because a -32020 here means its own header encoding
+     * disagrees with the server's and a retry through the same encoder would repeat it.
+     * Spec §2 step 2 is what is implemented.
+     *
+     * @param array<string, mixed> $params
+     * @param array<string, mixed> $arguments
+     * @return array<array-key, mixed>|HttpReply the result, or the 400 that says the server is not 2026-07-28
+     */
+    private function modern(string $method, array $params, ?string $toolName, array $arguments): array|HttpReply
+    {
+        $params['_meta'] = [
+            'io.modelcontextprotocol/protocolVersion' => McpServer::PROTOCOL_2026,
+            'io.modelcontextprotocol/clientCapabilities' => new \stdClass(),
+            'io.modelcontextprotocol/clientInfo' => self::clientInfo(),
+        ];
+        $headers = ['MCP-Protocol-Version' => McpServer::PROTOCOL_2026, 'Mcp-Method' => $method];
+        if ($toolName !== null) {
+            $headers['Mcp-Name'] = HeaderValue::encode($toolName);
+            $headers += ParamHeaders::headers($this->paramHeaders[$toolName] ?? [], $arguments);
+        }
+
+        $retried = false;
+        while (true) {
+            $id = $this->nextId++;
+            $reply = $this->exchange->post($method, self::request($id, $method, $params), $headers);
+            $message = $reply->message($id);
+            if ($reply->isSuccess()) {
+                return $this->result($method, $message, $reply->status);
+            }
+            if ($reply->status !== 400) {
+                throw $this->statusError($method, $reply, $message);
+            }
+            $code = self::errorCode($message);
+            if ($code === -32022) {
+                $supported = self::supportedVersions($message);
+                if (in_array(McpServer::PROTOCOL_2026, $supported, true) && !$retried) {
+                    $retried = true;
+                    continue;
+                }
+                if (in_array(McpServer::PROTOCOL_2025, $supported, true)) {
+                    return $reply;
+                }
+
+                throw new McpUnsupportedVersionException(sprintf('MCP %s: the server supports none of the protocol versions this client speaks.', $method));
+            }
+            if (in_array($code, self::MODERN_RPC_ERRORS, true)) {
+                throw $this->statusError($method, $reply, $message);
+            }
+
+            return $reply;
+        }
+    }
+
+    /**
+     * The version this instance is already speaking, or null when detection still owes an
+     * answer. A stored entry is adopted only when its version is one of the two this client
+     * speaks and no pin contradicts it.
+     *
+     * hold() records the id an adopted entry carries. This instance never ran the handshake
+     * that issued that id, so nothing else would have it, and a server can still reflect it
+     * back in an error text (spec §2, amendment 3). McpClientLegacyTest's "a session id
+     * resumed from the store is redacted after it goes stale" is the test that fails when
+     * this line goes.
+     */
     private function session(): ?McpSession
     {
         if (!$this->loaded) {
             $this->loaded = true;
+            $pin = $this->server->protocolVersion;
             $stored = $this->sessions?->load($this->server->sessionKey());
-            if ($stored?->protocolVersion === McpServer::PROTOCOL_2025) {
+            $known = $stored !== null && in_array($stored->protocolVersion, [McpServer::PROTOCOL_2026, McpServer::PROTOCOL_2025], true);
+            if ($known && ($pin === null || $stored->protocolVersion === $pin)) {
                 $this->hold($stored->sessionId);
                 $this->session = $stored;
+            } elseif ($pin === McpServer::PROTOCOL_2026) {
+                $this->session = new McpSession(McpServer::PROTOCOL_2026);
+            } elseif ($pin === McpServer::PROTOCOL_2025) {
+                $this->initialize();
             }
         }
 
@@ -271,21 +455,23 @@ final class McpClient implements McpClientInterface
      * The 202 arm is spec §2's status table: "202 Accepted, but only for the
      * `notifications/initialized` POST". It is checked before the body, so a 202 carrying a
      * complete JSON-RPC result — or a JSON-RPC error — is refused on the status alone. This
-     * method is not called for the notification today (legacy() and initialize() are its only
-     * callers), so the method test is what keeps the rule true rather than the call graph.
-     * This class compares a status in exactly three places, and each is a spec §2 row: the
-     * 404 of the stale-session rule in legacy(), the 400 of the rejected-request rule in
-     * statusError(), and the 202 here.
+     * method is not called for the notification today (legacy(), modern() and initialize()
+     * are its only callers), so the method test is what keeps the rule true rather than the
+     * call graph.
+     * This class compares an HTTP status in exactly four places, and each is a spec §2 row:
+     * the 404 of the stale-session rule in legacy(), the 400 modern() reads as the
+     * negotiation signal, the 400 of the rejected-request rule in statusError(), and the 202
+     * here.
      *
      * `isset($message['error'])` is deliberate, and differs from the array_key_exists()
      * HttpReply::message() uses to recognise an envelope: a body of `{"error": null}` carries
      * the key but no error object, and JSON-RPC has no error there to report. The same
      * reading runs in statusError() and sessionExpired().
      *
-     * The resultType arm is 2026-07-28's. Nothing this client sends under 2025-11-25 asks a
-     * server for one and no test in this task exercises it — Task 13's do — though a
-     * 2025-11-25 server that volunteers a resultType other than `complete` is refused here
-     * too. It is kept so the 2026 path cannot be written without it.
+     * The resultType arm is 2026-07-28's. `tools/call` is excluded from it because callTool()
+     * reads resultType itself, where `input_required` is a legal answer rather than an error.
+     * Every other method is held to `complete`, under either protocol version: a 2025-11-25
+     * server that volunteers another resultType is refused here too.
      *
      * @param array<array-key, mixed>|null $message
      * @param int $status the 2xx the reply arrived with; it is McpRpcException::$httpStatus
@@ -314,10 +500,11 @@ final class McpClient implements McpClientInterface
     }
 
     /**
-     * The exception for a reply HttpExchange handed back rather than threw on. Each of the
-     * three call sites has already found the status unsuccessful, so that is a 400 or a 404:
-     * 401, 403, 3xx and every other status are exceptions before they reach here
-     * (HttpExchange::post()), and a 2xx never comes this way.
+     * The exception for a reply HttpExchange handed back rather than threw on. Every call
+     * site has already found the status unsuccessful, and HttpExchange::post() returns a
+     * reply for a 2xx, a 400 or a 404 alone, so what arrives here is a 400 or a 404: 401,
+     * 403, 3xx and every other status are exceptions before they reach here, and a 2xx never
+     * comes this way.
      *
      * @param array<array-key, mixed>|null $message
      */
@@ -411,7 +598,8 @@ final class McpClient implements McpClientInterface
      * What it does not cover:
      * - McpRpcException::$data. That property is server-supplied and public, and no part of
      *   it reaches any message, which is what spec §2 constrains; it is passed through with
-     *   its structure and types intact because Task 13 reads `data.supported` from it. A host
+     *   its structure and types intact because supportedVersions() reads `data.supported`
+     *   off the same envelope on the -32022 path. A host
      *   that logs $data itself can still log something a server reflected into it.
      * - anything but a literal occurrence. A server that base64-encodes, URL-encodes, cases
      *   differently or truncates a credential before reflecting it is not caught by
@@ -430,6 +618,21 @@ final class McpClient implements McpClientInterface
         }
 
         return $secrets === [] ? $text : strtr($text, $secrets);
+    }
+
+    /**
+     * The protocol versions a -32022 lists in `error.data.supported`. Anything that is not
+     * a list of strings yields none, which modern() reads as "no version in common".
+     *
+     * @param array<array-key, mixed>|null $message
+     * @return list<string>
+     */
+    private static function supportedVersions(?array $message): array
+    {
+        $error = is_array($message['error'] ?? null) ? $message['error'] : [];
+        $supported = is_array($error['data']['supported'] ?? null) ? $error['data']['supported'] : [];
+
+        return array_values(array_filter($supported, 'is_string'));
     }
 
     /** @param array<array-key, mixed>|null $message */
