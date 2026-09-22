@@ -279,10 +279,21 @@ test('a 2026-07-28 answer arriving as text/event-stream is read the same way', f
     expectModernEnvelope($fake);
 });
 
+/*
+ * Redaction on the modern path (spec §2, amendment 3; Task 12 owns redact()).
+ *
+ * Every test in this file whose name ends "is redacted" covers one branch on which
+ * McpClient builds an McpRpcException out of a modern reply, and each names its branch in
+ * its first comment. None of them says how many there are, and this one does not either:
+ * the check that the set is complete is the mutation, not the prose. Making redact()
+ * `return $text;` reds out exactly those tests and nothing else in this file — re-run it
+ * after adding a seam or a test.
+ */
+
 test('a credential a 2026-07-28 server reflects in a 200 is redacted', function () {
-    // modern() hands a successful reply to result(), which is where an `error` in a 2xx
-    // becomes an McpRpcException. An instance call, not a static one: the redaction needs
-    // McpServer::$headers.
+    // Branch: a 2xx carrying a JSON-RPC `error`. modern() hands the successful reply to
+    // result(), which builds the McpRpcException. An instance call, not a static one: the
+    // redaction needs McpServer::$headers.
     $fake = modernFake();
     $fake->once(static fn(array $r) => ($r['body']['method'] ?? null) === 'tools/call'
         ? FakeMcpServer::error(200, $r['body']['id'], -32603, 'token Bearer sk-modern refused')
@@ -299,8 +310,8 @@ test('a credential a 2026-07-28 server reflects in a 200 is redacted', function 
 });
 
 test('a credential a 2026-07-28 server reflects in a 404 is redacted', function () {
-    // The other seam modern() adds: a status that is neither 2xx nor 400 goes to
-    // statusError() from inside the modern loop.
+    // Branch: a status that is neither 2xx nor 400, which goes to statusError() from inside
+    // modern()'s loop.
     $fake = modernFake();
     $fake->once(static fn(array $r) => FakeMcpServer::error(404, $r['body']['id'], -32601, 'no route for Bearer sk-modern'));
     $client = new McpClient(autoServer(['headers' => ['Authorization' => 'Bearer sk-modern']]), $fake->client());
@@ -315,8 +326,8 @@ test('a credential a 2026-07-28 server reflects in a 404 is redacted', function 
 });
 
 test('a credential in the 400 a pinned 2026-07-28 refuses to fall back on is redacted', function () {
-    // The last of the four seams: call() turns the fallback signal into an error when a pin
-    // forbids the fallback, and re-reads the envelope with message(0) to do it.
+    // Branch: the fallback 400 that a pin forbids falling back on. call() turns it into an
+    // error and re-reads the envelope with message(0) to do it.
     $fake = modernFake();
     $fake->once(static fn(array $r) => FakeMcpServer::error(400, $r['body']['id'], -32600, 'Bearer sk-modern is not welcome here'));
     $server = autoServer(['headers' => ['Authorization' => 'Bearer sk-modern'], 'protocolVersion' => '2026-07-28']);
@@ -350,9 +361,10 @@ test('a 202 to a 2026-07-28 tools/list is refused, complete result and all', fun
 });
 
 test('a credential in the 400 of a modern header error is redacted', function () {
-    // The fourth seam: a 400 whose code is in MODERN_RPC_ERRORS goes to statusError() from
-    // inside modern()'s loop, one branch below the 404 seam above and through the same
-    // expression. A regression on this branch alone would show up nowhere else.
+    // Branch: a 400 carrying -32020 or -32021, which goes to statusError() from inside
+    // modern()'s loop through the same expression the 404 branch uses. Sharing the
+    // expression is not coverage: a regression on this branch alone would red out nothing
+    // without this test.
     $fake = modernFake();
     $fake->once(static fn(array $r) => FakeMcpServer::error(400, $r['body']['id'], -32020, 'header Bearer sk-modern mismatch'));
     $client = new McpClient(autoServer(['headers' => ['Authorization' => 'Bearer sk-modern']]), $fake->client());

@@ -230,11 +230,13 @@ final class McpClient implements McpClientInterface
      * The -32020 HeaderMismatch arm is a deliberate, documented deviation from upstream
      * too, and it is spec §2 step 2 that is implemented: upstream's 2026-07-28 text says a
      * client SHOULD re-run `tools/list` and retry once on -32020, and this client throws
-     * McpRpcException without retrying. Upstream says SHOULD, not MUST, and the only server
-     * this repo has live coverage against does not take the 2026-07-28 path — the WordPress
-     * MCP Adapter answers a 2026 probe with 400/-32600 (HttpSessionValidator.php:50-53,
-     * trunk 4ff9806) — so a retry would carry no live coverage. McpClientModernTest's "a modern header error is
-     * an RPC error, never a fallback" pins the throw.
+     * McpRpcException without retrying. Upstream says SHOULD, not MUST, and no test in this
+     * repo speaks to a real MCP server of either version — tests/Integration holds no MCP
+     * test — so a retry could be validated only against a scripted double. Spec §2 step 3
+     * records, from a reading of the WordPress MCP Adapter's source at trunk 4ff9806, that
+     * the Adapter answers a 2026-07-28 probe with 400/-32600 and takes the fallback path;
+     * that reading is not something this repo executes. McpClientModernTest's "a modern
+     * header error is an RPC error, never a fallback" pins the throw.
      *
      * @param array<string, mixed> $params
      * @param array<string, mixed> $arguments
