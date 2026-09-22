@@ -19,10 +19,18 @@ use CarmeloSantana\PHPAgents\Mcp\McpProtocolException;
  *   itself — spec §2 makes an unrecognised 400 the trigger for the 2025-11-25 fallback.
  *
  * "Has `error` or `result`", and spec §2's "any message carrying `method`", are both read as
- * the key being present: array_key_exists, not isset. A legal `"result": null` response is a
- * message, not an absent one, and a `"method": null` frame is skipped rather than taken as
- * the response. isset() would answer no to both, which is a predicate spec §2 did not write
- * and which Task 12 would read as "no message" — its cue for the 2025-11-25 fallback.
+ * the key being present: array_key_exists, not isset. That is what the words mean on the
+ * JSON-RPC wire — a message carrying `"method": null` does carry `method`, and a `result` of
+ * null is a legal response — while isset() answers no to any key whose value is null, a
+ * predicate spec §2 did not write.
+ *
+ * The two halves do not buy the same thing. On `method` the reading decides an outcome: a
+ * `"method": null` frame is skipped rather than taken as the response, here and in SseReader,
+ * and tests cover both. On `error`/`result` it decides nothing downstream that is yet visible
+ * — for `{"result": null}` neither reading offers Task 12 a JSON-RPC error, and for
+ * `{"error": null}` neither offers it an error object, so spec §2's 400 and 404 rules reach
+ * the same verdict either way. It is written this way for reading one rule one way, not for a
+ * consequence.
  *
  * @internal
  */
