@@ -38,14 +38,17 @@ This is exactly what was posted on Alpaca Bot Kanboard #4364. Anything added lat
 
 ```php
 final readonly class McpServer
+    public const PROTOCOL_2026 = '2026-07-28';
+    public const PROTOCOL_2025 = '2025-11-25';
     __construct(
         string $url,
         array $headers = [],              // header name => value, sent on every request
         float $timeout = 30.0,
         int $maxResponseBytes = 1_048_576, // cap on the HTTP body
-        ?string $protocolVersion = null,   // null = auto; '2026-07-28' | '2025-11-25' = pin
+        ?string $protocolVersion = null,   // null = auto; one of the PROTOCOL_* constants pins it
         int $maxResultBytes = 65_536,      // cap on ToolResult->content
     )
+    sessionKey(): string                   // the opaque, credential-free key McpSessionStore is called with
 
 final readonly class McpToolDefinition
     __construct(string $name, string $description, array $inputSchema, array $annotations = [], ?string $title = null)
@@ -150,7 +153,7 @@ The client only calls `tools/list` and `tools/call`, over Streamable HTTP, and o
 | 404 | Session rule below, otherwise `McpRpcException` for a JSON-RPC error body, otherwise `McpTransportException` |
 | Other 4xx, 5xx | `McpTransportException` |
 
-Exception messages name the method and status. They never contain a header value or the session id.
+Exception messages name the method and status. They never contain a header value or the session id. A server's own JSON-RPC error text is spliced into `McpRpcException`'s message, and a server can reflect a credential back in it, so `McpClient` redacts every configured header value and the current session id from that text before it builds the exception (amendment 3, 2026-09-21; Task 12 owns the redaction).
 
 **Protocol negotiation (Kanboard #4406)**
 1. If a store entry or an in-memory value exists, or `$protocolVersion` is pinned, use that version. Otherwise send the request as **2026-07-28**:
