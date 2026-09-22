@@ -9,14 +9,14 @@ use CarmeloSantana\PHPAgents\Mcp\McpProtocolException;
 /**
  * One of the HTTP answers HttpExchange returns rather than throws on: a 2xx, 400 or 404.
  *
- * message($id) finds the JSON-RPC message in the body:
+ * message($id) finds the JSON-RPC message in the body. A body that is empty or all
+ * whitespace has no message, whatever the status or content type. Otherwise:
  * - A 2xx body must be `application/json` holding the response to $id, or
  *   `text/event-stream` holding it somewhere (SseReader). Anything else is a protocol
  *   error, and an SSE stream without it is null here.
  * - A 400/404 body is read if it is a JSON-RPC response object (it has `error` or
  *   `result`), whatever its id; otherwise it has no message, which is a signal in
  *   itself — spec §2 makes an unrecognised 400 the trigger for the 2025-11-25 fallback.
- * - An empty body has no message.
  *
  * @internal
  */

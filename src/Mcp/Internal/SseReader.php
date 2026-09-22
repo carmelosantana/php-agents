@@ -9,7 +9,8 @@ namespace CarmeloSantana\PHPAgents\Mcp\Internal;
  *
  * The events before it may be comments (`:`), notifications (a `method` and no id) or
  * server-to-client requests (a `method` and an id, possibly the same id as ours). Spec §2
- * skips anything carrying a `method`, so only an id match on a method-less message counts.
+ * skips anything carrying a `method`, so only an id match on a message with no `method`
+ * value counts — a `"method": null` would not be skipped, but it is not a legal request.
  * Multi-line `data:` fields are joined with "\n" as the SSE format says, and CRLF, LF and
  * CR line ends are all accepted.
  *

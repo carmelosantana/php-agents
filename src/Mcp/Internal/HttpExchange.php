@@ -26,22 +26,27 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * throws McpRedirectException whether or not the client tried to follow it, and the body
  * is measured again after it has been read.
  *
+ * The cap is checked before the status is, so an over-cap body is a transport error at any
+ * status. Once the body is within the cap, the status decides:
  * - 2xx, 400 and 404 come back as an HttpReply, because spec §2 reads protocol meaning
  *   into those bodies (version fallback, stale sessions, JSON-RPC errors).
  * - 401/403 throw McpAuthException.
  * - Every other status throws McpTransportException.
- * - Every message built in this class is formatted from $method, the HTTP status and the
- *   configured byte cap, and from nothing else: no URL, header value, session id or
- *   server-supplied text reaches one. That matters because a transport failure's own
- *   message does quote the URL — symfony/http-client v8.1.7 raises "Idle timeout reached
- *   for "<url>"." — and reason() below drops it.
+ *
+ * Every exception message that leaves post() is formatted from $method, the HTTP status and
+ * the configured byte cap, and from nothing else: no URL, header value, session id or
+ * server-supplied text reaches one. McpRedirectException is handed the Location, but keeps
+ * it on the exception rather than in the text. This matters because a transport failure's
+ * own message does quote the URL — symfony/http-client v8.1.7 raises "Idle timeout reached
+ * for "<url>"." — and reason() below returns none of it.
  *
  * Neither this class nor HttpReply builds an McpRpcException. That exception splices the
  * server's own error text into its message, and a server can echo a configured header
- * value or the session id back in that text, so spec §2 (amendment 3, 2026-09-21) puts
- * the redaction in McpClient, the one object holding both. HttpReply hands the decoded
- * JSON-RPC envelope back instead, leaving that seam open. Task 12's McpClient owns the
- * redaction and the McpRpcException; building it here would put it out of reach.
+ * value or the session id back in that text, so spec §2 (amendment 3, 2026-09-21) puts the
+ * redaction in McpClient, which holds both. HttpReply hands the decoded JSON-RPC envelope
+ * back instead, leaving that seam open. Task 12's McpClient owns the redaction and the
+ * McpRpcException; McpRpcException formats its message in its constructor, so building one
+ * here would fix the unredacted text in place before McpClient could touch it.
  *
  * @internal
  */
@@ -75,11 +80,15 @@ final class HttpExchange
                 'timeout' => $this->server->timeout,
                 'max_duration' => $this->server->timeout,
                 'max_redirects' => 0,
-                'on_progress' => static function (int $downloaded, int $declared) use ($max, &$exceeded): void {
+                'on_progress' => static function (int $downloaded, int $declared) use ($method, $max, &$exceeded): void {
                     if ($downloaded > $max || $declared > $max) {
                         $exceeded = true;
 
-                        throw new McpTransportException('response too large');
+                        // The same text reason() returns for $exceeded. A client that lets this
+                        // escape post() uncaught — one that calls on_progress outside its own
+                        // try, or any transport that does not wrap it — then still raises a
+                        // message of the documented shape.
+                        throw new McpTransportException(sprintf('MCP %s response exceeded %d bytes.', $method, $max));
                     }
                 },
             ]);
