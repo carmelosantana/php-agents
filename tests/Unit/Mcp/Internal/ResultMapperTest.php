@@ -127,3 +127,12 @@ test('structuredContent json_encode refuses is an empty object, not an empty str
     expect($result->content)->toBe('{}')
         ->and($result->mimeType)->toBe('application/json');
 });
+
+// A falsy-but-valid encoding is content, not a failure: `?:` on json_encode()'s result turned
+// a structuredContent of 0 into {}, which is a different answer, not a safer one.
+test('a structuredContent that encodes to a falsy string is kept as it encoded', function () {
+    // Pairs, not a map: PHP would collide the keys 0 and 0.0 into one entry.
+    foreach ([[0, '0'], [0.0, '0.0'], ['', '""'], [false, 'false']] as [$structured, $expected]) {
+        expect(ResultMapper::toToolResult(['content' => [], 'structuredContent' => $structured], 1000)->content)->toBe($expected);
+    }
+});

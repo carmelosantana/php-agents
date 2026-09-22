@@ -88,7 +88,10 @@ final class ResultMapper
         $mimeType = null;
         $structured = array_key_exists('structuredContent', $result) ? $result['structuredContent'] : null;
         if (!$hasText && $structured !== null) {
-            array_unshift($parts, json_encode($structured, self::JSON_FLAGS) ?: '{}');
+            $json = json_encode($structured, self::JSON_FLAGS);
+            // Only a refusal falls back: `?:` would also swallow the valid encodings "0",
+            // "0.0" and '""', turning a structuredContent of 0 into {}.
+            array_unshift($parts, $json === false ? '{}' : $json);
             $mimeType = count($parts) === 1 ? 'application/json' : null;
         }
 
