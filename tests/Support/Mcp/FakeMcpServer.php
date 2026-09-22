@@ -20,11 +20,12 @@ use Symfony\Component\HttpClient\Response\MockResponse;
  * The two modern headers are not compared the same way: `Mcp-Name` is run through decodeName(),
  * `Mcp-Method` is compared raw. The MCP spec asks for the `=?base64?…?=` sentinel encoding on
  * `Mcp-Name` and `Mcp-Param-*` only, while this repo's spec line 158 puts `Mcp-Method` under it
- * too. A shared encoder that follows the sentinel rules is invisible here, because a JSON-RPC
- * method name is always header-safe and passes through unencoded; a client that encodes
- * `Mcp-Method` unconditionally gets -32020 on every modern request. Which of the two the client
- * owes is a spec question this fake does not settle, so do not read the raw comparison as a
- * ruling.
+ * too. A shared encoder that follows the sentinel rules is invisible here, because the four
+ * method names McpClient posts are header-safe and pass through HeaderValue::encode()
+ * unchanged (measured); a client that base64-wraps `Mcp-Method` unconditionally gets -32020 on
+ * every modern request. Task 13 settled which the client owes for this repo: McpClient sends
+ * `Mcp-Method` raw, so the raw comparison here is the behaviour it is held to, and spec line
+ * 158 is carried as a proposed amendment instead.
  *
  * LEGACY speaks 2025-11-25 the way the WordPress MCP Adapter (trunk 4ff9806) does:
  * - `initialize` issues `Mcp-Session-Id`, unless $session is null;
@@ -257,8 +258,11 @@ final class FakeMcpServer
 
     /**
      * A MODERN reply always carries a `resultType`: a result without one is stamped `complete`.
-     * So this server cannot produce spec step 4's "resultType absent means complete" branch,
-     * and a test for it has to script the whole response through once().
+     * So MODERN cannot produce spec step 4's "resultType absent means complete" branch, and a
+     * test that wants it on the modern path has to script the whole response through once().
+     * LEGACY stamps nothing, so its tools/call results reach that branch as a matter of
+     * course: mutating McpClient's `?? 'complete'` fails a LEGACY tools/call test alongside
+     * the scripted modern one (measured, Task 13).
      *
      * @param array<string, mixed> $params
      */

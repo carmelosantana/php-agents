@@ -31,6 +31,31 @@ function versionError(array $supported): Closure
         : null;
 }
 
+/**
+ * Spec §2's "Every request" bullets, plus the two 2026-07-28 request headers, asserted off
+ * every recorded request rather than off the fake's verdict.
+ *
+ * FakeMcpServer's MODERN mode checks `MCP-Protocol-Version` and `Mcp-Method`, so those two
+ * are not unique to this helper. Accept, Content-Type, the URL, the HTTP method and the
+ * configured header are: MODERN reads none of them. Nor does it read `Mcp-Session-Id` —
+ * only its LEGACY gate does — so spec §2's "statelessly" is pinned here and in the first
+ * test alone.
+ */
+function expectModernEnvelope(FakeMcpServer $fake): void
+{
+    expect($fake->requests)->not->toBeEmpty();
+    foreach ($fake->requests as $request) {
+        expect($request['method'])->toBe('POST')
+            ->and($request['url'])->toBe('https://mcp.example.test/mcp')
+            ->and($request['headers']['accept'] ?? null)->toBe('application/json, text/event-stream')
+            ->and($request['headers']['content-type'] ?? null)->toBe('application/json')
+            ->and($request['headers']['authorization'] ?? null)->toBe('Bearer t')
+            ->and($request['headers']['mcp-protocol-version'] ?? null)->toBe('2026-07-28')
+            ->and($request['headers']['mcp-method'] ?? null)->toBe($request['body']['method'])
+            ->and($request['headers'])->not->toHaveKey('mcp-session-id');
+    }
+}
+
 test('a 2026-07-28 server is spoken to statelessly from the first request', function () {
     $fake = modernFake();
     $store = new ArraySessionStore();
@@ -195,4 +220,113 @@ test('a 2025-11-25 server keeps a tool whose x-mcp-header would be invalid, and 
     expect($client->listTools())->toHaveCount(1);
     $client->callTool('broken', ['n' => 1]);
     expect(array_keys(end($fake->requests)['headers']))->not->toContain('mcp-param-n');
+});
+
+test('every 2026-07-28 request carries the whole envelope, on both methods', function () {
+    $fake = modernFake();
+    (new McpClient(autoServer(), $fake->client()))->callTool('search', []);
+
+    expect($fake->methods())->toBe(['tools/list', 'tools/call']);
+    expectModernEnvelope($fake);
+});
+
+test('a paged 2026-07-28 listing keeps the x-mcp-header map of every page', function () {
+    // The map is built into a local and assigned once, so a page-two reset would lose page
+    // one's entry and send no Mcp-Param-Region below.
+    $fake = modernFake([]);
+    $fake->tools = [
+        FakeMcpServer::tool('regional', ['type' => 'object', 'properties' => ['region' => ['type' => 'string', 'x-mcp-header' => 'Region']]]),
+        FakeMcpServer::tool('plain'),
+    ];
+    $fake->pageSize = 1;
+    $client = new McpClient(autoServer(), $fake->client());
+    $names = array_map(static fn($t) => $t->name, $client->listTools());
+    $client->callTool('regional', ['region' => 'eu-west']);
+
+    expect($names)->toBe(['regional', 'plain'])
+        ->and($fake->methods())->toBe(['tools/list', 'tools/list', 'tools/call'])
+        ->and($fake->requests[1]['body']['params']['cursor'])->toBe('1')
+        ->and($fake->requests[2]['headers']['mcp-param-region'])->toBe('eu-west');
+    expectModernEnvelope($fake);
+});
+
+test('a tools/call result with no resultType at all is complete', function () {
+    // FakeMcpServer stamps `complete` on every MODERN result, so spec §2 step 4's "absent
+    // means complete" branch cannot come from the fake; this scripts the whole response.
+    $fake = modernFake();
+    $fake->once(static fn(array $r) => ($r['body']['method'] ?? null) === 'tools/call'
+        ? FakeMcpServer::json(200, ['jsonrpc' => '2.0', 'id' => $r['body']['id'], 'result' => ['content' => [['type' => 'text', 'text' => 'bare']]]])
+        : null);
+
+    expect((new McpClient(autoServer(), $fake->client()))->callTool('search', [])->content)->toBe('bare');
+});
+
+test('a 2026-07-28 answer arriving as text/event-stream is read the same way', function () {
+    // The WordPress MCP Adapter never sends SSE (trunk 4ff9806 answers a GET with 405 and
+    // has no text/event-stream anywhere), so FakeMcpServer is the only exercise this gets.
+    $fake = modernFake();
+    $fake->sse = true;
+
+    expect((new McpClient(autoServer(), $fake->client()))->callTool('search', [])->content)->toBe('ok');
+    expectModernEnvelope($fake);
+});
+
+test('a credential a 2026-07-28 server reflects in a 200 is redacted', function () {
+    // modern() hands a successful reply to result(), which is where an `error` in a 2xx
+    // becomes an McpRpcException. An instance call, not a static one: the redaction needs
+    // McpServer::$headers.
+    $fake = modernFake();
+    $fake->once(static fn(array $r) => ($r['body']['method'] ?? null) === 'tools/call'
+        ? FakeMcpServer::error(200, $r['body']['id'], -32603, 'token Bearer sk-modern refused')
+        : null);
+    $client = new McpClient(autoServer(['headers' => ['Authorization' => 'Bearer sk-modern']]), $fake->client());
+
+    try {
+        $client->callTool('search', []);
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->not->toContain('sk-modern')
+            ->and($e->getMessage())->toEndWith(': token [redacted] refused');
+    }
+});
+
+test('a credential a 2026-07-28 server reflects in a 404 is redacted', function () {
+    // The other seam modern() adds: a status that is neither 2xx nor 400 goes to
+    // statusError() from inside the modern loop.
+    $fake = modernFake();
+    $fake->once(static fn(array $r) => FakeMcpServer::error(404, $r['body']['id'], -32601, 'no route for Bearer sk-modern'));
+    $client = new McpClient(autoServer(['headers' => ['Authorization' => 'Bearer sk-modern']]), $fake->client());
+
+    try {
+        $client->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->not->toContain('sk-modern')
+            ->and($e->getMessage())->toEndWith(': no route for [redacted]');
+    }
+});
+
+test('a credential in the 400 a pinned 2026-07-28 refuses to fall back on is redacted', function () {
+    // The third seam: call() turns the fallback signal into an error when a pin forbids the
+    // fallback, and re-reads the envelope with message(0) to do it.
+    $fake = modernFake();
+    $fake->once(static fn(array $r) => FakeMcpServer::error(400, $r['body']['id'], -32600, 'Bearer sk-modern is not welcome here'));
+    $server = autoServer(['headers' => ['Authorization' => 'Bearer sk-modern'], 'protocolVersion' => '2026-07-28']);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->not->toContain('sk-modern')
+            ->and($e->getMessage())->toEndWith(': [redacted] is not welcome here')
+            ->and($fake->initializeCount)->toBe(0);
+    }
+});
+
+test('a JSON-RPC error a 2026-07-28 server answers 200 with is an error, not a result', function () {
+    // FakeMcpServer's MODERN unknown-tool branch: HTTP 200 carrying -32602.
+    $fake = modernFake();
+
+    expect(fn() => (new McpClient(autoServer(), $fake->client()))->callTool('ghost', []))
+        ->toThrow(McpRpcException::class, 'MCP tools/call failed with JSON-RPC error -32602: Unknown tool: ghost');
 });
