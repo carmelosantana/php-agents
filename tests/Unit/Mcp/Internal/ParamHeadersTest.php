@@ -66,6 +66,7 @@ test('an invalid annotation drops the tool', function (array $schema) {
     'under a combinator' => [['type' => 'object', 'properties' => ['a' => ['anyOf' => [['type' => 'string', 'x-mcp-header' => 'A']]]]]],
     'under a conditional' => [['type' => 'object', 'if' => ['properties' => ['a' => ['type' => 'string']]], 'then' => ['properties' => ['b' => ['type' => 'string', 'x-mcp-header' => 'A']]]]],
     'in $defs' => [['type' => 'object', 'properties' => ['a' => ['type' => 'string']], '$defs' => ['Opts' => ['type' => 'object', 'properties' => ['b' => ['type' => 'string', 'x-mcp-header' => 'A']]]]]],
+    'a $defs definition named x-mcp-header, no annotation involved: fail-closed, recorded for Task 12' => [['type' => 'object', 'properties' => ['a' => ['type' => 'string']], '$defs' => ['x-mcp-header' => ['type' => 'object']]]],
     'behind a $ref' => [['type' => 'object', 'properties' => ['a' => ['$ref' => '#/$defs/Opts']], '$defs' => ['Opts' => ['type' => 'object', 'properties' => ['b' => ['type' => 'string', 'x-mcp-header' => 'A']]]]]],
 ]);
 

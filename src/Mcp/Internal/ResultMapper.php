@@ -49,6 +49,14 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  * `mcp_tool_error`, and the message `The tool reported an error.` when the content is
  * empty.
  *
+ * Nothing here throws, and that is part of the redaction seam HttpExchange and HttpReply
+ * describe. The content this class carries is the server's own text, `isError` included,
+ * and it goes into a ToolResult, never into an exception message. A server can echo a
+ * configured header value or the session id back in that text, so spec §2 (amendment 3,
+ * 2026-09-21) leaves the redaction and the McpRpcException to Task 12's McpClient, which
+ * holds both; this class is handed neither and could not redact. Do not give it a throw
+ * that carries server-supplied text.
+ *
  * The cap is the caller's: this class does no I/O and reads no configuration — it applies
  * the $maxBytes it is handed.
  *

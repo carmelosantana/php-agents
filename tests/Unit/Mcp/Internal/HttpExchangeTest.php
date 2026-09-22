@@ -183,6 +183,7 @@ test('no error message carries a header value', function () {
     foreach ([new MockResponse('', ['http_code' => 500]), new MockResponse([''])] as $response) {
         try {
             exchangeOver(new MockHttpClient([$response]))->post('tools/list', [], ['Mcp-Session-Id' => 'sess-secret']);
+            $this->fail('expected a transport error');
         } catch (McpTransportException $e) {
             expect($e->getMessage())->not->toContain('s3cret')->not->toContain('sess-secret');
         }

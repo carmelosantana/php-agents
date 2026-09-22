@@ -23,14 +23,14 @@ namespace CarmeloSantana\PHPAgents\Mcp\Internal;
  * only what is "not reachable through `properties`"; upstream settles it, allowing a
  * nested object's property as long as every step of the chain is a `properties` key.
  *
- * That last check is a comparison rather than a walk of the other keywords: count()
- * counts the annotations it can see anywhere in the schema, walk() collects the ones it
- * reached through `properties`, and an annotation under `items`, under a combinator or
- * a conditional, in `$defs` or behind a `$ref` lifts the first number without lifting
- * the second, so the tool is dropped.
+ * That last check is a comparison rather than a walk of the other keywords:
+ * countAnnotations() counts the annotations it can see anywhere in the schema, walk()
+ * collects the ones it reached through `properties`, and an annotation under `items`,
+ * under a combinator or a conditional, in `$defs` or behind a `$ref` lifts the first
+ * number without lifting the second, so the tool is dropped.
  *
- * Which `x-mcp-header` keys count() reads as annotations depends on the position it is
- * in. In a schema, `x-mcp-header` is an annotation; `default`, `const`, `enum` and
+ * Which `x-mcp-header` keys countAnnotations() reads as annotations depends on the position
+ * it is in. In a schema, `x-mcp-header` is an annotation; `default`, `const`, `enum` and
  * `examples` hold instance data rather than subschemas and are not entered, so a key of
  * that name inside a default value or an example is not one; the value of `properties`
  * is entered as a map of names; and any other value is entered as a schema, which is
@@ -79,7 +79,7 @@ final class ParamHeaders
 
         $reached = count($found);
 
-        return self::count($inputSchema) === $reached ? $found : null;
+        return self::countAnnotations($inputSchema) === $reached ? $found : null;
     }
 
     /**
@@ -160,7 +160,7 @@ final class ParamHeaders
         return count($types) === 1 && in_array($types[0], self::PRIMITIVES, true);
     }
 
-    private static function count(mixed $node): int
+    private static function countAnnotations(mixed $node): int
     {
         if (!is_array($node)) {
             return 0;
@@ -170,7 +170,7 @@ final class ParamHeaders
             if ($key === 'x-mcp-header' || in_array($key, self::INSTANCE_DATA, true)) {
                 continue;
             }
-            $count += $key === 'properties' ? self::countNames($child) : self::count($child);
+            $count += $key === 'properties' ? self::countAnnotationsInNameMap($child) : self::countAnnotations($child);
         }
 
         return $count;
@@ -181,14 +181,14 @@ final class ParamHeaders
      * keywords: nothing here is read as `x-mcp-header` or as instance data, and every
      * value is a schema again.
      */
-    private static function countNames(mixed $node): int
+    private static function countAnnotationsInNameMap(mixed $node): int
     {
         if (!is_array($node)) {
             return 0;
         }
         $count = 0;
         foreach ($node as $child) {
-            $count += self::count($child);
+            $count += self::countAnnotations($child);
         }
 
         return $count;
