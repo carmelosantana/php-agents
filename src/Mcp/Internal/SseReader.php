@@ -9,10 +9,10 @@ namespace CarmeloSantana\PHPAgents\Mcp\Internal;
  *
  * The events before it may be comments (`:`), notifications (a `method` and no id) or
  * server-to-client requests (a `method` and an id, possibly the same id as ours). Spec §2
- * skips anything carrying a `method`, so only an id match on a message with no `method`
- * value counts — a `"method": null` would not be skipped, but it is not a legal request.
- * Multi-line `data:` fields are joined with "\n" as the SSE format says, and CRLF, LF and
- * CR line ends are all accepted.
+ * skips anything carrying a `method`, and "carrying" is read as the key being present:
+ * array_key_exists, not isset, so a `"method": null` frame is skipped too. Only an id match
+ * on a frame with no `method` key at all is taken as the response. Multi-line `data:` fields
+ * are joined with "\n" as the SSE format says, and CRLF, LF and CR line ends are all accepted.
  *
  * Provider\SseStreamParser is not reused. Checked against src/Provider/SseStreamParser.php
  * as it stands: events() is a generator driven by HttpClientInterface::stream(), so it
@@ -40,7 +40,7 @@ final class SseReader
                 continue;
             }
             $message = json_decode(implode("\n", $data), true);
-            if (is_array($message) && !isset($message['method']) && ($message['id'] ?? null) === $id) {
+            if (is_array($message) && !array_key_exists('method', $message) && ($message['id'] ?? null) === $id) {
                 return $message;
             }
         }

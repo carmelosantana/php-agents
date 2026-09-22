@@ -44,6 +44,22 @@ test('an event stream yields the response for this id, skipping comments, notifi
         ->and(SseReader::find($body, 6))->toBeNull();
 });
 
+test('an SSE frame carrying a null method is still carrying a method, and is skipped', function () {
+    $body = "data: {\"jsonrpc\":\"2.0\",\"id\":7,\"method\":null}\n\n"
+        . "data: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true}}\n\n";
+
+    expect(SseReader::find($body, 7))->toBe(['jsonrpc' => '2.0', 'id' => 7, 'result' => ['ok' => true]]);
+});
+
+test('a 2xx JSON body carrying a null method is not the response to this id', function () {
+    expect(fn () => reply(200, '{"jsonrpc":"2.0","id":7,"method":null}')->message(7))->toThrow(McpProtocolException::class);
+});
+
+test('an error body carrying a null result is a message, not an absent one', function () {
+    expect(reply(400, '{"jsonrpc":"2.0","id":7,"result":null}')->message(7))
+        ->toBe(['jsonrpc' => '2.0', 'id' => 7, 'result' => null]);
+});
+
 test('headers are read case-insensitively', function () {
     $reply = new HttpReply('initialize', 200, ['mcp-session-id' => ['abc']], '');
 

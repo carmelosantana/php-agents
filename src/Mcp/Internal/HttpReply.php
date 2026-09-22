@@ -18,6 +18,12 @@ use CarmeloSantana\PHPAgents\Mcp\McpProtocolException;
  *   `result`), whatever its id; otherwise it has no message, which is a signal in
  *   itself — spec §2 makes an unrecognised 400 the trigger for the 2025-11-25 fallback.
  *
+ * "Has `error` or `result`", and spec §2's "any message carrying `method`", are both read as
+ * the key being present: array_key_exists, not isset. A legal `"result": null` response is a
+ * message, not an absent one, and a `"method": null` frame is skipped rather than taken as
+ * the response. isset() would answer no to both, which is a predicate spec §2 did not write
+ * and which Task 12 would read as "no message" — its cue for the 2025-11-25 fallback.
+ *
  * @internal
  */
 final class HttpReply
@@ -70,7 +76,7 @@ final class HttpReply
         if (!$this->isSuccess()) {
             $decoded = json_decode($this->body, true);
 
-            return is_array($decoded) && (isset($decoded['error']) || isset($decoded['result'])) ? $decoded : null;
+            return is_array($decoded) && (array_key_exists('error', $decoded) || array_key_exists('result', $decoded)) ? $decoded : null;
         }
 
         if (str_starts_with($type, 'text/event-stream')) {
@@ -81,7 +87,7 @@ final class HttpReply
         }
 
         $decoded = json_decode($this->body, true);
-        if (!is_array($decoded) || isset($decoded['method']) || ($decoded['id'] ?? null) !== $id) {
+        if (!is_array($decoded) || array_key_exists('method', $decoded) || ($decoded['id'] ?? null) !== $id) {
             throw new McpProtocolException(sprintf('MCP %s did not answer with the response to its request.', $this->method));
         }
 
