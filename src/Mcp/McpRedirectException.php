@@ -5,9 +5,14 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Mcp;
 
 /**
- * The server answered with a 3xx. The client never follows redirects: a redirect
- * could send a pinned, SSRF-checked request (and its credential) somewhere else.
- * The Location is kept on the exception for the host to log, not put in the message.
+ * A redirect the client refuses. Usually the server answered with a 3xx, and $status is
+ * it; the client never follows one, because a redirect could send a pinned, SSRF-checked
+ * request (and its credential) somewhere else. It is also thrown when an injected client
+ * followed a redirect anyway — a host wrapper dropping `max_redirects: 0` — and then
+ * $status is what the redirect target answered and $location is null, since no Location
+ * header came back with it. The message is the same in both cases, and states the client's
+ * own rule rather than what the injected transport did. The Location is kept on the
+ * exception for the host to log, not put in the message.
  */
 final class McpRedirectException extends McpTransportException
 {

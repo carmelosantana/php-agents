@@ -12,6 +12,7 @@ use CarmeloSantana\PHPAgents\Mcp\McpTransportException;
 use Symfony\Contracts\HttpClient\Exception\TimeoutExceptionInterface;
 use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Symfony\Contracts\HttpClient\ResponseInterface;
 
 /**
  * One POST of one JSON-RPC message to McpServer::$url. Spec §2 confines the client to
@@ -22,9 +23,16 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * idle timeout and `max_duration`, and for an `on_progress` callback that aborts past
  * $maxResponseBytes. Spec §2 ("Limits and redirects") requires the limits to hold even
  * when a host wrapper overrides those options — the HTTP client is injected precisely
- * so a host can supply its own egress — so the outcome is checked here as well: any 3xx
- * throws McpRedirectException whether or not the client tried to follow it, and the body
- * is measured again after it has been read.
+ * so a host can supply its own egress — so the outcome is checked here as well. The two
+ * checks are not equally strong:
+ * - The cap is re-applied in full. The body is measured again after it has been read, so
+ *   a wrapper that drops `on_progress` changes only when the refusal happens.
+ * - The redirect refusal is not. Any 3xx that arrives here throws McpRedirectException,
+ *   and followed() below throws as well when the client reports having followed one, so a
+ *   wrapper that drops `max_redirects` cannot get a followed redirect returned as a reply.
+ *   But the request is gone by then: nothing here keeps a credential from reaching the host
+ *   a 3xx named, and a client that follows without reporting it is not caught at all. Only
+ *   `max_redirects: 0`, honoured, prevents the follow itself.
  *
  * The cap is checked before the status is, so an over-cap body is a transport error at any
  * status. Once the body is within the cap, the status decides:
@@ -105,6 +113,9 @@ final class HttpExchange
         if ($status >= 300 && $status < 400) {
             throw new McpRedirectException($method, $status, $responseHeaders['location'][0] ?? null);
         }
+        if (self::followed($response)) {
+            throw new McpRedirectException($method, $status, null);
+        }
         if ($status === 401 || $status === 403) {
             throw new McpAuthException($method, $status);
         }
@@ -113,6 +124,29 @@ final class HttpExchange
         }
 
         throw new McpTransportException(sprintf('MCP %s returned HTTP %d.', $method, $status));
+    }
+
+    /**
+     * Whether the client followed a redirect after all, which `max_redirects: 0` was
+     * meant to stop: a wrapper that drops that option restores symfony/http-client
+     * v8.1.7's default of 20, the credential goes to whatever host the 3xx named, and
+     * the status seen here is the one the redirect target answered with.
+     *
+     * The signal is the `redirect_count` info key, which the contracts' getInfo()
+     * exposes and both real clients fill in as an int — CurlResponse.php:209 merges
+     * curl_getinfo(), which always carries it, and NativeHttpClient.php:122/422 starts
+     * its own at 0 and increments it. A client that follows without reporting it is not
+     * caught. getInfo('url') is no usable second signal: after a real follow it does hold
+     * the target, but on an ordinary request it holds McpServer::$url normalised —
+     * `https://h` comes back `https://h/` and a space comes back `%20` — and a host
+     * wrapper that pins the request to a resolved IP, the kind spec §2 invites, reports
+     * a URL of its own, so comparing it would refuse requests nothing redirected.
+     */
+    private static function followed(ResponseInterface $response): bool
+    {
+        $count = $response->getInfo('redirect_count');
+
+        return is_int($count) && $count > 0;
     }
 
     /**

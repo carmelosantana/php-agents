@@ -18,6 +18,31 @@ function exchangeOver(HttpClientInterface $http, array $server = []): HttpExchan
     return new HttpExchange(new McpServer(...array_replace(['url' => 'https://mcp.example.test/mcp', 'headers' => ['Authorization' => 'Bearer s3cret']], $server)), $http);
 }
 
+/** A host wrapper that drops one of the options HttpExchange asked for. */
+function droppingOption(HttpClientInterface $inner, string $option): HttpClientInterface
+{
+    return new class($inner, $option) implements HttpClientInterface {
+        public function __construct(private HttpClientInterface $inner, private string $option) {}
+
+        public function request(string $method, string $url, array $options = []): ResponseInterface
+        {
+            unset($options[$this->option]);
+
+            return $this->inner->request($method, $url, $options);
+        }
+
+        public function stream(ResponseInterface|iterable $responses, ?float $timeout = null): ResponseStreamInterface
+        {
+            return $this->inner->stream($responses, $timeout);
+        }
+
+        public function withOptions(array $options): static
+        {
+            return $this;
+        }
+    };
+}
+
 test('posts one JSON body to the configured URL with its own safety options and the configured headers', function () {
     $seen = [];
     $http = new MockHttpClient(function (string $method, string $url, array $options) use (&$seen): MockResponse {
@@ -94,30 +119,49 @@ test('a body over the cap is refused', function () {
 
 test('the cap holds even when a wrapper drops on_progress', function () {
     $inner = new MockHttpClient([new MockResponse(str_repeat('x', 2000))]);
-    $stripping = new class($inner) implements HttpClientInterface {
-        public function __construct(private HttpClientInterface $inner) {}
 
-        public function request(string $method, string $url, array $options = []): ResponseInterface
-        {
-            unset($options['on_progress']);
-
-            return $this->inner->request($method, $url, $options);
-        }
-
-        public function stream(ResponseInterface|iterable $responses, ?float $timeout = null): ResponseStreamInterface
-        {
-            return $this->inner->stream($responses, $timeout);
-        }
-
-        public function withOptions(array $options): static
-        {
-            return $this;
-        }
-    };
-
-    expect(fn () => exchangeOver($stripping, ['maxResponseBytes' => 1000])->post('tools/list', [], []))
+    expect(fn () => exchangeOver(droppingOption($inner, 'on_progress'), ['maxResponseBytes' => 1000])->post('tools/list', [], []))
         ->toThrow(McpTransportException::class, 'MCP tools/list response exceeded 1000 bytes.');
 });
+
+test('a followed redirect is refused even when a wrapper drops max_redirects', function () {
+    // An inner client that follows a 3xx unless max_redirects forbids it, and reports the
+    // follow the way v8.1.7's real clients do: CurlResponse fills redirect_count from
+    // CURLINFO_REDIRECT_COUNT and NativeHttpClient increments its own, and both leave the
+    // effective URL in getInfo('url').
+    $following = new MockHttpClient(static function (string $method, string $url, array $options): MockResponse {
+        if (($options['max_redirects'] ?? 20) < 1) {
+            return new MockResponse('', ['http_code' => 302, 'response_headers' => ['Location: https://169.254.169.254/']]);
+        }
+
+        return new MockResponse('{"jsonrpc":"2.0","id":1,"result":{}}', [
+            'http_code' => 200,
+            'redirect_count' => 1,
+            'url' => 'https://169.254.169.254/',
+            'response_headers' => ['Content-Type: application/json'],
+        ]);
+    });
+
+    try {
+        exchangeOver(droppingOption($following, 'max_redirects'))->post('tools/list', [], []);
+        $this->fail('expected a redirect error');
+    } catch (McpRedirectException $e) {
+        expect($e->status)->toBe(200)
+            ->and($e->location)->toBeNull()
+            ->and($e->getMessage())->not->toContain('169.254');
+    }
+});
+
+test('a request that was not redirected comes back as a reply', function (string $url) {
+    $http = new MockHttpClient([new MockResponse('{}', ['response_headers' => ['Content-Type: application/json']])]);
+
+    expect(exchangeOver($http, ['url' => $url])->post('tools/list', [], [])->status)->toBe(200);
+})->with([
+    'https://mcp.example.test/mcp',
+    'https://mcp.example.test',            // normalises to .../ — not a redirect
+    'https://mcp.example.test/a b/mcp',    // normalises the space — not a redirect
+    'https://mcp.example.test/mcp?b=2&a=1',
+]);
 
 test('no error message carries a header value', function () {
     foreach ([new MockResponse('', ['http_code' => 500]), new MockResponse([''])] as $response) {
