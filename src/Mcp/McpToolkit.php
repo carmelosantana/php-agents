@@ -35,7 +35,7 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  *
  * listTools() runs at most once per instance, on whichever of tools() and definition() is
  * called first, and a listing that throws is not remembered: the next call lists again.
- * The one cache is the $exposed property, so a second instance over the same client lists
+ * The cache is the $exposed property, so a second instance over the same client lists
  * again and sees a definition that changed in between. An exception from listing leaves
  * whichever call did the listing — tools() or definition() — for the caller, because the
  * library does not guess a host's failure policy. An exception from a tool's call does

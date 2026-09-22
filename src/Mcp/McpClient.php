@@ -56,10 +56,10 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * session, runs the handshake once more and retries once. It never sends DELETE; the server
  * expires the session.
  *
- * Only four JSON-RPC methods are posted from this file: `initialize` and
- * `notifications/initialized` from initialize(), and the `tools/list` and `tools/call` that
- * listTools() and callTool() hand to call(). Every one of them goes out through
- * HttpExchange::post(), which is the only HTTP call here.
+ * The JSON-RPC methods posted from this file are `initialize` and
+ * `notifications/initialized`, from initialize(), and the `tools/list` and `tools/call` that
+ * listTools() and callTool() hand to call(). Each goes out through HttpExchange::post(),
+ * which is how this class reaches the network.
  *
  * @see HttpExchange for the request it makes, its limits and its status mapping
  * @see ResultMapper for how a tools/call result becomes a ToolResult
@@ -75,8 +75,8 @@ final class McpClient implements McpClientInterface
     private const MAX_INPUT_ROUNDS = 3;
 
     /**
-     * The two 2026-07-28 error codes spec §2 step 2 answers with McpRpcException.
-     * -32022 is not here: modern() handles it above this test, on its own.
+     * The 2026-07-28 error codes spec §2 step 2 answers with McpRpcException.
+     * -32022 is not here: modern() handles it on its own.
      */
     private const MODERN_RPC_ERRORS = [-32020, -32021];
 
@@ -157,7 +157,8 @@ final class McpClient implements McpClientInterface
             // The key, not its truthiness: spec §2 step 4 refuses `inputRequests`, and a
             // server that sends an empty one has still asked. Probed: with !empty() here,
             // `inputRequests: []` reached the requestState loop and ended as "did not
-            // complete" after four calls. The same reading HttpReply gives `error`/`method`.
+            // complete" once the retry budget ran out. The same reading HttpReply gives
+            // `error`/`method`.
             if (array_key_exists('inputRequests', $result)) {
                 throw new McpProtocolException('MCP tools/call asked for client input, which this client does not provide.');
             }
@@ -217,7 +218,7 @@ final class McpClient implements McpClientInterface
     }
 
     /**
-     * One 2026-07-28 request, or two when a -32022 is worth one retry.
+     * One 2026-07-28 request, plus a single retry when a -32022 still lists 2026-07-28.
      *
      * `Mcp-Name` goes through HeaderValue; `Mcp-Method` does not. The `=?base64?…?=`
      * sentinel is defined for `Mcp-Name` and `Mcp-Param-*` (Internal\HeaderValue), and
@@ -225,14 +226,14 @@ final class McpClient implements McpClientInterface
      * §2 step 1 puts both under the encoding, and that line is the one this file departs
      * from, proposed as a spec amendment rather than departed from silently. No request
      * this client sends can tell the two apart: measured, HeaderValue::encode() returns
-     * each of the four method names in the class docblock unchanged.
+     * each of the method names the class docblock lists unchanged.
      *
      * The -32020 HeaderMismatch arm is a deliberate, documented deviation from upstream
      * too, and it is spec §2 step 2 that is implemented: upstream's 2026-07-28 text says a
      * client SHOULD re-run `tools/list` and retry once on -32020, and this client throws
-     * McpRpcException without retrying. Upstream says SHOULD, not MUST, and no test in this
-     * repo speaks to a real MCP server of either version: tests/Integration holds no MCP
-     * test. Spec §2 step 3 records, from a reading of the WordPress MCP Adapter's source at
+     * McpRpcException without retrying. Upstream says SHOULD, not MUST, and this repo's
+     * tests speak to FakeMcpServer rather than to a live MCP server of either version.
+     * Spec §2 step 3 records, from a reading of the WordPress MCP Adapter's source at
      * trunk 4ff9806, that the Adapter answers a 2026-07-28 probe with 400/-32600 and takes
      * the fallback path; that reading is not something this repo executes.
      * McpClientModernTest's "a modern header error is an RPC error, never a fallback" pins
@@ -476,13 +477,11 @@ final class McpClient implements McpClientInterface
      * The 202 arm is spec §2's status table: "202 Accepted, but only for the
      * `notifications/initialized` POST". It is checked before the body, so a 202 carrying a
      * complete JSON-RPC result — or a JSON-RPC error — is refused on the status alone. This
-     * method is not called for the notification today (legacy(), modern() and initialize()
-     * are its only callers), so the method test is what keeps the rule true rather than the
-     * call graph.
-     * This class compares an HTTP status in exactly four places, and each is a spec §2 row:
-     * the 404 of the stale-session rule in legacy(), the 400 modern() reads as the
-     * negotiation signal, the 400 of the rejected-request rule in statusError(), and the 202
-     * here.
+     * method is not called for the notification today — legacy(), modern() and initialize()
+     * call it — so the method test is what keeps the rule true rather than the call graph.
+     * Each HTTP status this class compares is a spec §2 row: the 404 of the stale-session
+     * rule in legacy(), the 400 modern() reads as the negotiation signal, the 400 of the
+     * rejected-request rule in statusError(), and the 202 here.
      *
      * `isset($message['error'])` is deliberate, and differs from the array_key_exists()
      * HttpReply::message() uses to recognise an envelope: a body of `{"error": null}` carries
