@@ -286,9 +286,12 @@ test('a credential and the session id a server reflects are redacted from the ex
 });
 
 test('an empty header value leaves the server text untouched', function () {
-    // The outcome, not the mechanism: str_replace('', …) would have spliced the marker between
-    // every character, while strtr() ignores an empty needle (with a diagnostic the call-site
-    // guard avoids). Removing that guard keeps this test green and adds a PHP warning.
+    // This pins the outcome, not the mechanism. No mechanism the client has ever used splices
+    // the marker between every character for an empty value: str_replace('', …) returns the
+    // text unchanged and strtr() ignores an empty needle (measured both). Only an empty
+    // alternative in a regular expression does that, which the deleted preg draft could have
+    // produced. What the call-site guard buys today is the absence of the diagnostic strtr()
+    // emits — removing it keeps this test green and adds a PHP warning to the run.
     $fake = legacyFake();
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'plain text')));
     $server = legacyServer(['headers' => ['Authorization' => 'Bearer t', 'X-Empty' => '']]);
@@ -338,7 +341,8 @@ test('a secret that occurs inside the marker does not corrupt what was already r
     $fake = legacyFake();
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'red Bearer t')));
     // 'red' is a substring of "[redacted]". A replacement pass that re-reads its own output
-    // rewrites the marker it just wrote, which is how "[reda[redacted]ted]" happens.
+    // rewrites the marker it just wrote: measured, str_replace(['Bearer t', 'red'], …) answers
+    // this very text with "[redacted] [[redacted]acted]".
     $server = legacyServer(['headers' => ['Authorization' => 'Bearer t', 'X-Odd' => 'red']]);
 
     try {

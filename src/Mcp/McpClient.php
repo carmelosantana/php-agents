@@ -369,7 +369,11 @@ final class McpClient implements McpClientInterface
      *   value is skipped. strtr() would not splice the marker between every character for it —
      *   it ignores an empty needle — but it says so with a diagnostic, "strtr(): Ignoring
      *   replacement of empty string", which PHPUnit raises as a test warning and a host would
-     *   find in its log. Dropping the guard is what that costs; the text is unchanged either way.
+     *   find in its log. Dropping the guard is what that costs; the text is unchanged either
+     *   way. The mechanism that does splice a marker between every character is an empty
+     *   *alternative* in a regular expression: measured, preg_replace('/|Bearer t/', '[R]',
+     *   'abc Bearer t') gives "[R]a[R]b[R]c[R] [R][R][R]". str_replace() does not splice on an
+     *   empty needle either; only the preg draft this guard was first written for could.
      * - every session id this instance has ever held — $held, filled by hold() when the store
      *   hands one over and when `initialize` issues one, and never emptied. forget() stops the
      *   client sending an id; it does not stop a server echoing that id back afterwards, and
@@ -380,8 +384,12 @@ final class McpClient implements McpClientInterface
      * strtr() with a needle map, rather than a regular expression or str_replace():
      * - it scans once and never re-reads what it has written, so a secret occurring inside the
      *   marker cannot rewrite a marker already placed. str_replace() with an array of needles
-     *   does re-read, and a header value of `red` turned `[redacted]` into `[reda[redacted]ted]`
-     *   in the first draft of this method;
+     *   does re-read: the first draft of this method, handed a credential of `Bearer abc` and a
+     *   second header value of `c`, answered "sent Bearer abc" with "sent [reda[redacted]ted]",
+     *   because `c` then matched inside the marker `Bearer abc` had just been replaced with.
+     *   That is the observed failure, reproduced. A header value of `red` on that draft hits
+     *   the same defect at another offset, turning a marker already written into
+     *   "[[redacted]acted]";
      * - at each position it tries the longest needle first, whatever order the map is in
      *   (measured both ways), so a value of `Bearer` beside a credential of `Bearer abc` cannot
      *   match first and leave the tail published. Nothing here sorts; that guarantee is strtr's
@@ -395,7 +403,9 @@ final class McpClient implements McpClientInterface
      *   32 764 bytes, and the limit moves with the number of alternations too — 1 985 values of
      *   15 bytes compile and 1 986 do not, 500 of 64 bytes compile and 501 do not. A 32 KiB byte
      *   threshold sat *above* the first ceiling and was blind to the second. Cost instead is a
-     *   scan: 20 000 secrets over a 1 MB text measured at about 1 ms.
+     *   scan, a few milliseconds at absurd sizes: 20 000 needles over a 1 MB text measured at
+     *   1.1 ms with needles all one length and 2.6 ms with their lengths spread over 4-200
+     *   bytes, worst of five runs each. It is the spread of needle *lengths* that moves it.
      *
      * What it does not cover:
      * - McpRpcException::$data. That property is server-supplied and public, and no part of
