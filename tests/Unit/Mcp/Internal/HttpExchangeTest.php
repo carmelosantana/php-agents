@@ -111,12 +111,12 @@ test('a timeout is a transport error that does not quote the URL', function () {
     }
 });
 
-test('a transport error whose text says "timed out" is a timeout', function () {
-    // The shape a real curl timeout takes: max_duration becomes CURLOPT_TIMEOUT_MS
-    // (CurlHttpClient.php:299) and CurlResponse.php:343 raises a plain TransportException
-    // carrying curl_error() — no TimeoutExceptionInterface, and the text says "timed out",
-    // never "timeout".
-    $http = new MockHttpClient([new MockResponse([new TransportException('Operation timed out after 30000 milliseconds for "https://mcp.example.test/mcp".')])]);
+test('a transport failure that names a timeout is one, whatever the client calls it', function (string $message) {
+    // None of these is a TimeoutExceptionInterface and none of them says "timeout".
+    // McpServer::$timeout goes out as max_duration, which curl takes as CURLOPT_TIMEOUT_MS
+    // (CurlHttpClient.php:299) and reports through CurlResponse.php:343 as a plain
+    // TransportException carrying curl_error(); NativeHttpClient.php:142 raises its own.
+    $http = new MockHttpClient([new MockResponse([new TransportException($message)])]);
 
     try {
         exchangeOver($http)->post('tools/list', [], []);
@@ -124,7 +124,11 @@ test('a transport error whose text says "timed out" is a timeout', function () {
     } catch (McpTransportException $e) {
         expect($e->getMessage())->toBe('MCP tools/list timed out.');
     }
-});
+})->with([
+    'curl, transfer' => ['Operation timed out after 30000 milliseconds with 0 bytes received for "https://mcp.example.test/mcp".'],
+    'curl, connect' => ['Connection timed out after 300 milliseconds for "https://mcp.example.test/mcp".'],
+    'native, max_duration' => ['Max duration was reached for "https://mcp.example.test/mcp".'],
+]);
 
 test('a body over the cap is refused', function () {
     $http = new MockHttpClient([new MockResponse([str_repeat('x', 600), str_repeat('x', 600)])]);

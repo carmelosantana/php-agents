@@ -17,11 +17,11 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  * - An embedded `resource` with text contributes that text after a `[resource <uri>]`
  *   line.
  * - With no `text` block, a non-null `structuredContent` is pretty-printed JSON, placed
- *   first, and typed application/json when it ends up being the only part. One json_encode
- *   refuses becomes `{}` rather than the empty string, so what carries that type is always
- *   JSON. A server reaches that with `1e999`: json_decode overflows it to INF, which no
- *   flag encodes. Depth is the other way in, and json_decode's own 512 levels stop it at
- *   the door.
+ *   first, and typed application/json when it ends up being the only part. A structure
+ *   json_encode refuses becomes `{}` rather than the empty string, so what carries that
+ *   type is always JSON. A server reaches that with `1e999`: json_decode overflows it to
+ *   INF, which no flag encodes. Depth is the other way in, and json_decode's own 512
+ *   levels stop it at the door.
  * - The placeholder shapes, for the block types this mapper knows, are
  *   `[image <mime>, <n> bytes]` and the same for `audio`, where n is the decoded size
  *   of the base64; `[resource <uri> (<mime>), <n> bytes]` for an embedded resource
@@ -49,9 +49,9 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  * `mcp_tool_error`, and the message `The tool reported an error.` when the content is
  * empty.
  *
- * Nothing here throws, and that is part of the redaction seam HttpExchange and HttpReply
- * describe. The content this class carries is the server's own text, `isError` included,
- * and it goes into a ToolResult, never into an exception message. A server can echo a
+ * Nothing here builds an exception, and that is part of the redaction seam HttpExchange
+ * and HttpReply describe. The content this class carries is the server's own text,
+ * `isError` included, and it goes into a ToolResult, never into an exception message. A server can echo a
  * configured header value or the session id back in that text, so spec §2 (amendment 3,
  * 2026-09-21) leaves the redaction and the McpRpcException to Task 12's McpClient, which
  * holds both; this class is handed neither and could not redact. Do not give it a throw

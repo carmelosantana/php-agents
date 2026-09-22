@@ -158,21 +158,23 @@ final class HttpExchange
      * in its own TransportException (observed against MockResponse), so the flag, not
      * $e's type, is what tells the cap apart from a network failure.
      *
-     * The timeout arm reads the text as well as the type because a real curl timeout is
-     * neither a TimeoutExceptionInterface nor called a "timeout": $timeout reaches curl as
-     * CURLOPT_TIMEOUT_MS (CurlHttpClient.php:299) and the failure comes back through
-     * CurlResponse.php:343 as a plain TransportException carrying curl_error(), which reads
-     * "Operation timed out after ..." or "Connection timed out after ...". Both spellings
-     * are matched. The classification is all $e is read for; none of its text, and so none
-     * of the URL it quotes, reaches the message.
+     * The timeout arm reads the text as well as the type, because only the idle `timeout`
+     * raises the contracts' TimeoutExceptionInterface. McpServer::$timeout also goes out as
+     * `max_duration`, and that cap is reported as a plain TransportException whose wording
+     * is the client's own: curl takes it as CURLOPT_TIMEOUT_MS (CurlHttpClient.php:299) and
+     * CurlResponse.php:343 passes curl_error() through, measured here as "Operation timed
+     * out after 600 milliseconds with 0 bytes received" and "Connection timed out after 300
+     * milliseconds"; NativeHttpClient.php:142 raises "Max duration was reached for ...". Not
+     * one of the three says "timeout", so all three spellings are matched. Text is read for
+     * that classification only: none of it, and so none of the URL it quotes, reaches the
+     * message this returns.
      */
     private static function reason(string $method, TransportExceptionInterface $e, bool $exceeded, int $max): string
     {
         if ($exceeded) {
             return sprintf('MCP %s response exceeded %d bytes.', $method, $max);
         }
-        $text = $e->getMessage();
-        if ($e instanceof TimeoutExceptionInterface || stripos($text, 'timeout') !== false || stripos($text, 'timed out') !== false) {
+        if ($e instanceof TimeoutExceptionInterface || preg_match('/timeout|timed out|max duration/i', $e->getMessage()) === 1) {
             return sprintf('MCP %s timed out.', $method);
         }
 
