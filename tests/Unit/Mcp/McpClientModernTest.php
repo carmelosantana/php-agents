@@ -362,9 +362,7 @@ test('a 202 to a 2026-07-28 tools/list is refused, complete result and all', fun
 
 test('a credential in the 400 of a modern header error is redacted', function () {
     // Branch: a 400 carrying -32020 or -32021, which goes to statusError() from inside
-    // modern()'s loop through the same expression the 404 branch uses. Sharing the
-    // expression is not coverage: a regression on this branch alone would red out nothing
-    // without this test.
+    // modern()'s loop through the same expression the 404 branch uses.
     $fake = modernFake();
     $fake->once(static fn(array $r) => FakeMcpServer::error(400, $r['body']['id'], -32020, 'header Bearer sk-modern mismatch'));
     $client = new McpClient(autoServer(['headers' => ['Authorization' => 'Bearer sk-modern']]), $fake->client());
