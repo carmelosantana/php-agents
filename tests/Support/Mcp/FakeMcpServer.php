@@ -29,7 +29,10 @@ use Symfony\Component\HttpClient\Response\MockResponse;
  * earlier "line 158" here was the Mcp-Method line at the spec's first commit 6ba0aa7 and is
  * amendment 3's redaction sentence today.)
  *
- * LEGACY speaks 2025-11-25 the way the WordPress MCP Adapter (trunk 4ff9806) does:
+ * LEGACY speaks 2025-11-25 modelled on the WordPress MCP Adapter (trunk 4ff9806). The
+ * bullets below are this fake's own behaviour, pinned by FakeMcpServerTest; the error
+ * codes in them are the values this fake sends, and spec §2 (amendment 10, 2026-09-22)
+ * records what was and was not read in the Adapter itself:
  * - `initialize` issues `Mcp-Session-Id`, unless $session is null;
  * - while $session is not null, a request other than `initialize` that omits that header gets
  *   400/-32600, and one carrying any other id gets 404/-32005;
