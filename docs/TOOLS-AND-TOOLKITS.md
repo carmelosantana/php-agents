@@ -468,9 +468,11 @@ passed to the model.
 
 Exposed names come from `McpToolName::fit("{$prefix}__{$name}")`, or `fit($name)` when the
 prefix is `''`. That rule returns a name made only of `[A-Za-z0-9_-]`, starting with a letter
-or `_` and at most 64 characters, unchanged; any other name is rewritten and marked with the
-first 8 hex characters of `sha256($raw)` so two different server names cannot collide. Pass a
-`$namer` closure to use your own scheme.
+or `_` and at most 64 characters, unchanged; any other name is cut to 55 characters and
+marked with `_` plus the first 8 hex characters of `sha256($raw)`. The mark is what keeps
+apart two names the rewrite would otherwise merge, `repo.search` and `repo_search`, and it is
+derived from the input, so a tool gets the same exposed name on every turn. Pass a `$namer`
+closure to use your own scheme.
 
 ### Pinning and drift
 
@@ -590,11 +592,17 @@ McpException extends \RuntimeException
 Everything in the tree is a `\RuntimeException`, so `catch (McpException $e)` is one handler
 for "this server is not usable right now".
 
-Messages are built from the method name and the HTTP or JSON-RPC status. No message carries a
-configured header value or a session id: `McpRpcException` splices up to 200 bytes of the
-server's own `error.message`, and `McpClient` replaces every non-empty `McpServer::$headers`
-value and every session id it has held with `[redacted]` before building the exception. Treat
-these messages as untrusted text even so, and log them on that footing.
+Messages are built from the method name, the HTTP or JSON-RPC status and the client's own
+configured limits. The one that carries text from outside is `McpRpcException`, which splices
+up to 200 bytes of the server's own `error.message`, and `McpClient` replaces every non-empty
+`McpServer::$headers` value and every session id it has held with `[redacted]` before building
+it. Treat these messages as untrusted text even so, and log them on that footing.
+
+The redaction reaches what the client received. An id the client never received — a server
+that puts an `Mcp-Session-Id` on a reply the client does not read that header from, and then
+names that id in its own error text — is not removed, because the client never held it. MCP
+assigns the session id on the `InitializeResult`, which is the reply the client reads it from,
+so such an id is not one it stores or ever sends.
 
 `McpRpcException::$data` is **not** redacted. It is the server's `error.data` as sent, because
 version negotiation reads `data.supported` from it. A host that logs `$e->data` logs
@@ -722,11 +730,12 @@ computed over: pins made against one transport then keep matching under the othe
 
 ### Strauss and PHP-Scoper
 
-The MCP client names Symfony types only in `use` statements and type declarations — never
-inside a string — so a prefixer rewrites every reference along with the rest of the code
-(`grep -rn "'Symfony" src` prints nothing, and that is what keeps it true). A host that
-prefixes its dependencies should inject its own prefixed `HttpClientInterface` instance;
-`McpClient` takes the interface and constructs no HTTP client of its own.
+No Symfony class name appears inside a string anywhere in `src` — `grep -rn "'Symfony" src`
+prints nothing, which is the check that keeps it so. The MCP client reaches those types
+through `use` statements and type declarations, which a prefixer rewrites along with the rest
+of the code, so nothing here breaks under Strauss or PHP-Scoper. A host that prefixes its
+dependencies should inject its own prefixed `HttpClientInterface` instance; `McpClient` takes
+the interface and constructs no HTTP client of its own.
 
 ## Raw JSON Schema tools
 
@@ -747,12 +756,13 @@ $tool = new SchemaTool(
 );
 ```
 
-- `toFunctionSchema()` returns the schema in the OpenAI function shape every provider reads,
-  passed through `JsonSchemaRepair::repair()`, with `type: object` defaulted at the root.
+- `toFunctionSchema()` returns the schema in the OpenAI function shape the providers here
+  translate from, passed through `JsonSchemaRepair::repair()`, with `type: object` defaulted
+  at the root.
 - `parameters()` returns `[]`. `SystemPrompt::withTools()` renders the tool's name and
-  description with **no parameters block**, so the only description of the arguments the model
-  gets is the provider's own tool schema. A provider that drops parts of that schema (below)
-  drops them for good.
+  description with **no parameters block**, so what tells the model about the arguments is the
+  provider's own tool schema. A provider that drops parts of that schema (below) drops them
+  for good.
 - `execute()` runs the closure without validating the arguments. A throw, or a return value
   that is not a `ToolResult`, becomes `ToolResult::error("The <name> tool failed before it
   could answer.")` with the error code `schema_tool_error` — a fixed string, the same for every
@@ -791,9 +801,9 @@ A schema that OpenAI Responses cannot close is still sent whole — `strict: fal
 guarantee that the model's arguments match the schema, not the schema itself. Gemini, Ollama
 and llama.cpp rewrite it, and the rewrite is lossy: a `$ref` or a `$defs` is removed rather
 than inlined, and a node left with nothing becomes `{}`, the schema that accepts anything.
-Ollama and llama.cpp lose more than Gemini does, because only they collapse a combinator to
-one branch. If a tool's schema leans on those constructs, expect the model to see less of it
-on those providers than the server published.
+Ollama and llama.cpp go further than Gemini: they collapse a combinator to a single branch,
+where Gemini keeps every branch and normalises each. If a tool's schema leans on those
+constructs, expect the model to see less of it on those providers than the server published.
 
 ## Publishing Toolkit Packages
 
