@@ -139,8 +139,10 @@ Every major component has an interface contract. You can replace any layer:
 |-----------|---------|------------------------|
 | `ProviderInterface` | LLM communication | OpenAI, Anthropic, Ollama |
 | `ToolInterface` | Tool definitions | `Tool` (closure-based) |
-| `ToolkitInterface` | Tool groups + guidelines | (none — implement your own) |
+| `ToolkitInterface` | Tool groups + guidelines | `McpToolkit` |
 | `ToolExecutionPolicyInterface` | Pre-execution gating | (none — implement your own) |
+| `McpClientInterface` | Talking to an MCP server | `McpClient` (Streamable HTTP) |
+| `McpSessionStore` | MCP session persistence | (none — implement your own) |
 | `CancellationTokenInterface` | Cooperative cancellation | `NullCancellationToken` |
 | `PendingInputProviderInterface` | External input injection | `NullPendingInputProvider` |
 | `ContextWindowInterface` | Token budget tracking | `ContextWindow` |
@@ -335,6 +337,28 @@ classDiagram
     Parameter <|-- ArrayParameter
     Parameter <|-- ObjectParameter
 ```
+
+## MCP (`Mcp/`) and raw schemas (`Schema/`)
+
+`CarmeloSantana\PHPAgents\Mcp` is a hand-rolled client for remote Model Context Protocol
+servers over Streamable HTTP, speaking the 2026-07-28 and 2025-11-25 revisions and detecting
+which one a server answers to. `McpServer` holds the endpoint, the static headers and the
+limits; `McpClient` implements `McpClientInterface`'s `listTools()` and `callTool()` over an
+injected `Symfony\Contracts\HttpClient\HttpClientInterface`, so a host can supply its own
+egress; `McpToolkit` turns the tools a person approved — pinned to
+`McpToolDefinition::fingerprint()` — into `SchemaTool`s and withholds any whose definition
+moved. `Mcp\Internal` is where the wire lives and is not public API: the POST and its limits
+(`HttpExchange`), the reply and its JSON-RPC envelope (`HttpReply`, `SseReader`), the
+2026-07-28 header encodings (`HeaderValue`, `ParamHeaders`), and the mapping from a
+`tools/call` result to a `ToolResult` (`ResultMapper`). Errors are an `McpException` tree under
+`\RuntimeException`. See [Tools & Toolkits](TOOLS-AND-TOOLKITS.md#mcp-servers) for the host's
+view.
+
+`CarmeloSantana\PHPAgents\Schema` holds `JsonSchemaRepair`, which is needed because
+`json_decode($json, true)` cannot tell a JSON object from a JSON array: an empty `{}` comes
+back as `[]` and re-encodes as a list, which providers reject where a schema requires an
+object. `repair()` restores objects at the keywords whose value must be one, and leaves value
+keywords alone, so a schema written outside this library survives the round trip.
 
 ## Context Window Management
 
