@@ -222,11 +222,12 @@ final class McpClient implements McpClientInterface
      *
      * `Mcp-Name` goes through HeaderValue; `Mcp-Method` does not. The `=?base64?…?=`
      * sentinel is defined for `Mcp-Name` and `Mcp-Param-*` (Internal\HeaderValue), and
-     * FakeMcpServer compares `Mcp-Method` raw while decoding `Mcp-Name`; this repo's spec
-     * §2 step 1 puts both under the encoding, and that line is the one this file departs
-     * from, proposed as a spec amendment rather than departed from silently. No request
-     * this client sends can tell the two apart: measured, HeaderValue::encode() returns
-     * each of the method names the class docblock lists unchanged.
+     * FakeMcpServer compares `Mcp-Method` raw while decoding `Mcp-Name`. This repo's spec
+     * §2 step 1 used to put both under the encoding; that line was the one this file
+     * departed from, and it now records the raw `Mcp-Method` instead (amendment 6,
+     * 2026-09-22). No request this client sends can tell the two apart: measured,
+     * HeaderValue::encode() returns each of the method names the class docblock lists
+     * unchanged.
      *
      * The -32020 HeaderMismatch arm is a deliberate, documented deviation from upstream
      * too, and it is spec §2 step 2 that is implemented: upstream's 2026-07-28 text says a
@@ -625,6 +626,18 @@ final class McpClient implements McpClientInterface
      * - anything but a literal occurrence. A server that base64-encodes, URL-encodes, cases
      *   differently or truncates a credential before reflecting it is not caught by
      *   substring replacement.
+     * - a session id this client never received. What it removes is what hold() recorded,
+     *   and hold() is called with the store's entry and with the `Mcp-Session-Id` of an
+     *   `initialize` reply. A server that puts that header on a reply this client does not
+     *   read it from — a `tools/list` reply, the `notifications/initialized` ack, any
+     *   2026-07-28 reply — and then names that id in its own error text publishes it.
+     *   Probed against MockHttpClient: an `initialize` issuing no id, then a `tools/list`
+     *   answering 200 with `Mcp-Session-Id: LEAKY` and a JSON-RPC error reading "session
+     *   LEAKY is not yours", gives the message "MCP tools/list failed with JSON-RPC error
+     *   -32000: session LEAKY is not yours". Not a defect: MCP assigns the session id on the
+     *   `InitializeResult`, so an id this client never received, never stored and never
+     *   sends is not the session id spec §2 promises about (spec §2, amendment 9,
+     *   2026-09-22).
      */
     private function redact(string $text): string
     {

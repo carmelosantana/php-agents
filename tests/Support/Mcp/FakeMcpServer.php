@@ -19,13 +19,13 @@ use Symfony\Component\HttpClient\Response\MockResponse;
  *
  * The two modern headers are not compared the same way: `Mcp-Name` is run through decodeName(),
  * `Mcp-Method` is compared raw. The MCP spec asks for the `=?base64?…?=` sentinel encoding on
- * `Mcp-Name` and `Mcp-Param-*` only, while this repo's spec §2 step 1 puts `Mcp-Method` under
- * it too. A shared encoder that follows the sentinel rules is invisible here, because the four
+ * `Mcp-Name` and `Mcp-Param-*` only, and this repo's spec §2 step 1 once put `Mcp-Method` under
+ * it too. A shared encoder that follows the sentinel rules is invisible here, because the
  * method names McpClient posts are header-safe and pass through HeaderValue::encode()
  * unchanged (measured); a client that base64-wraps `Mcp-Method` unconditionally gets -32020 on
  * every modern request. Task 13 settled which the client owes for this repo: McpClient sends
  * `Mcp-Method` raw, so the raw comparison here is the behaviour it is held to, and spec §2
- * step 1 is carried as a proposed amendment instead. (Cited by section, not by line: the
+ * step 1 now records that raw header (amendment 6, 2026-09-22). (Cited by section, not by line: the
  * earlier "line 158" here was the Mcp-Method line at the spec's first commit 6ba0aa7 and is
  * amendment 3's redaction sentence today.)
  *
