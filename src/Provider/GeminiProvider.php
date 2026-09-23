@@ -617,7 +617,7 @@ final class GeminiProvider extends AbstractProvider
     }
 
     /**
-     * Normalize JSON Schema for Gemini compatibility, at every depth.
+     * Normalize JSON Schema for Gemini compatibility, at the depths the walk below reaches.
      *
      * Gemini expects upper-case type names (STRING, OBJECT, …), a single type per
      * node with `nullable` for "or null", and none of UNSUPPORTED_KEYWORDS. The

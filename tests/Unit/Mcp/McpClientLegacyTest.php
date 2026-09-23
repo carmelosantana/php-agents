@@ -178,7 +178,7 @@ test('a 404 that stays after re-initializing is thrown, not looped on', function
         ->and($fake->initializeCount)->toBe(2);
 });
 
-test('an unknown tool (404/-32003, as the WordPress Adapter answers) is an RPC error, not an expired session', function () {
+test('an unknown tool (404/-32003, as FakeMcpServer answers) is an RPC error, not an expired session', function () {
     $fake = legacyFake();
     $client = new McpClient(legacyServer(), $fake->client());
 

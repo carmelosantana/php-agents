@@ -51,10 +51,11 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * caller's own, with no probe and no handshake before it. session() ignores an entry saved
  * under a version this client does not speak, so detection runs and overwrites it.
  * A 404 to a request that carried a session means the session is gone, but only
- * when the body has no JSON-RPC error or carries -32001/-32005: the WordPress MCP Adapter
- * also answers an unknown tool with 404 (-32003). In that case the client forgets the
- * session, runs the handshake once more and retries once. It never sends DELETE; the server
- * expires the session.
+ * when the body has no JSON-RPC error or carries -32001/-32005: a 404 can also carry a
+ * JSON-RPC error that is about something other than the session, which is what
+ * FakeMcpServer's unknown-tool -32003 stands in for. When the body does say the session is
+ * gone, the client forgets it, runs the handshake once more and retries once. It never sends
+ * DELETE; the server expires the session.
  *
  * The JSON-RPC methods posted from this file are `initialize` and
  * `notifications/initialized`, from initialize(), and the `tools/list` and `tools/call` that
@@ -244,10 +245,9 @@ final class McpClient implements McpClientInterface
      * toolkit — a new McpToolkit lists again. McpClientModernTest's "a modern header error
      * is an RPC error, never a fallback" pins the throw.
      *
-     * Nothing in this repo exercises this arm against a real server. The tests that run
-     * unasked speak to FakeMcpServer; tests/Integration/Mcp/McpLiveTest.php speaks to a
-     * real one, but only when PHP_AGENTS_MCP_URL names it, and what it asks for is a
-     * listing and, with PHP_AGENTS_MCP_READONLY_TOOL set, one call with no arguments.
+     * Nothing in this repo exercises this arm against a real server.
+     * tests/Integration/Mcp/McpLiveTest.php reaches one only when PHP_AGENTS_MCP_URL names
+     * it, and skips with a message otherwise.
      * Spec §2 step 3 records, from a reading of the WordPress MCP Adapter's source at trunk
      * 4ff9806, that the Adapter answers a 2026-07-28 probe with a 400 carrying a JSON-RPC
      * "Invalid Request" (HttpSessionValidator's missing-Mcp-Session-Id branch, through

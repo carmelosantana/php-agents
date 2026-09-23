@@ -807,13 +807,15 @@ removed rather than inlined, and a node left with nothing becomes `{}`, the sche
 anything. Ollama and llama.cpp go further than Gemini in what they change, collapsing a
 combinator to a single branch where Gemini keeps every branch and normalises each.
 
-All three walk the same narrow set of positions. Gemini descends through `properties`, `items`
-and the combinator branches, Ollama and llama.cpp through `properties` and `items` — they
-flatten a combinator rather than descending into it. A subschema reached any other way is
-passed through as the server wrote it. Probed on `{"type":"object","not":{"$ref":"#/$defs/x"},
-"properties":{"p":{"type":"string","minLength":3,"format":"email"}}}`: all three rewrote `p`
-and all three left `not` exactly as it arrived. So expect a tool's schema to reach these
-providers rewritten in some positions and untouched in others, and in neither case complete.
+Each of the three walks a narrow set of positions, and not the same set. Gemini descends
+through `properties`, `items` and each `anyOf`/`oneOf`/`allOf` branch. Ollama and llama.cpp
+descend through `properties` and `items` only, having already merged a combinator's first
+non-null branch into the node instead of descending into it. A subschema reached any other way
+is passed through as the server wrote it, by all three. Probed with a schema carrying
+`not: {"$ref": "…"}` beside a `properties.p` holding `minLength` and `format`: all three
+rewrote `p` and all three left `not` exactly as it arrived. So expect a tool's schema to reach
+these providers rewritten in some positions and untouched in others, and in neither case
+complete.
 
 ## Publishing Toolkit Packages
 
