@@ -232,8 +232,11 @@ final class McpClient implements McpClientInterface
      * The -32020 HeaderMismatch arm is a deliberate, documented deviation from upstream
      * too, and it is spec §2 step 2 that is implemented: upstream's 2026-07-28 text says a
      * client SHOULD re-run `tools/list` and retry once on -32020, and this client throws
-     * McpRpcException without retrying. Upstream says SHOULD, not MUST, and this repo's
-     * tests speak to FakeMcpServer rather than to a live MCP server of either version.
+     * McpRpcException without retrying. Upstream says SHOULD, not MUST, and the tests that
+     * run unasked speak to FakeMcpServer rather than to a live MCP server of either
+     * version: tests/Integration/Mcp/McpLiveTest.php does speak to a real server, but only
+     * when PHP_AGENTS_MCP_URL names one, and it skips with a message otherwise. What it
+     * asks a live server for is a listing and one read-only call; neither draws a -32020.
      * Spec §2 step 3 records, from a reading of the WordPress MCP Adapter's source at
      * trunk 4ff9806, that the Adapter answers a 2026-07-28 probe with 400/-32600 and takes
      * the fallback path; that reading is not something this repo executes.
