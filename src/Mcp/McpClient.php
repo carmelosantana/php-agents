@@ -221,7 +221,9 @@ final class McpClient implements McpClientInterface
      * One 2026-07-28 request, plus a single retry when a -32022 still lists 2026-07-28.
      *
      * `Mcp-Name` goes through HeaderValue; `Mcp-Method` does not. The `=?base64?…?=`
-     * sentinel is defined for `Mcp-Name` and `Mcp-Param-*` (Internal\HeaderValue), and
+     * sentinel is defined for `Mcp-Name` and `Mcp-Param-*` (Internal\HeaderValue; MCP
+     * 2026-07-28 streamable-http §Request Metadata, in Value Encoding and again in Server
+     * Validation, which names those two as the headers a server MUST decode), and
      * FakeMcpServer compares `Mcp-Method` raw while decoding `Mcp-Name`. This repo's spec
      * §2 step 1 used to put both under the encoding; that line was the one this file
      * departed from, and it now records the raw `Mcp-Method` instead (amendment 6,
@@ -230,18 +232,27 @@ final class McpClient implements McpClientInterface
      * unchanged.
      *
      * The -32020 HeaderMismatch arm is a deliberate, documented deviation from upstream
-     * too, and it is spec §2 step 2 that is implemented: upstream's 2026-07-28 text says a
-     * client SHOULD re-run `tools/list` and retry once on -32020, and this client throws
-     * McpRpcException without retrying. Upstream says SHOULD, not MUST, and the tests that
-     * run unasked speak to FakeMcpServer rather than to a live MCP server of either
-     * version: tests/Integration/Mcp/McpLiveTest.php does speak to a real server, but only
-     * when PHP_AGENTS_MCP_URL names one, and it skips with a message otherwise. What it
-     * asks a live server for is a listing and one read-only call; neither draws a -32020.
-     * Spec §2 step 3 records, from a reading of the WordPress MCP Adapter's source at
-     * trunk 4ff9806, that the Adapter answers a 2026-07-28 probe with 400/-32600 and takes
-     * the fallback path; that reading is not something this repo executes.
-     * McpClientModernTest's "a modern header error is an RPC error, never a fallback" pins
-     * the throw.
+     * too, and it is spec §2 step 2 that is implemented: upstream's 2026-07-28 Streamable
+     * HTTP text, under Client Behavior, says a client SHOULD call `tools/list` to check for
+     * changes to the tool's `inputSchema` and then retry, and this client throws
+     * McpRpcException instead. Upstream says SHOULD, not MUST. The case its SHOULD names is
+     * a tool's `inputSchema` changing between this client's listing and its call, and a
+     * re-list does answer that one; upstream's Server Validation also lets a -32020 mean a
+     * header value this client sent is missing, mismatched or carries invalid characters,
+     * which a re-list does not answer. Nothing in the error tells the two apart, so the
+     * client hands the error to the host, which can catch McpRpcException and build a fresh
+     * toolkit — a new McpToolkit lists again. McpClientModernTest's "a modern header error
+     * is an RPC error, never a fallback" pins the throw.
+     *
+     * Nothing in this repo exercises this arm against a real server. The tests that run
+     * unasked speak to FakeMcpServer; tests/Integration/Mcp/McpLiveTest.php speaks to a
+     * real one, but only when PHP_AGENTS_MCP_URL names it, and what it asks for is a
+     * listing and, with PHP_AGENTS_MCP_READONLY_TOOL set, one call with no arguments.
+     * Spec §2 step 3 records, from a reading of the WordPress MCP Adapter's source at trunk
+     * 4ff9806, that the Adapter answers a 2026-07-28 probe with a 400 carrying a JSON-RPC
+     * "Invalid Request" (HttpSessionValidator's missing-Mcp-Session-Id branch, through
+     * McpErrorFactory::invalid_request) and so takes the fallback path; that reading is not
+     * something this repo executes.
      *
      * @param array<string, mixed> $params
      * @param array<string, mixed> $arguments

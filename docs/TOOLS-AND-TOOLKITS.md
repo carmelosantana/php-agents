@@ -593,10 +593,10 @@ Everything in the tree is a `\RuntimeException`, so `catch (McpException $e)` is
 for "this server is not usable right now".
 
 Messages are built from the method name, the HTTP or JSON-RPC status and the client's own
-configured limits. The one that carries text from outside is `McpRpcException`, which splices
-up to 200 bytes of the server's own `error.message`, and `McpClient` replaces every non-empty
-`McpServer::$headers` value and every session id it has held with `[redacted]` before building
-it. Treat these messages as untrusted text even so, and log them on that footing.
+configured limits. `McpRpcException` also splices up to 200 bytes of the server's own
+`error.message`, and `McpClient` replaces every non-empty `McpServer::$headers` value and every
+session id it has held with `[redacted]` before building it. Treat these messages as untrusted
+text even so, and log them on that footing.
 
 The redaction reaches what the client received. An id the client never received — a server
 that puts an `Mcp-Session-Id` on a reply the client does not read that header from, and then
@@ -741,8 +741,8 @@ the interface and constructs no HTTP client of its own.
 
 `Tool` builds its schema from typed `Parameter` objects and validates the model's arguments
 against them. A schema that came from somewhere else — an MCP server's `inputSchema` — has
-constructs no `Parameter` models, and its publisher validates its own input. `SchemaTool` is
-for that case, and `McpToolkit` builds one per exposed tool.
+constructs no `Parameter` models (`oneOf`, `$ref`, formats), and its publisher validates its
+own input. `SchemaTool` is for that case, and `McpToolkit` builds one per exposed tool.
 
 ```php
 use CarmeloSantana\PHPAgents\Tool\SchemaTool;
@@ -776,8 +776,11 @@ a decoded `[]` are the same PHP value, and `json_encode()` writes both back as `
 providers reject as `"properties": []`. `repair()` turns an array back into an object only at
 keywords whose value must be an object — the map-valued ones (`properties`, `patternProperties`,
 `$defs`, `definitions`, `dependentSchemas`) and the schema-valued ones
-(`additionalProperties`, `unevaluatedProperties`, `items`, `contains`, `not`, `if`, `then`,
-`else`, `propertyNames`, and the older `additionalItems`, `unevaluatedItems`, `contentSchema`).
+(`additionalProperties`, `unevaluatedProperties`, `items`, `additionalItems`,
+`unevaluatedItems`, `contains`, `not`, `if`, `then`, `else`, `propertyNames`,
+`contentSchema`). Two of the keywords in those two lists are older spellings still met in the
+wild: `definitions`, superseded by `$defs`, and `additionalItems`, removed in 2020-12. The
+rest are current JSON Schema.
 `items` holding a non-empty list is the draft-04 tuple form and stays a list. Value keywords
 (`enum`, `const`, `default`, `examples`, `required`, `type`) are never touched, because their
 `[]` may really be an empty list.
@@ -793,17 +796,24 @@ MCP tool taking no input publishes is returned, and re-encoded, as `[]`. Establi
 | --- | --- |
 | OpenAI Chat Completions | sent as written, except that a missing `required` is added as `[]`, which OpenAI insists on |
 | OpenAI Responses | strict mode only when `StrictSchemaNormalizer::qualifies()` says the schema can be closed without changing what it accepts; otherwise the schema goes out as written with `strict: false` |
-| Gemini | rewritten: types upper-cased, `type: [X, "null"]` becomes `type: X` plus `nullable: true`, and `additionalProperties`, `$schema`, `$ref`, `$defs`, `definitions`, `patternProperties` and `default` are stripped at every depth |
-| Ollama | rewritten more heavily: `anyOf`/`oneOf`/`allOf` are flattened to their first non-null branch, numeric and string constraints are demoted into the description, then stripped |
-| llama.cpp | the same flattening, demotion and stripping as Ollama |
+| Gemini | rewritten: types upper-cased, `type: [X, "null"]` becomes `type: X` plus `nullable: true`, and `additionalProperties`, `$schema`, `$ref`, `$defs`, `definitions`, `patternProperties` and `default` are stripped. The walk descends through `properties`, `items` and the `anyOf`/`oneOf`/`allOf` branches; a subschema anywhere else — under `not`, `contains`, `if`/`then`/`else`, `propertyNames`, `prefixItems` — is passed through unchanged, so a keyword on that side is not stripped |
+| Ollama | rewritten more heavily: `anyOf`/`oneOf`/`allOf` are flattened to their first non-null branch, and `DEMOTABLE_KEYWORDS` — the numeric and length bounds, `pattern`, `minItems`, `maxItems`, `const`, `default` and `format` — are restated in the description before being stripped |
+| llama.cpp | the same flattening, demotion and stripping as Ollama, over the same keyword lists, and it adds `required: []` to an object node that has no `required` |
 
 A schema that OpenAI Responses cannot close is still sent whole — `strict: false` costs the
 guarantee that the model's arguments match the schema, not the schema itself. Gemini, Ollama
-and llama.cpp rewrite it, and the rewrite is lossy: a `$ref` or a `$defs` is removed rather
-than inlined, and a node left with nothing becomes `{}`, the schema that accepts anything.
-Ollama and llama.cpp go further than Gemini: they collapse a combinator to a single branch,
-where Gemini keeps every branch and normalises each. If a tool's schema leans on those
-constructs, expect the model to see less of it on those providers than the server published.
+and llama.cpp rewrite it, and the rewrite is lossy where it reaches: a `$ref` or a `$defs` is
+removed rather than inlined, and a node left with nothing becomes `{}`, the schema that accepts
+anything. Ollama and llama.cpp go further than Gemini in what they change, collapsing a
+combinator to a single branch where Gemini keeps every branch and normalises each.
+
+All three walk the same narrow set of positions. Gemini descends through `properties`, `items`
+and the combinator branches, Ollama and llama.cpp through `properties` and `items` — they
+flatten a combinator rather than descending into it. A subschema reached any other way is
+passed through as the server wrote it. Probed on `{"type":"object","not":{"$ref":"#/$defs/x"},
+"properties":{"p":{"type":"string","minLength":3,"format":"email"}}}`: all three rewrote `p`
+and all three left `not` exactly as it arrived. So expect a tool's schema to reach these
+providers rewritten in some positions and untouched in others, and in neither case complete.
 
 ## Publishing Toolkit Packages
 

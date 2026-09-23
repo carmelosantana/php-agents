@@ -15,8 +15,9 @@ use Symfony\Component\HttpClient\HttpClient;
 //
 // The two skips are written differently because they sit in different places. A plain
 // function is not bound to the TestCase, so it reaches the current test through Pest's
-// test() helper; a test closure is bound, so $this is the TestCase. Both were run with
-// neither variable set and both reported as skipped with their message.
+// test() helper; a test closure is bound, so $this is the TestCase. Both were run: with all
+// three variables unset each test skipped with its own message, and with only
+// PHP_AGENTS_MCP_READONLY_TOOL set the second test skipped through the helper's message.
 
 function liveMcpServer(): McpServer
 {
@@ -44,9 +45,10 @@ test('a real server lists tools with stable fingerprints', function () {
 });
 
 // ToolResultStatus has a third case, Timeout, which this assertion leaves out.
-// `grep -rn 'ToolResultStatus::Timeout' src/` returns the enum's own case declaration and
-// nothing that constructs one, and a tools/call that times out throws McpTransportException
-// rather than answering, so the MCP path cannot reach this assertion with a Timeout.
+// `grep -rn 'Timeout' src/` returns the enum's own `case Timeout = 'timeout';` and three
+// TimeoutExceptionInterface lines in Mcp/Internal/HttpExchange.php, and nothing that builds a
+// ToolResult with that status. A tools/call that times out throws McpTransportException rather
+// than answering, so the MCP path cannot reach this assertion with a Timeout.
 test('a real read-only tool call returns a result', function () {
     $tool = getenv('PHP_AGENTS_MCP_READONLY_TOOL');
     if (!is_string($tool) || $tool === '') {
