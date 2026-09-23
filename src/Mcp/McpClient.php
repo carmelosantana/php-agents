@@ -541,11 +541,12 @@ final class McpClient implements McpClientInterface
     }
 
     /**
-     * The only place an McpRpcException is built, in this namespace and its Internal one:
-     * HttpExchange and HttpReply hand the decoded envelope back untouched so that the
-     * redaction below happens before the exception exists (spec §2, amendment 3,
-     * 2026-09-21). McpRpcException formats and cuts its message inside its constructor, so
-     * there is no later seam to redact in.
+     * Builds the McpRpcException, redacting the server's text first — `grep -rn 'new
+     * McpRpcException' src/` returns this method's line and nothing else, so that redaction
+     * is not one path among several. HttpExchange and HttpReply hand the decoded envelope
+     * back untouched to keep it that way, so the redaction happens before the exception
+     * exists (spec §2, amendment 3, 2026-09-21). McpRpcException formats and cuts its
+     * message inside its constructor, so there is no later seam to redact in.
      *
      * @param array<array-key, mixed> $message
      */
