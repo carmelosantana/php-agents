@@ -606,11 +606,13 @@ Messages are built from the method name, the HTTP or JSON-RPC status and the cli
 configured limits. `McpRpcException` also splices up to 200 bytes of the server's own
 `error.message`, and `McpClient` replaces every non-empty `McpServer::$headers` value and every
 session id it has held with `[redacted]` before building it. For `Authorization` and
-`Proxy-Authorization`, whatever the case of the name, the value is also removed with spaces
-and tabs trimmed from both ends, as RFC 9110 §5.5 has a server read it. When that trimmed
-value has the form `<scheme> <credentials>`, the scheme followed by spaces or tabs, its
-credentials part is removed on its own, so a server that echoes `sk-live-123` from
-`Bearer sk-live-123 ` does not publish it. Other headers are matched only as configured, never
+`Proxy-Authorization`, whatever the case of the name, the value is also removed trimmed at
+both ends of SP, HTAB, LF, VT, FF and CR, the bytes PCRE's `\s` matches. When that trimmed
+value has the form `<scheme> <credentials>`, the scheme followed by one or more of those bytes,
+its credentials part is removed on its own, so a server that echoes `sk-live-123` from
+`Bearer sk-live-123 ` does not publish it. A byte outside that class that a server still
+splits on — Python's `str.split()` splits on 0x1C to 0x1F, 0x85 and 0xA0, and the client sends
+them — can publish the token. Other headers are matched only as configured, never
 trimmed or split, and the match is literal: a credential the server decodes, encodes or
 otherwise transforms before echoing it — `user:pass` from `Basic dXNlcjpwYXNz`, say — is not
 removed. Treat these messages as untrusted text even so, and log them on that footing.
