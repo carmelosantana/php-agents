@@ -103,6 +103,15 @@ test('-32022 that lists only 2025-11-25 falls back to the handshake', function (
         ->and($fake->initializeCount)->toBe(1);
 });
 
+test('-32022 listing both versions twice is retried once, then falls back to the handshake', function () {
+    $fake = new FakeMcpServer(FakeMcpServer::LEGACY);
+    $fake->tools = [FakeMcpServer::tool('search')];
+    $fake->once(versionError(['2026-07-28', '2025-11-25']))->once(versionError(['2026-07-28', '2025-11-25']));
+
+    expect((new McpClient(autoServer(), $fake->client()))->listTools())->toHaveCount(1)
+        ->and($fake->methods())->toBe(['tools/list', 'tools/list', 'initialize', 'notifications/initialized', 'tools/list']);
+});
+
 test('-32022 with no shared version is refused', function () {
     $fake = modernFake();
     $fake->once(versionError(['2024-11-05']));
