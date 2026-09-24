@@ -346,11 +346,11 @@ test('a header other than Authorization and Proxy-Authorization is redacted whol
 });
 
 test('an authorization value without a credentials part adds no empty needle', function (string $value, string $expected) {
-    // Nothing follows the scheme once SP and HTAB are trimmed from both ends, so the value as
-    // configured and its trimmed form are the only needles it gives. A value of whitespace
-    // alone trims to nothing, which must not become a needle: strtr() leaves the text alone
-    // for an empty needle but says "Ignoring replacement of empty string", which the
-    // handler here records.
+    // Nothing follows the scheme once the bytes PCRE's \s matches are trimmed from both ends,
+    // so the value as configured and its trimmed form are the only needles it gives. A value
+    // of those bytes alone trims to nothing, which must not become a needle: strtr() leaves
+    // the text alone for an empty needle but says "Ignoring replacement of empty string",
+    // which the handler here records.
     $fake = legacyFake();
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'scheme Bearer lacks a token')));
     $server = legacyServer(['headers' => ['Authorization' => $value]]);
@@ -374,12 +374,15 @@ test('an authorization value without a credentials part adds no empty needle', f
     'the scheme' => ['Bearer', 'scheme [redacted] lacks a token'],
     'the scheme and two spaces' => ['Bearer  ', 'scheme [redacted] lacks a token'],
     'the scheme, a space and a tab' => ["Bearer \t", 'scheme [redacted] lacks a token'],
+    'the scheme, a space and a VT' => ["Bearer \x0B", 'scheme [redacted] lacks a token'],
     'a tab alone' => ["\t", 'scheme Bearer lacks a token'],
+    'a VT and an FF alone' => ["\x0B\x0C", 'scheme Bearer lacks a token'],
 ]);
 
-test('the credentials part begins after every space or tab that follows the scheme', function (string $value) {
-    // RFC 9110 §11.4 separates the scheme from what follows with 1*SP; a tab is taken as a
-    // separator too, so a server that splits on one cannot publish the tail.
+test('the credentials part begins after every byte PCRE\'s \\s matches that follows the scheme', function (string $value) {
+    // RFC 9110 §11.4 separates the scheme from what follows with 1*SP; every byte PCRE's \s
+    // matches is taken as a separator too, so a server that splits on one cannot publish
+    // the tail.
     $fake = legacyFake();
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'token sk-multi refused')));
     $server = legacyServer(['headers' => ['Authorization' => $value]]);
@@ -394,11 +397,13 @@ test('the credentials part begins after every space or tab that follows the sche
     'three spaces' => ['Bearer   sk-multi'],
     'a tab' => ["Bearer\tsk-multi"],
     'a space, a tab and a space' => ["Bearer \t sk-multi"],
+    'a VT' => ["Bearer\x0Bsk-multi"],
+    'an FF' => ["Bearer\x0Csk-multi"],
 ]);
 
-test('a padded authorization value is judged with its leading and trailing whitespace trimmed', function (string $value, string $expected) {
-    // RFC 9110 §5.5 leaves leading and trailing whitespace out of a field value, and a server
-    // that strips it echoes the value without it. The text is what a server that strips both
+test('an authorization value padded with SP or HTAB is judged with that padding trimmed', function (string $value, string $expected) {
+    // RFC 9110 §5.5 leaves leading and trailing SP and HTAB out of a field value, and a
+    // server that strips them echoes the value without them. The text is what a server that strips both
     // ends and splits on the first space answers: measured, Node reads each of these values
     // as `Bearer sk-live-123`. The value as configured stays a needle too, and it matches
     // from the space before `Bearer`, so ` Bearer sk-live-123` takes that space along.
@@ -418,22 +423,41 @@ test('a padded authorization value is judged with its leading and trailing white
     'a trailing tab' => ["Bearer sk-live-123\t", 'invalid token [redacted] (sent [redacted])'],
 ]);
 
-test('only SP and HTAB are trimmed from an authorization value', function () {
-    // RFC 9110's OWS is SP and HTAB. A trailing vertical tab is not OWS, so it stays in the
-    // trimmed value and in the credentials part, and a bare `sk-x` is not a needle.
+test('the bytes an authorization value is trimmed and split on are the ones PCRE\'s \\s matches', function () {
+    // LF and CR are in the class too, though no request carries them: a value holding either
+    // fails with McpTransportException before a connection is opened, so this test is what
+    // pins them.
+    $space = (new ReflectionClassConstant(McpClient::class, 'AUTH_SPACE'))->getValue();
+    $matched = implode('', array_filter(array_map('chr', range(0, 255)), static fn(string $b): bool => preg_match('/\s/', $b) === 1));
+
+    expect(count_chars($space, 3))->toBe($matched)
+        ->and(strlen($space))->toBe(strlen($matched));
+});
+
+test('an authorization value padded or split with a VT or an FF is redacted as a server splits it', function (string $value, string $raw, string $expected) {
+    // McpClient sends these values as configured, and Python's http.server accepts them. The
+    // text is what a handler that reads the token with str.split() answers, the raw header's
+    // repr() included: measured, it names `sk-x` alone. Trimming and separating on the bytes
+    // PCRE's \s matches makes `sk-x` a needle for each of them.
     $fake = legacyFake();
-    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'token sk-x refused')));
-    $server = legacyServer(['headers' => ['Authorization' => "Bearer sk-x\x0B"]]);
+    $fake->once(answerFor('initialize', static fn($id) => FakeMcpServer::error(200, $id, -32001, "invalid token sk-x; raw='{$raw}'")));
+    $server = legacyServer(['headers' => ['Authorization' => $value]]);
 
     try {
         (new McpClient($server, $fake->client()))->listTools();
         $this->fail('expected an RPC error');
     } catch (McpRpcException $e) {
-        expect($e->getMessage())->toBe('MCP tools/list failed with JSON-RPC error -32603: token sk-x refused');
+        expect($e->getMessage())->toBe('MCP initialize failed with JSON-RPC error -32001: ' . $expected);
     }
-});
+})->with([
+    'a trailing VT' => ["Bearer sk-x\x0B", 'Bearer sk-x\\x0b', "invalid token [redacted]; raw='[redacted]\\x0b'"],
+    'a trailing FF' => ["Bearer sk-x\x0C", 'Bearer sk-x\\x0c', "invalid token [redacted]; raw='[redacted]\\x0c'"],
+    'a leading VT' => ["\x0BBearer sk-x", '\\x0bBearer sk-x', "invalid token [redacted]; raw='\\x0b[redacted]'"],
+    'a VT separator' => ["Bearer\x0Bsk-x", 'Bearer\\x0bsk-x', "invalid token [redacted]; raw='Bearer\\x0b[redacted]'"],
+    'an FF separator' => ["Bearer\x0Csk-x", 'Bearer\\x0csk-x', "invalid token [redacted]; raw='Bearer\\x0c[redacted]'"],
+]);
 
-test('a credentials part keeps the whitespace inside it', function () {
+test('a credentials part keeps the spaces inside it', function () {
     // An auth-param list is one needle, from the first byte after the scheme's separator to
     // the end of the trimmed value.
     $fake = legacyFake();
@@ -466,8 +490,8 @@ test('a header other than Authorization and Proxy-Authorization is not trimmed',
 
 test('an authorization value that does not open with a scheme token is not split', function (string $value) {
     // RFC 9110's auth-scheme is a token. A value whose trimmed form does not begin with one
-    // followed by SP or HTAB does not have the `<scheme> <credentials>` form, so its tail is
-    // not a needle and a bare tail is published.
+    // followed by a byte PCRE's \s matches does not have the `<scheme> <credentials>` form,
+    // so its tail is not a needle and a bare tail is published.
     $fake = legacyFake();
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'token sk-slash refused')));
     $server = legacyServer(['headers' => ['Authorization' => $value]]);

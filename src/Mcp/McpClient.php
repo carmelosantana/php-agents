@@ -83,11 +83,14 @@ final class McpClient implements McpClientInterface
 
     private const REDACTED = '[redacted]';
 
-    /** Lower-cased names of the headers whose trimmed form and credentials part redact() also removes. */
+    /** Lower-cased names of the headers redact() also trims and splits. */
     private const AUTH_HEADERS = ['authorization', 'proxy-authorization'];
 
-    /** RFC 9110 §11.4 on a trimmed value: an auth-scheme token, 1*(SP / HTAB), then the credentials part, captured. */
-    private const AUTH_CREDENTIALS = '/\A[!#$%&\'*+\-.^_`|~0-9A-Za-z]+[ \t]+(.+)\z/s';
+    /** SP, HTAB, LF, VT, FF and CR: the bytes PCRE's \s matches, measured over all 256. */
+    private const AUTH_SPACE = " \t\n\x0B\f\r";
+
+    /** RFC 9110 §11.4 on a trimmed value: a scheme token, AUTH_SPACE bytes, the credentials. */
+    private const AUTH_CREDENTIALS = '/\A[!#$%&\'*+\-.^_`|~0-9A-Za-z]+[' . self::AUTH_SPACE . ']+(.+)\z/s';
 
     private readonly HttpExchange $exchange;
 
@@ -604,23 +607,28 @@ final class McpClient implements McpClientInterface
      *   'abc Bearer t') gives "[R]a[R]b[R]c[R] [R][R][R]". str_replace() does not splice on an
      *   empty needle either; only the preg draft this guard was first written for could.
      * - for `Authorization` and `Proxy-Authorization`, the name matched case-insensitively,
-     *   the value with SP and HTAB trimmed from both ends and the credentials part of that
-     *   trimmed value, beside the value as configured (spec §2, amendment 13, 2026-09-24).
-     *   The trimmed value is a needle when it is not empty: RFC 9110 §5.5 leaves that
-     *   whitespace out of a field value, and measured, Node reads `Bearer sk-live-123 `,
-     *   ` Bearer sk-live-123` and `Bearer sk-live-123\t` alike as `Bearer sk-live-123`. The
-     *   credentials part catches a server that names a token without its scheme. Following
-     *   RFC 9110 §11.4, with HTAB accepted beside SP, the trimmed value has a credentials part
-     *   when it is an auth-scheme token, then one or more SP or HTAB, then at least one more
-     *   byte; the part runs from the first byte after that whitespace to the end of the
-     *   trimmed value and keeps any whitespace inside it, so `Bearer \t sk-multi` gives
-     *   `sk-multi` and `Digest username="u", response="r"` gives `username="u",
-     *   response="r"`. `Bearer`, and `Bearer` with trailing whitespace, have none; a value
-     *   whose trimmed form does not open with a token followed by SP or HTAB — a `/` or a
-     *   quote in the scheme — has none either. A value of whitespace alone trims to nothing, and nothing empty becomes
-     *   a needle. The credentials part is a needle whatever its length, and a short one takes
-     *   every occurrence with it: measured, `Bearer t` turns the server text "plain text"
-     *   into "plain [redacted]ex[redacted]".
+     *   the value trimmed of AUTH_SPACE at both ends and the credentials part of that trimmed
+     *   value, beside the value as configured (spec §2, amendment 13, 2026-09-24). AUTH_SPACE
+     *   is SP, HTAB, LF, VT, FF and CR, the bytes PCRE's `\s` matches. The trimmed value is a
+     *   needle when it is not empty. RFC 9110 §5.5 leaves SP and HTAB out of a field value, and
+     *   measured, Node reads `Bearer sk-live-123 `, ` Bearer sk-live-123` and
+     *   `Bearer sk-live-123\t` alike as `Bearer sk-live-123`. VT and FF reach the wire as
+     *   well, and measured, a Python http.server handler that reads the token with str.split()
+     *   names `sk-x` alone for `Bearer sk-x\x0B`, `\x0BBearer sk-x` and `Bearer\x0Csk-x`. LF
+     *   and CR never reach a server: measured, a value holding either fails with
+     *   McpTransportException and no connection is opened. The credentials part catches a
+     *   server that names a token without its scheme. Following RFC 9110 §11.4, with every
+     *   AUTH_SPACE byte accepted beside SP, the trimmed value has a credentials part when it is
+     *   an auth-scheme token, then one or more AUTH_SPACE bytes, then at least one more byte;
+     *   the part runs from the first byte after those to the end of the trimmed value and
+     *   keeps every byte inside it, so `Bearer \t sk-multi` gives `sk-multi` and
+     *   `Digest username="u", response="r"` gives `username="u", response="r"`. `Bearer`, and
+     *   `Bearer` followed by AUTH_SPACE bytes alone, have none; a value whose trimmed form does
+     *   not open with a token followed by an AUTH_SPACE byte — a `/` or a quote in the scheme —
+     *   has none either. A value of AUTH_SPACE bytes alone trims to nothing, and nothing empty
+     *   becomes a needle. The credentials part is a needle whatever its length, and a short
+     *   one takes every occurrence with it: measured, `Bearer t` turns the server text
+     *   "plain text" into "plain [redacted]ex[redacted]".
      * - every session id this instance has ever held — $held, filled by hold() as the store
      *   hands an entry over and as an `initialize` reply arrives, whatever this client then
      *   does with either, and never emptied. forget() stops the client sending an id; it does
@@ -674,6 +682,11 @@ final class McpClient implements McpClientInterface
      *   with `Bear/er sk-x`, the whole value is redacted and a bare `sk-x` stays.
      * - a piece of a credentials part. The part is one needle: with `Digest username="u",
      *   response="r"`, that string after the scheme is redacted, and `r` named alone stays.
+     * - a byte outside AUTH_SPACE that a server splits on. McpClient sends 0x1C to 0x1F,
+     *   0x85 and 0xA0 as configured, and Python's str.split() splits on each of them:
+     *   measured, a Python http.server handler that reads the token with str.split() names
+     *   `sk-x` alone for `Bearer sk-x\x1C`, `\xA0Bearer sk-x` and `Bearer\x85sk-x`, and the
+     *   message keeps it, since none of the needles those values give is `sk-x`.
      * - a session id this client never received. What it removes is what hold() recorded,
      *   and hold() is called with the store's entry and with the `Mcp-Session-Id` of an
      *   `initialize` reply. A server that puts that header on a reply this client does not
@@ -701,7 +714,7 @@ final class McpClient implements McpClientInterface
             if (!in_array(strtolower((string) $name), self::AUTH_HEADERS, true)) {
                 continue;
             }
-            $trimmed = trim($value, " \t");
+            $trimmed = trim($value, self::AUTH_SPACE);
             if ($trimmed !== '') {
                 $secrets[$trimmed] = self::REDACTED;
             }

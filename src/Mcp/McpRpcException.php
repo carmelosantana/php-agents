@@ -10,8 +10,7 @@ namespace CarmeloSantana\PHPAgents\Mcp;
  *
  * The formatting and the cut happen in this constructor, which leaves no later seam, so a
  * caller that must keep a secret out of the message redacts $rpcMessage before calling it —
- * McpClient::redact() does, for every McpServer::$headers value, the credentials part of an
- * Authorization or Proxy-Authorization value, and every session id that client has held
+ * McpClient::redact() does, and its docblock lists what it removes and what it does not
  * (spec §2, amendments 3 and 13). $data is kept as the server sent it and is not part of the
  * message; a host that logs it logs untrusted, unredacted server data.
  */
