@@ -48,6 +48,20 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * own message does quote the URL — symfony/http-client v8.1.7 raises "Idle timeout reached
  * for "<url>"." — and reason() below returns none of it.
  *
+ * The McpTransportException for a transport failure keeps the client's exception as its
+ * previous, though, and a host that logs the chain logs that message too. Measured through
+ * McpClient: for a refused port CurlHttpClient's reads "Failed to connect to 127.0.0.1 port 1
+ * after 0 ms: Couldn't connect to server for "http://127.0.0.1:1/mcp"." and for an
+ * unresolvable host NativeHttpClient's reads "Could not resolve host "nonexistent.invalid"."
+ * — the URL or the host, and a query-string token in McpServer::$url reached it through
+ * either client. For a refused port, an unresolvable host, an idle timeout and the byte cap,
+ * with either client, no previous named a header. A header name or value holding CR, LF or
+ * NUL is refused differently: the client raises "Invalid header: CR/LF/NUL found in "<the
+ * whole header line>"." before any request, so post() refuses such a header itself, before
+ * calling the client, with an McpTransportException that names the method alone and has no
+ * previous (spec §2, amendment 16, 2026-09-24). It checks every header post() sends, the
+ * session id included.
+ *
  * Neither this class nor HttpReply builds an McpRpcException. That exception splices the
  * server's own error text into its message, and a server can echo a configured header
  * value or the session id back in that text, so spec §2 (amendment 3, 2026-09-21) puts the
@@ -76,14 +90,21 @@ final class HttpExchange
             throw new McpProtocolException(sprintf('MCP %s request could not be encoded as JSON.', $method));
         }
 
+        $requestHeaders = array_merge($this->server->headers, $headers, [
+            'Content-Type' => 'application/json',
+            'Accept' => 'application/json, text/event-stream',
+        ]);
+        foreach ($requestHeaders as $name => $value) {
+            if (strpbrk($name . $value, "\r\n\0") !== false) {
+                throw new McpTransportException(sprintf('MCP %s request has a header name or value holding CR, LF or NUL.', $method));
+            }
+        }
+
         $max = $this->server->maxResponseBytes;
         $exceeded = false;
         try {
             $response = $this->http->request('POST', $this->server->url, [
-                'headers' => array_merge($this->server->headers, $headers, [
-                    'Content-Type' => 'application/json',
-                    'Accept' => 'application/json, text/event-stream',
-                ]),
+                'headers' => $requestHeaders,
                 'body' => $body,
                 'timeout' => $this->server->timeout,
                 'max_duration' => $this->server->timeout,

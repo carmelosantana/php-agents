@@ -11,6 +11,7 @@ use CarmeloSantana\PHPAgents\Mcp\McpServer;
 use CarmeloSantana\PHPAgents\Mcp\McpSession;
 use CarmeloSantana\PHPAgents\Mcp\McpTransportException;
 use CarmeloSantana\PHPAgents\Mcp\McpUnsupportedVersionException;
+use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 use Tests\Support\Mcp\ArraySessionStore;
 use Tests\Support\Mcp\FakeMcpServer;
@@ -702,6 +703,68 @@ test('a session id the client has since forgotten is still redacted', function (
         expect($e->getMessage())->not->toContain('sess-1')
             ->not->toContain('sess-2')
             ->and($e->getMessage())->toEndWith(': session [redacted] is gone; use [redacted]');
+    }
+});
+
+/** Every message in $e's getPrevious() chain, $e's own first. */
+function chainMessages(\Throwable $e): array
+{
+    $messages = [];
+    for ($link = $e; $link !== null; $link = $link->getPrevious()) {
+        $messages[] = $link->getMessage();
+    }
+
+    return $messages;
+}
+
+test('a header value holding CR, LF or NUL is refused before the request, and nothing in the chain names it', function (string $value) {
+    // A real client, not MockHttpClient: the refusal has to happen before the client sees
+    // the header, whichever client that is. The URL is never contacted.
+    $server = legacyServer(['headers' => ['Authorization' => $value]]);
+
+    try {
+        (new McpClient($server, HttpClient::create()))->listTools();
+        $this->fail('expected a transport error');
+    } catch (McpTransportException $e) {
+        expect($e::class)->toBe(McpTransportException::class)
+            ->and($e->getMessage())->toBe('MCP initialize request has a header name or value holding CR, LF or NUL.')
+            ->and($e->getPrevious())->toBeNull()
+            ->and(implode("\n", chainMessages($e)))->not->toContain('sk-live-123');
+    }
+})->with([
+    'a trailing LF' => ["Bearer sk-live-123\n"],
+    'a CRLF and a second header' => ["Bearer sk-live-123\r\nX: y"],
+    'a trailing NUL' => ["Bearer sk-live-123\0"],
+]);
+
+test('a header name holding CR or LF is refused the same way', function (string $name) {
+    $server = legacyServer(['headers' => [$name => 'v']]);
+
+    try {
+        (new McpClient($server, HttpClient::create()))->listTools();
+        $this->fail('expected a transport error');
+    } catch (McpTransportException $e) {
+        expect($e->getMessage())->toBe('MCP initialize request has a header name or value holding CR, LF or NUL.')
+            ->and($e->getPrevious())->toBeNull()
+            ->and(implode("\n", chainMessages($e)))->not->toContain('sk-live-123');
+    }
+})->with([
+    'an LF' => ["X-Key\nsk-live-123"],
+    'a CR' => ["X-Key\rsk-live-123"],
+]);
+
+test('a stored session id holding LF is refused the same way', function () {
+    // The session id is a header post() sends too, and a store can hand back any string.
+    $store = new ArraySessionStore();
+    $store->sessions[legacyServer()->sessionKey()] = new McpSession(McpServer::PROTOCOL_2025, "sk-live-123\n");
+
+    try {
+        (new McpClient(legacyServer(), HttpClient::create(), $store))->listTools();
+        $this->fail('expected a transport error');
+    } catch (McpTransportException $e) {
+        expect($e->getMessage())->toBe('MCP tools/list request has a header name or value holding CR, LF or NUL.')
+            ->and($e->getPrevious())->toBeNull()
+            ->and(implode("\n", chainMessages($e)))->not->toContain('sk-live-123');
     }
 });
 
