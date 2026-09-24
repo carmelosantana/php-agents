@@ -476,11 +476,17 @@ closure to use your own scheme.
 
 ### Pinning and drift
 
-`fingerprint()` is a sha256 over a canonical JSON encoding of four values: `name`,
+`fingerprint()` is a sha256 over a canonical encoding of four values: `name`,
 `description`, `inputSchema` and `annotations`. The top-level `title` is not part of it,
 because it is a display label; `annotations` is hashed as sent, `annotations.title` included.
 Every non-list array has its keys sorted, so key order in the server's JSON does not move the
 digest, while lists keep their order, since reordering an `enum` changes what a tool accepts.
+The encoding is JSON, written with `serialize_precision` held at -1, so your php.ini does not
+move the digest of a float such as `0.1`. A definition `json_encode()` refuses — one whose
+schema holds `1e999`, which `json_decode()` reads as INF — is hashed from its `serialize()`
+form instead, so rewriting its description still moves its digest. Inputs that
+`json_decode($body, true)` turns into the same PHP value, such as `{}` and `[]`, hash the
+same; `McpToolDefinition`'s class docblock names more.
 
 For each tool the server lists, `McpToolkit` reads `$allow[$serverName]` and:
 
