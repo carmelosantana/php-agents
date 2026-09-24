@@ -638,10 +638,15 @@ version negotiation reads `data.supported` from it. A host that logs `$e->data` 
 unredacted server-supplied data.
 
 Some throws from this namespace sit outside the tree, so a `catch (McpException $e)` misses
-them; `grep -rn 'throw new \\' src/Mcp/` lists them. `McpServer`'s constructor throws
-`\InvalidArgumentException` for a bad protocol version or a non-positive limit, and
-`McpToolkit` throws `\UnexpectedValueException` when an injected `$namer` returns anything but
-a non-empty string — that one is the host's own closure misbehaving, not the server.
+them; `grep -rn 'throw new \\' src/Mcp/` lists the ones a `throw` statement raises.
+`McpServer`'s constructor throws `\InvalidArgumentException` for a bad protocol version or a
+non-positive limit, and `McpToolkit` throws `\UnexpectedValueException` when an injected
+`$namer` returns anything but a non-empty string — that one is the host's own closure
+misbehaving, not the server. A header value that is not a string, which `McpServer::$headers`'
+`array<string, string>` does not provide for, can end in a PHP `TypeError` or `Error` instead,
+which no `throw` statement raises: measured, an int or a `Stringable` `Authorization` value
+gives a `TypeError` where a server's JSON-RPC error would become an `McpRpcException`, and a
+plain object gives an `Error` before any request is sent.
 
 An `McpException` raised while listing propagates to whoever called `tools()` or
 `definition()`, because the library does not guess a host's failure policy. An exception

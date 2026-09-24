@@ -10,6 +10,11 @@ namespace CarmeloSantana\PHPAgents\Mcp;
  * `src/Mcp` can throw: McpServer's constructor throws \InvalidArgumentException for a
  * protocol version or a limit it refuses, and McpToolkit throws \UnexpectedValueException
  * when an injected namer answers with something unusable. Neither is a server's doing.
+ * A header value that is not a string, which McpServer::$headers' `array<string, string>`
+ * does not provide for, can raise a PHP TypeError or Error instead. Measured: an int or a
+ * Stringable `Authorization` value makes McpClient::redact() raise a TypeError where a
+ * server's JSON-RPC error would become an McpRpcException, and a plain object makes
+ * HttpExchange's header check raise an Error.
  *
  * The tree is the files `ls src/Mcp/Mcp*Exception.php` prints. McpAuthException and
  * McpRedirectException declare a constructor that builds the message from the method name
