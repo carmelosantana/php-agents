@@ -406,8 +406,9 @@ test('an authorization value padded with SP or HTAB is judged with that padding 
     // RFC 9110 §5.5 leaves leading and trailing SP and HTAB out of a field value, and a
     // server that strips them echoes the value without them. The text is what a server that
     // strips both ends and splits on the first space answers: measured, Node reads each of
-    // these values as `Bearer sk-live-123`. The value as configured stays a needle too, and it matches
-    // from the space before `Bearer`, so ` Bearer sk-live-123` takes that space along.
+    // these values as `Bearer sk-live-123`. The value as configured stays a needle too, and
+    // it matches from the space before `Bearer`, so ` Bearer sk-live-123` takes that space
+    // along.
     $fake = legacyFake();
     $fake->once(answerFor('initialize', static fn($id) => FakeMcpServer::error(200, $id, -32001, 'invalid token sk-live-123 (sent Bearer sk-live-123)')));
     $server = legacyServer(['headers' => ['Authorization' => $value]]);
@@ -733,24 +734,27 @@ test('a header value holding CR, LF or NUL is refused before the request, and no
     }
 })->with([
     'a trailing LF' => ["Bearer sk-live-123\n"],
+    'a trailing CR' => ["Bearer sk-live-123\r"],
     'a CRLF and a second header' => ["Bearer sk-live-123\r\nX: y"],
     'a trailing NUL' => ["Bearer sk-live-123\0"],
 ]);
 
-test('a header name holding CR or LF is refused the same way', function (string $name) {
+test('a header name holding CR, LF or NUL is refused the same way', function (string $name) {
     $server = legacyServer(['headers' => [$name => 'v']]);
 
     try {
         (new McpClient($server, HttpClient::create()))->listTools();
         $this->fail('expected a transport error');
     } catch (McpTransportException $e) {
-        expect($e->getMessage())->toBe('MCP initialize request has a header name or value holding CR, LF or NUL.')
+        expect($e::class)->toBe(McpTransportException::class)
+            ->and($e->getMessage())->toBe('MCP initialize request has a header name or value holding CR, LF or NUL.')
             ->and($e->getPrevious())->toBeNull()
             ->and(implode("\n", chainMessages($e)))->not->toContain('sk-live-123');
     }
 })->with([
     'an LF' => ["X-Key\nsk-live-123"],
     'a CR' => ["X-Key\rsk-live-123"],
+    'a NUL' => ["X-Key\0sk-live-123"],
 ]);
 
 test('a stored session id holding LF is refused the same way', function () {
@@ -762,7 +766,8 @@ test('a stored session id holding LF is refused the same way', function () {
         (new McpClient(legacyServer(), HttpClient::create(), $store))->listTools();
         $this->fail('expected a transport error');
     } catch (McpTransportException $e) {
-        expect($e->getMessage())->toBe('MCP tools/list request has a header name or value holding CR, LF or NUL.')
+        expect($e::class)->toBe(McpTransportException::class)
+            ->and($e->getMessage())->toBe('MCP tools/list request has a header name or value holding CR, LF or NUL.')
             ->and($e->getPrevious())->toBeNull()
             ->and(implode("\n", chainMessages($e)))->not->toContain('sk-live-123');
     }
