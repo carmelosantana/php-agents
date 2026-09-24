@@ -61,10 +61,11 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * calling the client, with an McpTransportException that names the method alone and has no
  * previous (spec §2, amendment 16, 2026-09-24). It checks every header post() sends whose
  * value is a string, as McpServer::$headers' `array<string, string>` documents, the session
- * id included. A value of another type is outside what it covers: measured, the value
- * `["Bearer sk-live-123\n"]`, an array, passes it with PHP's "Array to string conversion"
- * warning, and the previous then reads "Invalid header: CR/LF/NUL found in "Authorization:
- * Bearer sk-live-123\n"."; a Stringable object is converted by the check and refused.
+ * id included. An array value is outside what it covers: measured, the value
+ * `["Bearer sk-live-123\n"]` passes it with PHP's "Array to string conversion" warning,
+ * and the previous then reads "Invalid header: CR/LF/NUL found in "Authorization: Bearer
+ * sk-live-123\n".". A Stringable object is converted by the check and refused when its
+ * string holds CR, LF or NUL, and a plain object makes the check itself throw PHP's Error.
  *
  * Neither this class nor HttpReply builds an McpRpcException. That exception splices the
  * server's own error text into its message, and a server can echo a configured header
