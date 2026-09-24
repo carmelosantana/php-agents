@@ -19,10 +19,11 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * procedure): with nothing remembered and no pin, the first request is sent as 2026-07-28,
  * with `MCP-Protocol-Version`, `Mcp-Method`/`Mcp-Name` and `params._meta` (protocol
  * version, `clientCapabilities: {}`, clientInfo). A 400 carrying -32020 or -32021 comes
- * from a 2026-07-28 server and becomes an McpRpcException; a 400 carrying -32022 is
- * retried once if the server still lists 2026-07-28, falls back if it lists only
- * 2025-11-25, and is otherwise McpUnsupportedVersionException. Any other 400 means "not a
- * 2026-07-28 server", and the client falls back to 2025-11-25. The version found is
+ * from a 2026-07-28 server and becomes an McpRpcException. A 400 carrying -32022 that
+ * lists 2026-07-28 is retried once; a -32022 that is not retried falls back to 2025-11-25
+ * when it lists 2025-11-25, and is otherwise McpUnsupportedVersionException, so a server
+ * that answers the retry with the same -32022 listing both versions draws the fallback.
+ * Any other 400 means "not a 2026-07-28 server", and the client falls back to 2025-11-25. The version found is
  * remembered through the McpSessionStore. A remembered 2026-07-28 that later draws a
  * fallback 400 is forgotten, and detection runs again. McpServer::$protocolVersion pins a
  * version instead: nothing is probed, and a pinned 2026-07-28 that draws a fallback 400 is
