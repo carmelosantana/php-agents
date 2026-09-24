@@ -158,10 +158,11 @@ final class HttpExchange
      * the status seen here is the one the redirect target answered with.
      *
      * The signal is the `redirect_count` info key, which the contracts' getInfo()
-     * exposes and both real clients fill in as an int — CurlResponse.php:209 merges
-     * curl_getinfo(), which always carries it, and NativeHttpClient.php:122/422 starts
-     * its own at 0 and increments it. A client that follows without reporting it is not
-     * caught. getInfo('url') is no usable second signal: after a real follow it does hold
+     * exposes and both real clients fill in as an int — CurlResponse::getInfo() merges
+     * curl_getinfo(), which always carries it, and NativeHttpClient::request() starts its
+     * own at 0, which the resolver NativeHttpClient::createRedirectResolver() builds
+     * increments. A client that follows without reporting it is not caught.
+     * getInfo('url') is no usable second signal: after a real follow it does hold
      * the target, but on an ordinary request it holds McpServer::$url normalised —
      * `https://h` comes back `https://h/` and a space comes back `%20` — and a host
      * wrapper that pins the request to a resolved IP, the kind spec §2 invites, reports
@@ -186,13 +187,13 @@ final class HttpExchange
      * The timeout arm reads the text as well as the type, because only the idle `timeout`
      * raises the contracts' TimeoutExceptionInterface. McpServer::$timeout also goes out as
      * `max_duration`, and that cap is reported as a plain TransportException whose wording
-     * is the client's own: curl takes it as CURLOPT_TIMEOUT_MS (CurlHttpClient.php:299) and
-     * CurlResponse.php:343 passes curl_error() through, measured here as "Operation timed
-     * out after 600 milliseconds with 0 bytes received" and "Connection timed out after 300
-     * milliseconds"; NativeHttpClient.php:142 raises "Max duration was reached for ...". Not
-     * one of the three says "timeout", so all three spellings are matched. Text is read for
-     * that classification only: none of it, and so none of the URL it quotes, reaches the
-     * message this returns.
+     * is the client's own: curl takes it as CURLOPT_TIMEOUT_MS (CurlHttpClient::request())
+     * and CurlResponse::perform() passes curl_error() through, measured here as "Operation
+     * timed out after 600 milliseconds with 0 bytes received" and "Connection timed out
+     * after 300 milliseconds"; the progress callback NativeHttpClient::request() installs
+     * raises "Max duration was reached for ...". Not one of the three says "timeout", so all
+     * three spellings are matched. Text is read for that classification only: none of it,
+     * and so none of the URL it quotes, reaches the message this returns.
      */
     private static function reason(string $method, TransportExceptionInterface $e, bool $exceeded, int $max): string
     {

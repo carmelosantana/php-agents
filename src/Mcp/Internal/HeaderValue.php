@@ -24,7 +24,7 @@ namespace CarmeloSantana\PHPAgents\Mcp\Internal;
  * and wrapping the empty string keeps this class from ever returning an empty header
  * value. An empty value is legal HTTP but awkward to transmit — curl needs a separate
  * syntax for it, which symfony/http-client v8.1.7 works around in
- * CurlHttpClient.php:230-232 — and McpClient's HTTP client comes from the host, while
+ * CurlHttpClient::request() — and McpClient's HTTP client comes from the host, while
  * a `Mcp-Param-*` that arrives missing is a -32020 HeaderMismatch.
  *
  * The returned value carries no CR or LF: the plain branch has matched a pattern that
