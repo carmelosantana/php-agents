@@ -83,11 +83,11 @@ final class McpClient implements McpClientInterface
 
     private const REDACTED = '[redacted]';
 
-    /** Lower-cased names of the headers whose credentials part redact() also removes. */
+    /** Lower-cased names of the headers whose trimmed form and credentials part redact() also removes. */
     private const AUTH_HEADERS = ['authorization', 'proxy-authorization'];
 
-    /** RFC 9110 §11.4: an auth-scheme token, 1*SP, then the credentials part, captured. */
-    private const AUTH_CREDENTIALS = '/\A[!#$%&\'*+\-.^_`|~0-9A-Za-z]+ +([^ ].*)\z/s';
+    /** RFC 9110 §11.4 on a trimmed value: an auth-scheme token, 1*(SP / HTAB), then the credentials part, captured. */
+    private const AUTH_CREDENTIALS = '/\A[!#$%&\'*+\-.^_`|~0-9A-Za-z]+[ \t]+(.+)\z/s';
 
     private readonly HttpExchange $exchange;
 
@@ -603,17 +603,24 @@ final class McpClient implements McpClientInterface
      *   *alternative* in a regular expression: measured, preg_replace('/|Bearer t/', '[R]',
      *   'abc Bearer t') gives "[R]a[R]b[R]c[R] [R][R][R]". str_replace() does not splice on an
      *   empty needle either; only the preg draft this guard was first written for could.
-     * - the credentials part of an `Authorization` or `Proxy-Authorization` value, the name
-     *   matched case-insensitively, beside the whole value (spec §2, amendment 13, 2026-09-24),
-     *   so a server that names a token without its scheme is caught too. Following RFC 9110
-     *   §11.4, a value has a credentials part when it opens with an auth-scheme token, then one
-     *   or more spaces, then a byte that is not a space; the part runs from that byte to the
-     *   end of the value as configured, so `Bearer   sk-x` gives `sk-x`. `Bearer` alone, or
-     *   followed by spaces alone, has none, so no empty needle comes from here. A value that
-     *   does not open with a token and a space — a `/` or a quote in the scheme, a tab after
-     *   it, a leading space — has none either. The part is a needle whatever its length, and a
-     *   short one takes every occurrence with it: measured, `Bearer t` turns the server text
-     *   "plain text" into "plain [redacted]ex[redacted]".
+     * - for `Authorization` and `Proxy-Authorization`, the name matched case-insensitively,
+     *   the value with SP and HTAB trimmed from both ends and the credentials part of that
+     *   trimmed value, beside the value as configured (spec §2, amendment 13, 2026-09-24).
+     *   The trimmed value is a needle when it is not empty: RFC 9110 §5.5 leaves that
+     *   whitespace out of a field value, and measured, Node reads `Bearer sk-live-123 `,
+     *   ` Bearer sk-live-123` and `Bearer sk-live-123\t` alike as `Bearer sk-live-123`. The
+     *   credentials part catches a server that names a token without its scheme. Following
+     *   RFC 9110 §11.4, with HTAB accepted beside SP, the trimmed value has a credentials part
+     *   when it is an auth-scheme token, then one or more SP or HTAB, then at least one more
+     *   byte; the part runs from the first byte after that whitespace to the end of the
+     *   trimmed value and keeps any whitespace inside it, so `Bearer \t sk-multi` gives
+     *   `sk-multi` and `Digest username="u", response="r"` gives `username="u",
+     *   response="r"`. `Bearer`, and `Bearer` with trailing whitespace, have none; a value
+     *   whose trimmed form does not open with a token followed by SP or HTAB — a `/` or a
+     *   quote in the scheme — has none either. A value of whitespace alone trims to nothing, and nothing empty becomes
+     *   a needle. The credentials part is a needle whatever its length, and a short one takes
+     *   every occurrence with it: measured, `Bearer t` turns the server text "plain text"
+     *   into "plain [redacted]ex[redacted]".
      * - every session id this instance has ever held — $held, filled by hold() as the store
      *   hands an entry over and as an `initialize` reply arrives, whatever this client then
      *   does with either, and never emptied. forget() stops the client sending an id; it does
@@ -659,9 +666,10 @@ final class McpClient implements McpClientInterface
      *   reflecting it — a Basic credential echoed as `user:pass` where the header carries
      *   `Basic dXNlcjpwYXNz` — or that base64-encodes, URL-encodes, cases differently or
      *   truncates one, is not caught by substring replacement.
-     * - the tail of any other header. Only `Authorization` and `Proxy-Authorization` are
-     *   split: `X-Api-Key: Token abc123` redacts `Token abc123`, and a bare `abc123` in the
-     *   text stays.
+     * - the tail or the trimmed form of any other header. Only `Authorization` and
+     *   `Proxy-Authorization` are trimmed and split: `X-Api-Key: Token abc123` redacts `Token
+     *   abc123` and a bare `abc123` in the text stays, and `X-Api-Key: Token abc123 `, with its
+     *   trailing space, leaves "sent Token abc123" as it is.
      * - the tail of an authorization value without a credentials part as defined above:
      *   with `Bear/er sk-x`, the whole value is redacted and a bare `sk-x` stays.
      * - a piece of a credentials part. The part is one needle: with `Digest username="u",
@@ -690,7 +698,14 @@ final class McpClient implements McpClientInterface
                 continue;
             }
             $secrets[$value] = self::REDACTED;
-            if (in_array(strtolower((string) $name), self::AUTH_HEADERS, true) && preg_match(self::AUTH_CREDENTIALS, $value, $match) === 1) {
+            if (!in_array(strtolower((string) $name), self::AUTH_HEADERS, true)) {
+                continue;
+            }
+            $trimmed = trim($value, " \t");
+            if ($trimmed !== '') {
+                $secrets[$trimmed] = self::REDACTED;
+            }
+            if (preg_match(self::AUTH_CREDENTIALS, $trimmed, $match) === 1) {
                 $secrets[$match[1]] = self::REDACTED;
             }
         }

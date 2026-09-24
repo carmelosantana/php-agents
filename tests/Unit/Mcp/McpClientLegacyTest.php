@@ -345,11 +345,12 @@ test('a header other than Authorization and Proxy-Authorization is redacted whol
     }
 });
 
-test('an authorization value that is a scheme alone is redacted whole and adds nothing', function (string $value, string $expected) {
-    // No credentials follow the scheme, so the whole value is the only needle it gives.
-    // `Bearer  ` keeps its trailing spaces as configured, and neither a space nor an empty
-    // string becomes a needle: the text is compared whole, and the handler records strtr()'s
-    // "Ignoring replacement of empty string" if an empty needle reaches it.
+test('an authorization value without a credentials part adds no empty needle', function (string $value, string $expected) {
+    // Nothing follows the scheme once SP and HTAB are trimmed from both ends, so the value as
+    // configured and its trimmed form are the only needles it gives. A value of whitespace
+    // alone trims to nothing, which must not become a needle: strtr() leaves the text alone
+    // for an empty needle but says "Ignoring replacement of empty string", which the
+    // handler here records.
     $fake = legacyFake();
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'scheme Bearer lacks a token')));
     $server = legacyServer(['headers' => ['Authorization' => $value]]);
@@ -371,14 +372,17 @@ test('an authorization value that is a scheme alone is redacted whole and adds n
     expect($diagnostics)->toBe([]);
 })->with([
     'the scheme' => ['Bearer', 'scheme [redacted] lacks a token'],
-    'the scheme and two spaces' => ['Bearer  ', 'scheme Bearer lacks a token'],
+    'the scheme and two spaces' => ['Bearer  ', 'scheme [redacted] lacks a token'],
+    'the scheme, a space and a tab' => ["Bearer \t", 'scheme [redacted] lacks a token'],
+    'a tab alone' => ["\t", 'scheme Bearer lacks a token'],
 ]);
 
-test('the credentials part begins after every space that follows the scheme', function () {
-    // RFC 9110 §11.4 separates the scheme from what follows with 1*SP.
+test('the credentials part begins after every space or tab that follows the scheme', function (string $value) {
+    // RFC 9110 §11.4 separates the scheme from what follows with 1*SP; a tab is taken as a
+    // separator too, so a server that splits on one cannot publish the tail.
     $fake = legacyFake();
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'token sk-multi refused')));
-    $server = legacyServer(['headers' => ['Authorization' => 'Bearer   sk-multi']]);
+    $server = legacyServer(['headers' => ['Authorization' => $value]]);
 
     try {
         (new McpClient($server, $fake->client()))->listTools();
@@ -386,12 +390,84 @@ test('the credentials part begins after every space that follows the scheme', fu
     } catch (McpRpcException $e) {
         expect($e->getMessage())->toEndWith(': token [redacted] refused');
     }
+})->with([
+    'three spaces' => ['Bearer   sk-multi'],
+    'a tab' => ["Bearer\tsk-multi"],
+    'a space, a tab and a space' => ["Bearer \t sk-multi"],
+]);
+
+test('a padded authorization value is judged with its leading and trailing whitespace trimmed', function (string $value, string $expected) {
+    // RFC 9110 §5.5 leaves leading and trailing whitespace out of a field value, and a server
+    // that strips it echoes the value without it. The text is what a server that strips both
+    // ends and splits on the first space answers: measured, Node reads each of these values
+    // as `Bearer sk-live-123`. The value as configured stays a needle too, and it matches
+    // from the space before `Bearer`, so ` Bearer sk-live-123` takes that space along.
+    $fake = legacyFake();
+    $fake->once(answerFor('initialize', static fn($id) => FakeMcpServer::error(200, $id, -32001, 'invalid token sk-live-123 (sent Bearer sk-live-123)')));
+    $server = legacyServer(['headers' => ['Authorization' => $value]]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toBe('MCP initialize failed with JSON-RPC error -32001: ' . $expected);
+    }
+})->with([
+    'a trailing space' => ['Bearer sk-live-123 ', 'invalid token [redacted] (sent [redacted])'],
+    'a leading space' => [' Bearer sk-live-123', 'invalid token [redacted] (sent[redacted])'],
+    'a trailing tab' => ["Bearer sk-live-123\t", 'invalid token [redacted] (sent [redacted])'],
+]);
+
+test('only SP and HTAB are trimmed from an authorization value', function () {
+    // RFC 9110's OWS is SP and HTAB. A trailing vertical tab is not OWS, so it stays in the
+    // trimmed value and in the credentials part, and a bare `sk-x` is not a needle.
+    $fake = legacyFake();
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'token sk-x refused')));
+    $server = legacyServer(['headers' => ['Authorization' => "Bearer sk-x\x0B"]]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toBe('MCP tools/list failed with JSON-RPC error -32603: token sk-x refused');
+    }
+});
+
+test('a credentials part keeps the whitespace inside it', function () {
+    // An auth-param list is one needle, from the first byte after the scheme's separator to
+    // the end of the trimmed value.
+    $fake = legacyFake();
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'sent username="u", response="r"')));
+    $server = legacyServer(['headers' => ['Authorization' => 'Digest username="u", response="r"']]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toBe('MCP tools/list failed with JSON-RPC error -32603: sent [redacted]');
+    }
+});
+
+test('a header other than Authorization and Proxy-Authorization is not trimmed', function () {
+    // Only the two authorization headers are judged on their trimmed form. X-Api-Key is a
+    // needle exactly as configured, trailing space included, so text naming it without the
+    // space is published.
+    $fake = legacyFake();
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'sent Token abc123')));
+    $server = legacyServer(['headers' => ['X-Api-Key' => 'Token abc123 ']]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toBe('MCP tools/list failed with JSON-RPC error -32603: sent Token abc123');
+    }
 });
 
 test('an authorization value that does not open with a scheme token is not split', function (string $value) {
-    // RFC 9110's auth-scheme is a token. A value that does not begin with one followed by a
-    // space does not have the `<scheme> <credentials>` form, so only the whole value is a
-    // needle and the bare tail is published.
+    // RFC 9110's auth-scheme is a token. A value whose trimmed form does not begin with one
+    // followed by SP or HTAB does not have the `<scheme> <credentials>` form, so its tail is
+    // not a needle and a bare tail is published.
     $fake = legacyFake();
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'token sk-slash refused')));
     $server = legacyServer(['headers' => ['Authorization' => $value]]);
@@ -405,8 +481,6 @@ test('an authorization value that does not open with a scheme token is not split
 })->with([
     'a slash in the scheme' => ['Bear/er sk-slash'],
     'a quoted scheme' => ['"Bearer" sk-slash'],
-    'a tab, not a space' => ["Bearer\tsk-slash"],
-    'a leading space' => [' Bearer sk-slash'],
 ]);
 
 test('an empty header value leaves the server text untouched', function () {
