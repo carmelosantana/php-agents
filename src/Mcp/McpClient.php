@@ -659,8 +659,9 @@ final class McpClient implements McpClientInterface
      *   reflecting it — a Basic credential echoed as `user:pass` where the header carries
      *   `Basic dXNlcjpwYXNz` — or that base64-encodes, URL-encodes, cases differently or
      *   truncates one, is not caught by substring replacement.
-     * - the tail of any other header. Only the two headers above are split: `X-Api-Key:
-     *   Token abc123` redacts `Token abc123`, and a bare `abc123` in the text stays.
+     * - the tail of any other header. Only `Authorization` and `Proxy-Authorization` are
+     *   split: `X-Api-Key: Token abc123` redacts `Token abc123`, and a bare `abc123` in the
+     *   text stays.
      * - the tail of an authorization value without a credentials part as defined above:
      *   with `Bear/er sk-x`, the whole value is redacted and a bare `sk-x` stays.
      * - a piece of a credentials part. The part is one needle: with `Digest username="u",

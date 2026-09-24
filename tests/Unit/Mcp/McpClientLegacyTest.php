@@ -330,7 +330,7 @@ test('a whole authorization value becomes one marker, not the scheme and a marke
     }
 });
 
-test('a header other than the two authorization headers is redacted whole and not split', function () {
+test('a header other than Authorization and Proxy-Authorization is redacted whole and not split', function () {
     // The value has the `<scheme> <credentials>` shape, but X-Api-Key is not an
     // authorization header, so its tail is not a needle of its own and a bare abc123 stays.
     $fake = legacyFake();
