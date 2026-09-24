@@ -40,9 +40,11 @@ namespace CarmeloSantana\PHPAgents\Mcp;
  *   `"bad\xFF"` and `"bad\u{FFFD}"` give one digest;
  * - json_decode(…, true) makes one PHP value of `{}` and `[]`, so they hash the same, and
  *   so do an `annotations` of `{}` and none, since the constructor's default is `[]`;
- * - an object keyed by the numeric strings "0" to "n" decodes to a PHP array keyed 0 to
- *   n, which json_encode() writes as a list once canonical() has sorted its keys, so
- *   `{"1":"b","0":"a"}` and `["a","b"]` hash the same;
+ * - an object keyed "0" to "n" in order decodes to a list and hashes as that list, so
+ *   `{"0":"a","1":"b"}` and `["a","b"]` hash the same. Out of order it stays a map, and
+ *   it hashes as the list too only while every key is a single digit: ksort(SORT_STRING)
+ *   puts "10" before "2", so from "10" up an out-of-order object hashes apart from the
+ *   in-order one;
  * - two number literals that decode to one float hash the same: `9007199254740992.0` and
  *   `9007199254740993.0`, or the integers `99999999999999999999` and
  *   `100000000000000000000`, which are past PHP_INT_MAX and decode to floats. The integer
