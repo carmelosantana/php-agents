@@ -16,8 +16,8 @@ namespace CarmeloSantana\PHPAgents\Schema;
  * removed in 2020-12:
  *
  * - map-valued (`properties`, `patternProperties`, `$defs`, `definitions`,
- *   `dependentSchemas`): always an object, including a non-empty map whose keys
- *   are numeric strings, which PHP stores as a list;
+ *   `dependentSchemas`): always an object, including a non-empty map keyed "0",
+ *   "1", … in order, which json_decode() makes a list;
  * - schema-valued (`additionalProperties`, `unevaluatedProperties`, `items`,
  *   `additionalItems`, `unevaluatedItems`, `contains`, `not`, `if`, `then`, `else`,
  *   `propertyNames`, `contentSchema`): an empty array becomes `{}`, and anything else

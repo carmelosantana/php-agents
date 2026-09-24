@@ -48,6 +48,25 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * own message does quote the URL — symfony/http-client v8.1.7 raises "Idle timeout reached
  * for "<url>"." — and reason() below returns none of it.
  *
+ * The McpTransportException for a transport failure keeps the client's exception as its
+ * previous, though, and a host that logs the chain logs that message too. Measured through
+ * McpClient: for a refused port CurlHttpClient's reads "Failed to connect to 127.0.0.1 port 1
+ * after 0 ms: Couldn't connect to server for "http://127.0.0.1:1/mcp"." and for an
+ * unresolvable host NativeHttpClient's reads "Could not resolve host "nonexistent.invalid"."
+ * — the URL or the host, and a query-string token in McpServer::$url reached it through
+ * either client. For a refused port, an unresolvable host, an idle timeout and the byte cap,
+ * with either client, no previous named a header. A header name or value holding CR, LF or
+ * NUL is refused differently: the client raises "Invalid header: CR/LF/NUL found in "<the
+ * whole header line>"." before any request, so post() refuses such a header itself, before
+ * calling the client, with an McpTransportException that names the method alone and has no
+ * previous (spec §2, amendment 16, 2026-09-24). It checks every header post() sends whose
+ * value is a string, as McpServer::$headers' `array<string, string>` documents, the session
+ * id included. An array value is outside what it covers: measured, the value
+ * `["Bearer sk-live-123\n"]` passes it with PHP's "Array to string conversion" warning,
+ * and the previous then reads "Invalid header: CR/LF/NUL found in "Authorization: Bearer
+ * sk-live-123\n".". A Stringable object is converted by the check and refused when its
+ * string holds CR, LF or NUL, and a plain object makes the check itself throw PHP's Error.
+ *
  * Neither this class nor HttpReply builds an McpRpcException. That exception splices the
  * server's own error text into its message, and a server can echo a configured header
  * value or the session id back in that text, so spec §2 (amendment 3, 2026-09-21) puts the
@@ -76,14 +95,21 @@ final class HttpExchange
             throw new McpProtocolException(sprintf('MCP %s request could not be encoded as JSON.', $method));
         }
 
+        $requestHeaders = array_merge($this->server->headers, $headers, [
+            'Content-Type' => 'application/json',
+            'Accept' => 'application/json, text/event-stream',
+        ]);
+        foreach ($requestHeaders as $name => $value) {
+            if (strpbrk($name . $value, "\r\n\0") !== false) {
+                throw new McpTransportException(sprintf('MCP %s request has a header name or value holding CR, LF or NUL.', $method));
+            }
+        }
+
         $max = $this->server->maxResponseBytes;
         $exceeded = false;
         try {
             $response = $this->http->request('POST', $this->server->url, [
-                'headers' => array_merge($this->server->headers, $headers, [
-                    'Content-Type' => 'application/json',
-                    'Accept' => 'application/json, text/event-stream',
-                ]),
+                'headers' => $requestHeaders,
                 'body' => $body,
                 'timeout' => $this->server->timeout,
                 'max_duration' => $this->server->timeout,
@@ -133,10 +159,11 @@ final class HttpExchange
      * the status seen here is the one the redirect target answered with.
      *
      * The signal is the `redirect_count` info key, which the contracts' getInfo()
-     * exposes and both real clients fill in as an int — CurlResponse.php:209 merges
-     * curl_getinfo(), which always carries it, and NativeHttpClient.php:122/422 starts
-     * its own at 0 and increments it. A client that follows without reporting it is not
-     * caught. getInfo('url') is no usable second signal: after a real follow it does hold
+     * exposes and both real clients fill in as an int — CurlResponse::getInfo() merges
+     * curl_getinfo(), which always carries it, and NativeHttpClient::request() starts its
+     * own at 0, which the resolver NativeHttpClient::createRedirectResolver() builds
+     * increments. A client that follows without reporting it is not caught.
+     * getInfo('url') is no usable second signal: after a real follow it does hold
      * the target, but on an ordinary request it holds McpServer::$url normalised —
      * `https://h` comes back `https://h/` and a space comes back `%20` — and a host
      * wrapper that pins the request to a resolved IP, the kind spec §2 invites, reports
@@ -161,13 +188,13 @@ final class HttpExchange
      * The timeout arm reads the text as well as the type, because only the idle `timeout`
      * raises the contracts' TimeoutExceptionInterface. McpServer::$timeout also goes out as
      * `max_duration`, and that cap is reported as a plain TransportException whose wording
-     * is the client's own: curl takes it as CURLOPT_TIMEOUT_MS (CurlHttpClient.php:299) and
-     * CurlResponse.php:343 passes curl_error() through, measured here as "Operation timed
-     * out after 600 milliseconds with 0 bytes received" and "Connection timed out after 300
-     * milliseconds"; NativeHttpClient.php:142 raises "Max duration was reached for ...". Not
-     * one of the three says "timeout", so all three spellings are matched. Text is read for
-     * that classification only: none of it, and so none of the URL it quotes, reaches the
-     * message this returns.
+     * is the client's own: curl takes it as CURLOPT_TIMEOUT_MS (CurlHttpClient::request())
+     * and CurlResponse::perform() passes curl_error() through, measured here as "Operation
+     * timed out after 600 milliseconds with 0 bytes received" and "Connection timed out
+     * after 300 milliseconds"; the progress callback NativeHttpClient::request() installs
+     * raises "Max duration was reached for ...". Not one of the three says "timeout", so all
+     * three spellings are matched. Text is read for that classification only: none of it,
+     * and so none of the URL it quotes, reaches the message this returns.
      */
     private static function reason(string $method, TransportExceptionInterface $e, bool $exceeded, int $max): string
     {

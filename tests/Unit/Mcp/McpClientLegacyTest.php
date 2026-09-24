@@ -11,6 +11,7 @@ use CarmeloSantana\PHPAgents\Mcp\McpServer;
 use CarmeloSantana\PHPAgents\Mcp\McpSession;
 use CarmeloSantana\PHPAgents\Mcp\McpTransportException;
 use CarmeloSantana\PHPAgents\Mcp\McpUnsupportedVersionException;
+use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 use Tests\Support\Mcp\ArraySessionStore;
 use Tests\Support\Mcp\FakeMcpServer;
@@ -19,7 +20,7 @@ function legacyServer(array $overrides = []): McpServer
 {
     return new McpServer(...array_replace([
         'url' => 'https://mcp.example.test/mcp',
-        'headers' => ['Authorization' => 'Bearer t'],
+        'headers' => ['Authorization' => 'Bearer sk-test-4f9a'],
         'protocolVersion' => McpServer::PROTOCOL_2025,
     ], $overrides));
 }
@@ -53,7 +54,7 @@ function answerFor(string $method, Closure $respond): Closure
  *
  * @param array<string, string> $configured McpServer::$headers, keyed by lower-case name
  */
-function expectEnvelope(FakeMcpServer $fake, array $configured = ['authorization' => 'Bearer t']): void
+function expectEnvelope(FakeMcpServer $fake, array $configured = ['authorization' => 'Bearer sk-test-4f9a']): void
 {
     expect($fake->requests)->not->toBeEmpty();
     foreach ($fake->requests as $request) {
@@ -82,7 +83,7 @@ test('the first request runs the handshake, then every request carries the sessi
         ->and($fake->requests[2]['headers']['mcp-session-id'])->toBe('sess-1')
         ->and($fake->requests[2]['headers']['mcp-protocol-version'])->toBe('2025-11-25');
     foreach ($fake->requests as $request) {
-        expect($request['headers']['authorization'])->toBe('Bearer t')
+        expect($request['headers']['authorization'])->toBe('Bearer sk-test-4f9a')
             ->and($request['url'])->toBe('https://mcp.example.test/mcp');
     }
     expectEnvelope($fake);
@@ -90,11 +91,11 @@ test('the first request runs the handshake, then every request carries the sessi
 
 test('every request carries Accept, Content-Type and every configured header', function () {
     $fake = legacyFake();
-    $server = legacyServer(['headers' => ['Authorization' => 'Bearer t', 'X-Tenant' => 'acme']]);
+    $server = legacyServer(['headers' => ['Authorization' => 'Bearer sk-test-4f9a', 'X-Tenant' => 'acme']]);
     (new McpClient($server, $fake->client()))->callTool('search', ['q' => 'x']);
 
     expect($fake->methods())->toBe(['initialize', 'notifications/initialized', 'tools/call']);
-    expectEnvelope($fake, ['authorization' => 'Bearer t', 'x-tenant' => 'acme']);
+    expectEnvelope($fake, ['authorization' => 'Bearer sk-test-4f9a', 'x-tenant' => 'acme']);
     // The notification carries the session and version headers too, not only the data requests.
     expect($fake->requests[1]['headers']['mcp-session-id'])->toBe('sess-1')
         ->and($fake->requests[1]['headers']['mcp-protocol-version'])->toBe('2025-11-25');
@@ -269,21 +270,243 @@ test('the result cap comes from the server config', function () {
 
 test('a credential and the session id a server reflects are redacted from the exception message', function () {
     $fake = legacyFake();
-    $reflected = 'rejected credential Bearer t for session sess-1 on tenant acme';
+    $reflected = 'rejected credential Bearer sk-test-4f9a for session sess-1 on tenant acme';
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, $reflected)));
-    $server = legacyServer(['headers' => ['Authorization' => 'Bearer t', 'X-Tenant' => 'acme']]);
+    $server = legacyServer(['headers' => ['Authorization' => 'Bearer sk-test-4f9a', 'X-Tenant' => 'acme']]);
 
     try {
         (new McpClient($server, $fake->client()))->listTools();
         $this->fail('expected an RPC error');
     } catch (McpRpcException $e) {
-        expect($e->getMessage())->not->toContain('Bearer t')
+        expect($e->getMessage())->not->toContain('Bearer sk-test-4f9a')
             ->not->toContain('sess-1')
             ->not->toContain('acme')
             ->and($e->getMessage())->toContain('MCP tools/list failed with JSON-RPC error -32603')
             ->and($e->getMessage())->toContain('rejected credential [redacted] for session [redacted] on tenant [redacted]');
     }
 });
+
+test('a bearer token a server echoes without its scheme is redacted', function () {
+    // Kanboard #4437, as reproduced: the server names the token alone and then the whole
+    // header value, and each has to become a marker of its own.
+    $fake = legacyFake();
+    $fake->once(answerFor('initialize', static fn($id) => FakeMcpServer::error(200, $id, -32001, 'invalid token sk-live-123 (sent Bearer sk-live-123)')));
+    $server = legacyServer(['headers' => ['Authorization' => 'Bearer sk-live-123']]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->not->toContain('sk-live-123')
+            ->and($e->getMessage())->toBe('MCP initialize failed with JSON-RPC error -32001: invalid token [redacted] (sent [redacted])');
+    }
+});
+
+test('the credentials part of an authorization header is redacted whatever the name\'s case', function (string $name) {
+    $fake = legacyFake();
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'credential cHJveHk6c2VjcmV0 refused')));
+    $server = legacyServer(['headers' => [$name => 'Basic cHJveHk6c2VjcmV0']]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toEndWith(': credential [redacted] refused');
+    }
+})->with(['Authorization', 'authorization', 'AUTHORIZATION', 'Proxy-Authorization', 'proxy-authorization', 'PROXY-authorization']);
+
+test('a whole authorization value becomes one marker, not the scheme and a marker', function () {
+    // Both `Bearer sk-live-123` and `sk-live-123` are needles here. strtr() tries the longer
+    // one first at each position, so the whole value becomes one marker with no scheme
+    // left in front of it.
+    $fake = legacyFake();
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'sent Bearer sk-live-123 twice')));
+    $server = legacyServer(['headers' => ['Authorization' => 'Bearer sk-live-123']]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toBe('MCP tools/list failed with JSON-RPC error -32603: sent [redacted] twice');
+    }
+});
+
+test('a header other than Authorization and Proxy-Authorization is redacted whole and not split', function () {
+    // The value has the `<scheme> <credentials>` shape, but X-Api-Key is not an
+    // authorization header, so its tail is not a needle of its own and a bare abc123 stays.
+    $fake = legacyFake();
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'key abc123 refused, sent Token abc123')));
+    $server = legacyServer(['headers' => ['X-Api-Key' => 'Token abc123']]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toEndWith(': key abc123 refused, sent [redacted]');
+    }
+});
+
+test('an authorization value without a credentials part adds no empty needle', function (string $value, string $expected) {
+    // Nothing follows the scheme once the bytes PCRE's \s matches are trimmed from both ends,
+    // so the value as configured and its trimmed form are the only needles it gives. A value
+    // of those bytes alone trims to nothing, which must not become a needle: strtr() leaves
+    // the text alone for an empty needle but says "Ignoring replacement of empty string",
+    // which the handler here records.
+    $fake = legacyFake();
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'scheme Bearer lacks a token')));
+    $server = legacyServer(['headers' => ['Authorization' => $value]]);
+    $diagnostics = [];
+    set_error_handler(static function (int $level, string $text) use (&$diagnostics): bool {
+        $diagnostics[] = $text;
+
+        return true;
+    });
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toBe('MCP tools/list failed with JSON-RPC error -32603: ' . $expected);
+    } finally {
+        restore_error_handler();
+    }
+    expect($diagnostics)->toBe([]);
+})->with([
+    'the scheme' => ['Bearer', 'scheme [redacted] lacks a token'],
+    'the scheme and two spaces' => ['Bearer  ', 'scheme [redacted] lacks a token'],
+    'the scheme, a space and a tab' => ["Bearer \t", 'scheme [redacted] lacks a token'],
+    'the scheme, a space and a VT' => ["Bearer \x0B", 'scheme [redacted] lacks a token'],
+    'a tab alone' => ["\t", 'scheme Bearer lacks a token'],
+    'a VT and an FF alone' => ["\x0B\x0C", 'scheme Bearer lacks a token'],
+]);
+
+test('the credentials part begins after every byte PCRE\'s \\s matches that follows the scheme', function (string $value) {
+    // RFC 9110 §11.4 separates the scheme from what follows with 1*SP; every byte PCRE's \s
+    // matches is taken as a separator too, so a server that splits on one cannot publish
+    // the tail.
+    $fake = legacyFake();
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'token sk-multi refused')));
+    $server = legacyServer(['headers' => ['Authorization' => $value]]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toEndWith(': token [redacted] refused');
+    }
+})->with([
+    'three spaces' => ['Bearer   sk-multi'],
+    'a tab' => ["Bearer\tsk-multi"],
+    'a space, a tab and a space' => ["Bearer \t sk-multi"],
+    'a VT' => ["Bearer\x0Bsk-multi"],
+    'an FF' => ["Bearer\x0Csk-multi"],
+]);
+
+test('an authorization value padded with SP or HTAB is judged with that padding trimmed', function (string $value, string $expected) {
+    // RFC 9110 §5.5 leaves leading and trailing SP and HTAB out of a field value, and a
+    // server that strips them echoes the value without them. The text is what a server that
+    // strips both ends and splits on the first space answers: measured, Node reads each of
+    // these values as `Bearer sk-live-123`. The value as configured stays a needle too, and
+    // it matches from the space before `Bearer`, so ` Bearer sk-live-123` takes that space
+    // along.
+    $fake = legacyFake();
+    $fake->once(answerFor('initialize', static fn($id) => FakeMcpServer::error(200, $id, -32001, 'invalid token sk-live-123 (sent Bearer sk-live-123)')));
+    $server = legacyServer(['headers' => ['Authorization' => $value]]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toBe('MCP initialize failed with JSON-RPC error -32001: ' . $expected);
+    }
+})->with([
+    'a trailing space' => ['Bearer sk-live-123 ', 'invalid token [redacted] (sent [redacted])'],
+    'a leading space' => [' Bearer sk-live-123', 'invalid token [redacted] (sent[redacted])'],
+    'a trailing tab' => ["Bearer sk-live-123\t", 'invalid token [redacted] (sent [redacted])'],
+]);
+
+test('the bytes an authorization value is trimmed and split on are the ones PCRE\'s \\s matches', function () {
+    // Checks that AUTH_SPACE holds each byte preg_match('/\s/') matches out of all 256, LF
+    // and CR among them, once, and no other byte.
+    $space = (new ReflectionClassConstant(McpClient::class, 'AUTH_SPACE'))->getValue();
+    $matched = implode('', array_filter(array_map('chr', range(0, 255)), static fn(string $b): bool => preg_match('/\s/', $b) === 1));
+
+    expect(count_chars($space, 3))->toBe($matched)
+        ->and(strlen($space))->toBe(strlen($matched));
+});
+
+test('an authorization value padded or split with a VT or an FF is redacted as a server splits it', function (string $value, string $raw, string $expected) {
+    // McpClient sends these values as configured, and Python's http.server accepts them. The
+    // text is what a handler that reads the token with str.split() answers, the raw header's
+    // repr() included: measured, it names `sk-x` alone. Trimming and separating on the bytes
+    // PCRE's \s matches makes `sk-x` a needle for each of them.
+    $fake = legacyFake();
+    $fake->once(answerFor('initialize', static fn($id) => FakeMcpServer::error(200, $id, -32001, "invalid token sk-x; raw='{$raw}'")));
+    $server = legacyServer(['headers' => ['Authorization' => $value]]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toBe('MCP initialize failed with JSON-RPC error -32001: ' . $expected);
+    }
+})->with([
+    'a trailing VT' => ["Bearer sk-x\x0B", 'Bearer sk-x\\x0b', "invalid token [redacted]; raw='[redacted]\\x0b'"],
+    'a trailing FF' => ["Bearer sk-x\x0C", 'Bearer sk-x\\x0c', "invalid token [redacted]; raw='[redacted]\\x0c'"],
+    'a leading VT' => ["\x0BBearer sk-x", '\\x0bBearer sk-x', "invalid token [redacted]; raw='\\x0b[redacted]'"],
+    'a VT separator' => ["Bearer\x0Bsk-x", 'Bearer\\x0bsk-x', "invalid token [redacted]; raw='Bearer\\x0b[redacted]'"],
+    'an FF separator' => ["Bearer\x0Csk-x", 'Bearer\\x0csk-x', "invalid token [redacted]; raw='Bearer\\x0c[redacted]'"],
+]);
+
+test('a credentials part keeps the spaces inside it', function () {
+    // An auth-param list is one needle, from the first byte after the scheme's separator to
+    // the end of the trimmed value.
+    $fake = legacyFake();
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'sent username="u", response="r"')));
+    $server = legacyServer(['headers' => ['Authorization' => 'Digest username="u", response="r"']]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toBe('MCP tools/list failed with JSON-RPC error -32603: sent [redacted]');
+    }
+});
+
+test('a header other than Authorization and Proxy-Authorization is not trimmed', function () {
+    // Only the two authorization headers are judged on their trimmed form. X-Api-Key is a
+    // needle exactly as configured, trailing space included, so text naming it without the
+    // space is published.
+    $fake = legacyFake();
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'sent Token abc123')));
+    $server = legacyServer(['headers' => ['X-Api-Key' => 'Token abc123 ']]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toBe('MCP tools/list failed with JSON-RPC error -32603: sent Token abc123');
+    }
+});
+
+test('an authorization value that does not open with a scheme token is not split', function (string $value) {
+    // RFC 9110's auth-scheme is a token. A value whose trimmed form does not begin with one
+    // followed by a byte PCRE's \s matches does not have the `<scheme> <credentials>` form,
+    // so its tail is not a needle and a bare tail is published.
+    $fake = legacyFake();
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'token sk-slash refused')));
+    $server = legacyServer(['headers' => ['Authorization' => $value]]);
+
+    try {
+        (new McpClient($server, $fake->client()))->listTools();
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->toEndWith(': token sk-slash refused');
+    }
+})->with([
+    'a slash in the scheme' => ['Bear/er sk-slash'],
+    'a quoted scheme' => ['"Bearer" sk-slash'],
+]);
 
 test('an empty header value leaves the server text untouched', function () {
     // This pins the outcome, not the mechanism. No mechanism the client has ever used splices
@@ -294,7 +517,7 @@ test('an empty header value leaves the server text untouched', function () {
     // emits — removing it keeps this test green and adds a PHP warning to the run.
     $fake = legacyFake();
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'plain text')));
-    $server = legacyServer(['headers' => ['Authorization' => 'Bearer t', 'X-Empty' => '']]);
+    $server = legacyServer(['headers' => ['Authorization' => 'Bearer sk-test-4f9a', 'X-Empty' => '']]);
 
     try {
         (new McpClient($server, $fake->client()))->listTools();
@@ -310,7 +533,7 @@ test('a credential straddling the 200-byte cut is redacted before the cut, not a
     // so cutting first would keep its first four bytes, "Bear", and publish them; redacting
     // first replaces the whole of it and the cut lands inside the marker. A credential that
     // sat wholly inside or wholly outside the window would not tell the two orders apart.
-    $reflected = str_repeat('x', 195) . ' Bearer t';
+    $reflected = str_repeat('x', 195) . ' Bearer sk-test-4f9a';
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, $reflected)));
 
     try {
@@ -339,11 +562,11 @@ test('a secret that is a prefix of another does not leave the rest of it publish
 
 test('a secret that occurs inside the marker does not corrupt what was already redacted', function () {
     $fake = legacyFake();
-    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'red Bearer t')));
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'red Bearer sk-test-4f9a')));
     // 'red' is a substring of "[redacted]". A replacement pass that re-reads its own output
-    // rewrites the marker it just wrote: measured, str_replace(['Bearer t', 'red'], …) answers
-    // this very text with "[redacted] [[redacted]acted]".
-    $server = legacyServer(['headers' => ['Authorization' => 'Bearer t', 'X-Odd' => 'red']]);
+    // rewrites the marker it just wrote: measured, str_replace(['Bearer sk-test-4f9a',
+    // 'red'], …) answers this very text with "[redacted] [[redacted]acted]".
+    $server = legacyServer(['headers' => ['Authorization' => 'Bearer sk-test-4f9a', 'X-Odd' => 'red']]);
 
     try {
         (new McpClient($server, $fake->client()))->listTools();
@@ -355,11 +578,11 @@ test('a secret that occurs inside the marker does not corrupt what was already r
 
 test('a header value that is not valid UTF-8 redacts byte-wise instead of wiping the message', function () {
     $fake = legacyFake();
-    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'plain Bearer t text')));
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'plain Bearer sk-test-4f9a text')));
     // A host may configure a credential of arbitrary bytes. Server text always arrives valid
     // (json_decode refuses anything else), so the only invalid UTF-8 redact() can meet is a
     // secret — which must not make the match fail and take the whole message with it.
-    $server = legacyServer(['headers' => ['Authorization' => 'Bearer t', 'X-Binary' => "\xC3\x28"]]);
+    $server = legacyServer(['headers' => ['Authorization' => 'Bearer sk-test-4f9a', 'X-Binary' => "\xC3\x28"]]);
 
     try {
         (new McpClient($server, $fake->client()))->listTools();
@@ -427,12 +650,12 @@ test('a configuration past PCRE\'s alternation limit still redacts, and keeps th
     // of more than 1 985 such values will not compile — "regular expression is too large" —
     // so the preg_replace() draft this replaced dropped the whole message here, by design but
     // needlessly. strtr() has no compile step, so the credential goes and the text stays.
-    $headers = ['Authorization' => 'Bearer t'];
+    $headers = ['Authorization' => 'Bearer sk-test-4f9a'];
     for ($i = 0; $i < 2000; $i++) {
         $headers['X-H' . $i] = str_pad((string) $i, 15, 'z');
     }
     $fake = legacyFake();
-    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'sent Bearer t and kept the rest')));
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'sent Bearer sk-test-4f9a and kept the rest')));
 
     try {
         (new McpClient(legacyServer(['headers' => $headers]), $fake->client()))->listTools();
@@ -481,6 +704,72 @@ test('a session id the client has since forgotten is still redacted', function (
         expect($e->getMessage())->not->toContain('sess-1')
             ->not->toContain('sess-2')
             ->and($e->getMessage())->toEndWith(': session [redacted] is gone; use [redacted]');
+    }
+});
+
+/** Every message in $e's getPrevious() chain, $e's own first. */
+function chainMessages(\Throwable $e): array
+{
+    $messages = [];
+    for ($link = $e; $link !== null; $link = $link->getPrevious()) {
+        $messages[] = $link->getMessage();
+    }
+
+    return $messages;
+}
+
+test('a header value holding CR, LF or NUL is refused before the request, and nothing in the chain names it', function (string $value) {
+    // A real client, not MockHttpClient: the refusal has to happen before the client sees
+    // the header, whichever client that is. The URL is never contacted.
+    $server = legacyServer(['headers' => ['Authorization' => $value]]);
+
+    try {
+        (new McpClient($server, HttpClient::create()))->listTools();
+        $this->fail('expected a transport error');
+    } catch (McpTransportException $e) {
+        expect($e::class)->toBe(McpTransportException::class)
+            ->and($e->getMessage())->toBe('MCP initialize request has a header name or value holding CR, LF or NUL.')
+            ->and($e->getPrevious())->toBeNull()
+            ->and(implode("\n", chainMessages($e)))->not->toContain('sk-live-123');
+    }
+})->with([
+    'a trailing LF' => ["Bearer sk-live-123\n"],
+    'a trailing CR' => ["Bearer sk-live-123\r"],
+    'a CRLF and a second header' => ["Bearer sk-live-123\r\nX: y"],
+    'a trailing NUL' => ["Bearer sk-live-123\0"],
+]);
+
+test('a header name holding CR, LF or NUL is refused the same way', function (string $name) {
+    $server = legacyServer(['headers' => [$name => 'v']]);
+
+    try {
+        (new McpClient($server, HttpClient::create()))->listTools();
+        $this->fail('expected a transport error');
+    } catch (McpTransportException $e) {
+        expect($e::class)->toBe(McpTransportException::class)
+            ->and($e->getMessage())->toBe('MCP initialize request has a header name or value holding CR, LF or NUL.')
+            ->and($e->getPrevious())->toBeNull()
+            ->and(implode("\n", chainMessages($e)))->not->toContain('sk-live-123');
+    }
+})->with([
+    'an LF' => ["X-Key\nsk-live-123"],
+    'a CR' => ["X-Key\rsk-live-123"],
+    'a NUL' => ["X-Key\0sk-live-123"],
+]);
+
+test('a stored session id holding LF is refused the same way', function () {
+    // The session id is a header post() sends too, and a store can hand back any string.
+    $store = new ArraySessionStore();
+    $store->sessions[legacyServer()->sessionKey()] = new McpSession(McpServer::PROTOCOL_2025, "sk-live-123\n");
+
+    try {
+        (new McpClient(legacyServer(), HttpClient::create(), $store))->listTools();
+        $this->fail('expected a transport error');
+    } catch (McpTransportException $e) {
+        expect($e::class)->toBe(McpTransportException::class)
+            ->and($e->getMessage())->toBe('MCP tools/list request has a header name or value holding CR, LF or NUL.')
+            ->and($e->getPrevious())->toBeNull()
+            ->and(implode("\n", chainMessages($e)))->not->toContain('sk-live-123');
     }
 });
 

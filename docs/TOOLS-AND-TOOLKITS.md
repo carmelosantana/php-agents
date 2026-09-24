@@ -476,11 +476,22 @@ closure to use your own scheme.
 
 ### Pinning and drift
 
-`fingerprint()` is a sha256 over a canonical JSON encoding of four values: `name`,
+`fingerprint()` is a sha256 over a canonical encoding of four values: `name`,
 `description`, `inputSchema` and `annotations`. The top-level `title` is not part of it,
 because it is a display label; `annotations` is hashed as sent, `annotations.title` included.
 Every non-list array has its keys sorted, so key order in the server's JSON does not move the
-digest, while lists keep their order, since reordering an `enum` changes what a tool accepts.
+digest of an object whose keys are not all numeric strings (a key the server repeats keeps its
+last value, so the order of the repeats does move it), while lists keep their order, since
+reordering an `enum` changes what a tool accepts. An object keyed `"0"` to `"n"` in order is
+decoded as a list, and keeps that order. Out of order it is sorted as strings, which restores
+the order while every key is a single digit but puts `"10"` before `"2"`, so from `"10"` up an
+out-of-order object hashes apart from the in-order one.
+The encoding is JSON, written with `serialize_precision` held at -1, so your php.ini does not
+move the digest of a float such as `0.1`. A definition `json_encode()` refuses — one whose
+schema holds `1e999`, which `json_decode()` reads as INF — is hashed from its `serialize()`
+form instead, so rewriting its description still moves its digest. Inputs that
+`json_decode($body, true)` turns into the same PHP value, such as `{}` and `[]`, hash the
+same; `McpToolDefinition`'s class docblock names more.
 
 For each tool the server lists, `McpToolkit` reads `$allow[$serverName]` and:
 
@@ -581,7 +592,7 @@ request is made. A `$protocolVersion` that is neither constant, or a non-positiv
 
 ```text
 McpException extends \RuntimeException
-├── McpTransportException          network, timeout, byte cap, and unexpected statuses
+├── McpTransportException          network, timeout, byte cap, unexpected statuses, and a header holding CR, LF or NUL
 │   └── McpRedirectException       a 3xx, or an answer reached by following one; carries $status and $location
 ├── McpAuthException               401, 403; carries $status
 └── McpProtocolException           malformed or unexpected response
@@ -595,8 +606,27 @@ for "this server is not usable right now".
 Messages are built from the method name, the HTTP or JSON-RPC status and the client's own
 configured limits. `McpRpcException` also splices up to 200 bytes of the server's own
 `error.message`, and `McpClient` replaces every non-empty `McpServer::$headers` value and every
-session id it has held with `[redacted]` before building it. Treat these messages as untrusted
-text even so, and log them on that footing.
+session id it has held with `[redacted]` before building it. For `Authorization` and
+`Proxy-Authorization`, whatever the case of the name, the value is also removed trimmed at
+both ends of SP, HTAB, LF, VT, FF and CR, the bytes PCRE's `\s` matches. When that trimmed
+value has the form `<scheme> <credentials>`, the scheme followed by one or more of those bytes,
+its credentials part is removed on its own, so a server that echoes `sk-live-123` from
+`Bearer sk-live-123 ` does not publish it. A byte outside that class that a server still
+splits on — Python's `str.split()` splits on 0x1C to 0x1F, 0x85 and 0xA0, and the client sends
+them — can publish the token. Other headers are matched only as configured, never
+trimmed or split, and the match is literal: a credential the server decodes, encodes or
+otherwise transforms before echoing it — `user:pass` from `Basic dXNlcjpwYXNz`, say — is not
+removed. Treat these messages as untrusted text even so, and log them on that footing.
+
+The `McpTransportException` for a transport failure keeps the HTTP client's exception as its
+previous, and that message can quote the URL or the host — a query-string token in the URL
+included, so keep secrets out of `McpServer::$url` if you log exception chains. A header name or
+value holding CR, LF or NUL — a token read from a file with its trailing newline, say — is
+refused before the request with an `McpTransportException` that names the method alone and has
+no previous, because the HTTP client's own refusal quotes the whole header line. That check
+reads header values as strings, as `McpServer::$headers`' `array<string, string>` documents. A
+value given as an array is outside it: `['Authorization' => ["Bearer sk-live-123\n"]]` gets past
+the check, and the HTTP client's refusal, quoting the whole header line, is chained again.
 
 The redaction reaches what the client received. An id the client never received — a server
 that puts an `Mcp-Session-Id` on a reply the client does not read that header from, and then
@@ -609,10 +639,15 @@ version negotiation reads `data.supported` from it. A host that logs `$e->data` 
 unredacted server-supplied data.
 
 Some throws from this namespace sit outside the tree, so a `catch (McpException $e)` misses
-them; `grep -rn 'throw new \\' src/Mcp/` lists them. `McpServer`'s constructor throws
-`\InvalidArgumentException` for a bad protocol version or a non-positive limit, and
-`McpToolkit` throws `\UnexpectedValueException` when an injected `$namer` returns anything but
-a non-empty string — that one is the host's own closure misbehaving, not the server.
+them; `grep -rn 'throw new \\' src/Mcp/` lists the ones a `throw` statement raises.
+`McpServer`'s constructor throws `\InvalidArgumentException` for a bad protocol version or a
+non-positive limit, and `McpToolkit` throws `\UnexpectedValueException` when an injected
+`$namer` returns anything but a non-empty string — that one is the host's own closure
+misbehaving, not the server. A header value that is not a string, which `McpServer::$headers`'
+`array<string, string>` does not provide for, can end in a PHP `TypeError` or `Error` instead,
+which no `throw` statement raises: measured, an int or a `Stringable` `Authorization` value
+gives a `TypeError` where a server's JSON-RPC error would become an `McpRpcException`, and a
+plain object gives an `Error` before any request is sent.
 
 An `McpException` raised while listing propagates to whoever called `tools()` or
 `definition()`, because the library does not guess a host's failure policy. An exception
@@ -796,7 +831,7 @@ MCP tool taking no input publishes is returned, and re-encoded, as `[]`. Establi
 | --- | --- |
 | OpenAI Chat Completions | sent as written, except that a missing `required` is added as `[]`, which OpenAI insists on |
 | OpenAI Responses | strict mode only when `StrictSchemaNormalizer::qualifies()` says the schema can be closed without changing what it accepts; otherwise the schema goes out as written with `strict: false` |
-| Gemini | rewritten: types upper-cased, `type: [X, "null"]` becomes `type: X` plus `nullable: true`, and `additionalProperties`, `$schema`, `$ref`, `$defs`, `definitions`, `patternProperties` and `default` are stripped. The walk descends through `properties`, `items` and the `anyOf`/`oneOf`/`allOf` branches; a subschema anywhere else — under `not`, `contains`, `if`/`then`/`else`, `propertyNames`, `prefixItems` — is passed through unchanged, so a keyword on that side is not stripped |
+| Gemini | rewritten: types upper-cased, `type: [X, "null"]` becomes `type: X` plus `nullable: true`, and `additionalProperties`, `$schema`, `$ref`, `$defs`, `definitions`, `patternProperties` and `default` are stripped, as are `oneOf`, `allOf`, `not`, `if`, `then`, `else`, `contains`, `prefixItems`, `propertyNames`, `dependentSchemas` and `dependentRequired`, which Gemini's `Schema` has no field for, each with whatever it holds. The walk descends through `properties`, `items` and the `anyOf` branches and strips at each node it reaches; a property named like a stripped keyword keeps its name. It does not reach the members of a `properties` map held as an object, which `repair()` makes of a map keyed `"0"`, `"1"`, … in order, or of a draft-04 tuple `items`: those keep a stripped keyword and a lower-case `type`. A subschema under a keyword the walk neither descends into nor strips, such as `unevaluatedProperties`, is passed through unchanged |
 | Ollama | rewritten more heavily: `anyOf`/`oneOf`/`allOf` are flattened to their first non-null branch, and `DEMOTABLE_KEYWORDS` — the numeric and length bounds, `pattern`, `minItems`, `maxItems`, `const`, `default` and `format` — are restated in the description before being stripped |
 | llama.cpp | the same flattening, demotion and stripping as Ollama, over the same keyword lists, and it adds `required: []` to an object node that has no `required` |
 
@@ -804,18 +839,20 @@ A schema that OpenAI Responses cannot close is still sent whole — `strict: fal
 guarantee that the model's arguments match the schema, not the schema itself. Gemini, Ollama
 and llama.cpp rewrite it, and the rewrite is lossy where it reaches: a `$ref` or a `$defs` is
 removed rather than inlined, and a node left with nothing becomes `{}`, the schema that accepts
-anything. Ollama and llama.cpp go further than Gemini in what they change, collapsing a
-combinator to a single branch where Gemini keeps every branch and normalises each.
+anything. Ollama and llama.cpp collapse an `anyOf`/`oneOf`/`allOf` to its first non-null
+branch. Gemini keeps every `anyOf` branch and normalises each, and removes a `oneOf` or an
+`allOf` whole.
 
 Each of the three walks a narrow set of positions, and not the same set. Gemini descends
-through `properties`, `items` and each `anyOf`/`oneOf`/`allOf` branch. Ollama and llama.cpp
-descend through `properties` and `items` only, having already merged a combinator's first
-non-null branch into the node instead of descending into it. A subschema reached any other way
-is passed through as the server wrote it, by all three. Probed with a schema carrying
-`not: {"$ref": "…"}` beside a `properties.p` holding `minLength` and `format`: all three
-rewrote `p` and all three left `not` exactly as it arrived. So expect a tool's schema to reach
-these providers rewritten in some positions and untouched in others, and in neither case
-complete.
+through `properties`, `items` and each `anyOf` branch, but not to the members of a `properties`
+map held as an object or of a draft-04 tuple `items`. Ollama and llama.cpp descend through
+`properties` and `items` only, having already merged a combinator's first non-null branch into
+the node instead of descending into it. A subschema reached any other way is passed through as
+the server wrote it by Ollama and llama.cpp, and by Gemini unless its keyword is one Gemini
+strips. Probed with a schema carrying `not: {"$ref": "…"}` beside a `properties.p` holding
+`minLength` and `format`: all three rewrote `p`, Ollama and llama.cpp left `not` exactly as it
+arrived, and Gemini removed it. So expect a tool's schema to reach these providers rewritten in
+some positions and untouched in others, and in neither case complete.
 
 ## Publishing Toolkit Packages
 

@@ -13,7 +13,7 @@ use Tests\Support\Mcp\FakeMcpServer;
 
 function autoServer(array $overrides = []): McpServer
 {
-    return new McpServer(...array_replace(['url' => 'https://mcp.example.test/mcp', 'headers' => ['Authorization' => 'Bearer t']], $overrides));
+    return new McpServer(...array_replace(['url' => 'https://mcp.example.test/mcp', 'headers' => ['Authorization' => 'Bearer sk-test-4f9a']], $overrides));
 }
 
 function modernFake(array $tools = ['search']): FakeMcpServer
@@ -49,7 +49,7 @@ function expectModernEnvelope(FakeMcpServer $fake): void
             ->and($request['url'])->toBe('https://mcp.example.test/mcp')
             ->and($request['headers']['accept'] ?? null)->toBe('application/json, text/event-stream')
             ->and($request['headers']['content-type'] ?? null)->toBe('application/json')
-            ->and($request['headers']['authorization'] ?? null)->toBe('Bearer t')
+            ->and($request['headers']['authorization'] ?? null)->toBe('Bearer sk-test-4f9a')
             ->and($request['headers']['mcp-protocol-version'] ?? null)->toBe('2026-07-28')
             ->and($request['headers']['mcp-method'] ?? null)->toBe($request['body']['method'])
             ->and($request['headers'])->not->toHaveKey('mcp-session-id');
@@ -103,6 +103,15 @@ test('-32022 that lists only 2025-11-25 falls back to the handshake', function (
         ->and($fake->initializeCount)->toBe(1);
 });
 
+test('-32022 listing both versions twice is retried once, then falls back to the handshake', function () {
+    $fake = new FakeMcpServer(FakeMcpServer::LEGACY);
+    $fake->tools = [FakeMcpServer::tool('search')];
+    $fake->once(versionError(['2026-07-28', '2025-11-25']))->once(versionError(['2026-07-28', '2025-11-25']));
+
+    expect((new McpClient(autoServer(), $fake->client()))->listTools())->toHaveCount(1)
+        ->and($fake->methods())->toBe(['tools/list', 'tools/list', 'initialize', 'notifications/initialized', 'tools/list']);
+});
+
 test('-32022 with no shared version is refused', function () {
     $fake = modernFake();
     $fake->once(versionError(['2024-11-05']));
@@ -120,8 +129,9 @@ test('a modern header error is an RPC error, never a fallback', function () {
 
 test('a pinned 2026-07-28 never falls back, and is never written to the store', function () {
     // McpRpcException, not the McpProtocolException the plan's listing asked for: the
-    // fallback 400 carries the Adapter's -32600, and the parent class cannot tell "the pin
-    // refused the fallback" from any other protocol error. Probed, the class is the
+    // fallback 400 is FakeMcpServer LEGACY's missing-session answer (400/-32600, the value
+    // this fake sends), and the parent class cannot tell "the pin refused the fallback" from
+    // any other protocol error. Probed, the class is the
     // subclass. The empty store is the other half: session() builds a pinned 2026-07-28
     // session in memory and nothing detected anything, so remember() is never reached.
     $fake = new FakeMcpServer(FakeMcpServer::LEGACY);
@@ -282,7 +292,7 @@ test('a 2026-07-28 answer arriving as text/event-stream is read the same way', f
 /*
  * Redaction on the modern path (spec §2, amendment 3; Task 12 owns redact()).
  *
- * Every test in this file whose name ends "is redacted" covers one branch on which
+ * Every test in this file whose name contains "is redacted" covers one branch on which
  * McpClient builds an McpRpcException out of a modern reply, and each names its branch in
  * its first comment. None of them says how many there are, and this one does not either:
  * the check that the set is complete is the mutation, not the prose. Making redact()
@@ -297,6 +307,24 @@ test('a credential a 2026-07-28 server reflects in a 200 is redacted', function 
     $fake = modernFake();
     $fake->once(static fn(array $r) => ($r['body']['method'] ?? null) === 'tools/call'
         ? FakeMcpServer::error(200, $r['body']['id'], -32603, 'token Bearer sk-modern refused')
+        : null);
+    $client = new McpClient(autoServer(['headers' => ['Authorization' => 'Bearer sk-modern']]), $fake->client());
+
+    try {
+        $client->callTool('search', []);
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->not->toContain('sk-modern')
+            ->and($e->getMessage())->toEndWith(': token [redacted] refused');
+    }
+});
+
+test('a bearer token a 2026-07-28 server reflects without its scheme is redacted', function () {
+    // Branch: a 2xx carrying a JSON-RPC `error` that names the token without its scheme.
+    // redact() is shared by both protocol paths; this pins the credentials part on this one.
+    $fake = modernFake();
+    $fake->once(static fn(array $r) => ($r['body']['method'] ?? null) === 'tools/call'
+        ? FakeMcpServer::error(200, $r['body']['id'], -32603, 'token sk-modern refused')
         : null);
     $client = new McpClient(autoServer(['headers' => ['Authorization' => 'Bearer sk-modern']]), $fake->client());
 
@@ -348,7 +376,7 @@ test('a stored session id a pin contradicts is redacted after the entry is disca
     // branch runs — the id still has to be held, because the server can name it back.
     $fake = modernFake();
     $store = new ArraySessionStore();
-    $server = autoServer(['headers' => ['Authorization' => 'Bearer t'], 'protocolVersion' => '2026-07-28']);
+    $server = autoServer(['headers' => ['Authorization' => 'Bearer sk-test-4f9a'], 'protocolVersion' => '2026-07-28']);
     $store->sessions[$server->sessionKey()] = new McpSession('2025-11-25', 'ORPHAN-PINNED');
     $fake->once(static fn(array $r) => FakeMcpServer::error(200, $r['body']['id'], -32603, 'session ORPHAN-PINNED is still open'));
 

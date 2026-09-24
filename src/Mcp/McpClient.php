@@ -19,10 +19,11 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * procedure): with nothing remembered and no pin, the first request is sent as 2026-07-28,
  * with `MCP-Protocol-Version`, `Mcp-Method`/`Mcp-Name` and `params._meta` (protocol
  * version, `clientCapabilities: {}`, clientInfo). A 400 carrying -32020 or -32021 comes
- * from a 2026-07-28 server and becomes an McpRpcException; a 400 carrying -32022 is
- * retried once if the server still lists 2026-07-28, falls back if it lists only
- * 2025-11-25, and is otherwise McpUnsupportedVersionException. Any other 400 means "not a
- * 2026-07-28 server", and the client falls back to 2025-11-25. The version found is
+ * from a 2026-07-28 server and becomes an McpRpcException. A 400 carrying -32022 that
+ * lists 2026-07-28 is retried once; a -32022 that is not retried falls back to 2025-11-25
+ * when it lists 2025-11-25, and is otherwise McpUnsupportedVersionException, so a server
+ * that answers the retry with the same -32022 listing both versions draws the fallback.
+ * Any other 400 means "not a 2026-07-28 server", and the client falls back to 2025-11-25. The version found is
  * remembered through the McpSessionStore. A remembered 2026-07-28 that later draws a
  * fallback 400 is forgotten, and detection runs again. McpServer::$protocolVersion pins a
  * version instead: nothing is probed, and a pinned 2026-07-28 that draws a fallback 400 is
@@ -67,7 +68,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  */
 final class McpClient implements McpClientInterface
 {
-    public const CLIENT_VERSION = '0.16.0-dev';
+    public const CLIENT_VERSION = '0.16.0';
 
     private const MAX_PAGES = 100;
 
@@ -82,6 +83,15 @@ final class McpClient implements McpClientInterface
     private const MODERN_RPC_ERRORS = [-32020, -32021];
 
     private const REDACTED = '[redacted]';
+
+    /** Lower-cased names of the headers redact() also trims and splits. */
+    private const AUTH_HEADERS = ['authorization', 'proxy-authorization'];
+
+    /** SP, HTAB, LF, VT, FF and CR: the bytes PCRE's \s matches, measured over all 256. */
+    private const AUTH_SPACE = " \t\n\x0B\f\r";
+
+    /** RFC 9110 §11.4 on a trimmed value: a scheme token, AUTH_SPACE bytes, the credentials. */
+    private const AUTH_CREDENTIALS = '/\A[!#$%&\'*+\-.^_`|~0-9A-Za-z]+[' . self::AUTH_SPACE . ']+(.+)\z/s';
 
     private readonly HttpExchange $exchange;
 
@@ -585,7 +595,9 @@ final class McpClient implements McpClientInterface
      * text reaches a message at all: every other message in this file, in HttpExchange and in
      * HttpReply is formatted from the method name, the HTTP status and this client's own
      * configured limits (maxResponseBytes and MAX_PAGES are interpolated; nothing the server
-     * sent is).
+     * sent is). redact() does not reach a previous exception: the previous HttpExchange chains
+     * to a transport failure is the HTTP client's own exception, and its message can quote the
+     * URL or the host (HttpExchange's docblock).
      *
      * What this covers, exactly:
      * - every non-empty value in McpServer::$headers, whatever the header is named. An empty
@@ -597,6 +609,29 @@ final class McpClient implements McpClientInterface
      *   *alternative* in a regular expression: measured, preg_replace('/|Bearer t/', '[R]',
      *   'abc Bearer t') gives "[R]a[R]b[R]c[R] [R][R][R]". str_replace() does not splice on an
      *   empty needle either; only the preg draft this guard was first written for could.
+     * - for `Authorization` and `Proxy-Authorization`, the name matched case-insensitively,
+     *   the value trimmed of AUTH_SPACE at both ends and the credentials part of that trimmed
+     *   value, beside the value as configured (spec §2, amendment 13, 2026-09-24). AUTH_SPACE
+     *   is SP, HTAB, LF, VT, FF and CR, the bytes PCRE's `\s` matches. The trimmed value is a
+     *   needle when it is not empty. RFC 9110 §5.5 leaves SP and HTAB out of a field value, and
+     *   measured, Node reads `Bearer sk-live-123 `, ` Bearer sk-live-123` and
+     *   `Bearer sk-live-123\t` alike as `Bearer sk-live-123`. VT and FF reach the wire as
+     *   well, and measured, a Python http.server handler that reads the token with str.split()
+     *   names `sk-x` alone for `Bearer sk-x\x0B`, `\x0BBearer sk-x` and `Bearer\x0Csk-x`. LF
+     *   and CR never reach a server: measured, a value holding either fails with
+     *   McpTransportException and no connection is opened. The credentials part catches a
+     *   server that names a token without its scheme. Following RFC 9110 §11.4, with every
+     *   AUTH_SPACE byte accepted beside SP, the trimmed value has a credentials part when it is
+     *   an auth-scheme token, then one or more AUTH_SPACE bytes, then at least one more byte;
+     *   the part runs from the first byte after those to the end of the trimmed value and
+     *   keeps every byte inside it, so `Bearer \t sk-multi` gives `sk-multi` and
+     *   `Digest username="u", response="r"` gives `username="u", response="r"`. `Bearer`, and
+     *   `Bearer` followed by AUTH_SPACE bytes alone, have none; a value whose trimmed form does
+     *   not open with a token followed by an AUTH_SPACE byte — a `/` or a quote in the scheme —
+     *   has none either. A value of AUTH_SPACE bytes alone trims to nothing, and nothing empty
+     *   becomes a needle. The credentials part is a needle whatever its length, and a short
+     *   one takes every occurrence with it: measured, `Bearer t` turns the server text
+     *   "plain text" into "plain [redacted]ex[redacted]".
      * - every session id this instance has ever held — $held, filled by hold() as the store
      *   hands an entry over and as an `initialize` reply arrives, whatever this client then
      *   does with either, and never emptied. forget() stops the client sending an id; it does
@@ -617,8 +652,9 @@ final class McpClient implements McpClientInterface
      *   this way; it was never committed, so the probe above is the evidence, not the repo;
      * - at each position it tries the longest needle first, whatever order the map is in
      *   (measured both ways), so a value of `Bearer` beside a credential of `Bearer abc` cannot
-     *   match first and leave the tail published. Nothing here sorts; that guarantee is strtr's
-     *   and a test pins it;
+     *   match first and leave the tail published, and the credentials part `abc` cannot match
+     *   inside `Bearer abc` and leave "Bearer [redacted]". Nothing here sorts; that guarantee
+     *   is strtr's and tests pin both cases;
      * - it is byte-wise, so a configured header value may be any byte string, valid UTF-8 or not;
      * - a secret of digits only becomes an *integer* array key, which strtr() still matches as
      *   its decimal string. Pinned, because the coercion is PHP's and not obvious;
@@ -637,9 +673,23 @@ final class McpClient implements McpClientInterface
      * - McpRpcException::$data. rpcError() passes that property through untouched, and no
      *   part of it reaches any message, which is what spec §2 constrains. A host that logs
      *   $data itself can still log something a server reflected into it.
-     * - anything but a literal occurrence. A server that base64-encodes, URL-encodes, cases
-     *   differently or truncates a credential before reflecting it is not caught by
-     *   substring replacement.
+     * - anything but a literal occurrence. A server that decodes a credential before
+     *   reflecting it — a Basic credential echoed as `user:pass` where the header carries
+     *   `Basic dXNlcjpwYXNz` — or that base64-encodes, URL-encodes, cases differently or
+     *   truncates one, is not caught by substring replacement.
+     * - the tail or the trimmed form of any other header. Only `Authorization` and
+     *   `Proxy-Authorization` are trimmed and split: `X-Api-Key: Token abc123` redacts `Token
+     *   abc123` and a bare `abc123` in the text stays, and `X-Api-Key: Token abc123 `, with its
+     *   trailing space, leaves "sent Token abc123" as it is.
+     * - the tail of an authorization value without a credentials part as defined above:
+     *   with `Bear/er sk-x`, the whole value is redacted and a bare `sk-x` stays.
+     * - a piece of a credentials part. The part is one needle: with `Digest username="u",
+     *   response="r"`, that string after the scheme is redacted, and `r` named alone stays.
+     * - a byte outside AUTH_SPACE that a server splits on. McpClient sends 0x1C to 0x1F,
+     *   0x85 and 0xA0 as configured, and Python's str.split() splits on each of them:
+     *   measured, a Python http.server handler that reads the token with str.split() names
+     *   `sk-x` alone for `Bearer sk-x\x1C`, `\xA0Bearer sk-x` and `Bearer\x85sk-x`, and the
+     *   message keeps it, since none of the needles those values give is `sk-x`.
      * - a session id this client never received. What it removes is what hold() recorded,
      *   and hold() is called with the store's entry and with the `Mcp-Session-Id` of an
      *   `initialize` reply. A server that puts that header on a reply this client does not
@@ -659,9 +709,20 @@ final class McpClient implements McpClientInterface
         foreach ($this->held as $sessionId) {
             $secrets[$sessionId] = self::REDACTED;
         }
-        foreach ($this->server->headers as $value) {
-            if ($value !== '') {
-                $secrets[$value] = self::REDACTED;
+        foreach ($this->server->headers as $name => $value) {
+            if ($value === '') {
+                continue;
+            }
+            $secrets[$value] = self::REDACTED;
+            if (!in_array(strtolower((string) $name), self::AUTH_HEADERS, true)) {
+                continue;
+            }
+            $trimmed = trim($value, self::AUTH_SPACE);
+            if ($trimmed !== '') {
+                $secrets[$trimmed] = self::REDACTED;
+            }
+            if (preg_match(self::AUTH_CREDENTIALS, $trimmed, $match) === 1) {
+                $secrets[$match[1]] = self::REDACTED;
             }
         }
 

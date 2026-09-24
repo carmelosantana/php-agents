@@ -38,6 +38,19 @@ final class GeminiProvider extends AbstractProvider
         'definitions',
         'patternProperties',
         'default',
+        // Gemini's Schema has no field for these (Kanboard subtask 6482). It has `anyOf`,
+        // which is kept and walked instead.
+        'oneOf',
+        'allOf',
+        'not',
+        'if',
+        'then',
+        'else',
+        'contains',
+        'prefixItems',
+        'propertyNames',
+        'dependentSchemas',
+        'dependentRequired',
     ];
 
     public function __construct(
@@ -620,17 +633,27 @@ final class GeminiProvider extends AbstractProvider
      * Normalize JSON Schema for Gemini compatibility, at the depths the walk below reaches.
      *
      * Gemini expects upper-case type names (STRING, OBJECT, …), a single type per
-     * node with `nullable` for "or null", and none of UNSUPPORTED_KEYWORDS. The
-     * walk descends through `properties`, `items` and the `anyOf`/`oneOf`/`allOf`
-     * branches, so a raw schema's nested nodes are normalised as well as its top
-     * level. Subschemas sitting under an UNSUPPORTED_KEYWORDS keyword — `$defs`
-     * and `additionalProperties` among them — are not descended into, since
-     * stripKeywords unsets that keyword on the node it is reached from. Other
-     * subschema positions the JSON Schema vocabulary allows (`if`/`then`/`else`,
-     * `not`, `contains`, `prefixItems`, `propertyNames`, …) are passed through
-     * unchanged.
+     * node with `nullable` for "or null", and none of UNSUPPORTED_KEYWORDS. The walk
+     * descends through `properties`, `items` and the `anyOf` branches, so a raw
+     * schema's nested nodes are normalised as well as its top level, with two
+     * exceptions. A `properties` map that is a `\stdClass` is not descended into, so
+     * its members keep a lower-case `type` and any UNSUPPORTED_KEYWORDS keyword. And
+     * a draft-04 tuple `items`, a list of subschemas, is handed to the walk as
+     * though it were one node, so its members are not normalised either.
+     * stripKeywords then unsets each UNSUPPORTED_KEYWORDS keyword — `$defs`,
+     * `oneOf`, `not` and `if` among them — on each node the walk reaches, and
+     * whatever the keyword holds goes with it. A child node left with nothing
+     * becomes `{}` in normalizeChildForGemini(). A subschema under a keyword the
+     * walk neither descends into nor strips, such as `unevaluatedProperties`, is
+     * passed through unchanged.
      *
-     * JsonSchemaRepair restores an empty `{}` as a `\stdClass`, so a subschema
+     * stripKeywords acts on the node, not on its `properties` map, whose members are
+     * walked one by one when the map is an array: a property named `not` or `oneOf`
+     * keeps its name and is normalised, and a `required` list naming it is left as
+     * it is.
+     *
+     * JsonSchemaRepair restores an empty `{}` as a `\stdClass`, and casts to one a
+     * `properties` map whose keys run "0", "1", … in order, so a subschema or a map
      * here may not be an array. Each descent tests is_array() first and leaves
      * anything else alone rather than raising a TypeError.
      *
@@ -667,12 +690,10 @@ final class GeminiProvider extends AbstractProvider
             $schema['items'] = $this->normalizeChildForGemini($schema['items']);
         }
 
-        foreach (['anyOf', 'oneOf', 'allOf'] as $combinator) {
-            if (isset($schema[$combinator]) && is_array($schema[$combinator])) {
-                foreach ($schema[$combinator] as $index => $variant) {
-                    if (is_array($variant)) {
-                        $schema[$combinator][$index] = $this->normalizeChildForGemini($variant);
-                    }
+        if (isset($schema['anyOf']) && is_array($schema['anyOf'])) {
+            foreach ($schema['anyOf'] as $index => $variant) {
+                if (is_array($variant)) {
+                    $schema['anyOf'][$index] = $this->normalizeChildForGemini($variant);
                 }
             }
         }

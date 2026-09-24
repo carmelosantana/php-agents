@@ -357,8 +357,9 @@ view.
 `CarmeloSantana\PHPAgents\Schema` holds `JsonSchemaRepair`, which is needed because
 `json_decode($json, true)` cannot tell a JSON object from a JSON array: an empty `{}` comes
 back as `[]` and re-encodes as a list, which providers reject where a schema requires an
-object. `repair()` restores objects at the keywords whose value must be one, and leaves value
-keywords alone, so a schema written outside this library survives the round trip.
+object. `repair()` restores objects at the keywords it lists, whose value must be one, and
+leaves value keywords alone. It does not enter draft-07 `dependencies` or a keyword it does not
+list, and an empty root `{}` comes back as `[]`, so the caller sets the root `type`.
 
 ## Context Window Management
 

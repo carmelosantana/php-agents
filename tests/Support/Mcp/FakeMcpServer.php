@@ -33,12 +33,8 @@ use Symfony\Component\HttpClient\Response\MockResponse;
  * bullets below are this fake's own behaviour and the error codes in them are the values
  * this fake sends; spec §2 (amendment 10, 2026-09-22) records what was and was not read in
  * the Adapter itself. They are not covered evenly, so do not read the list as pinned:
- * FakeMcpServerTest drives the session gate, both -32600 arms and the unknown tool;
  * $session = null is set by McpClientLegacyTest and by nothing else (`grep -rn 'session =
- * null' tests/`); and the "an absent version header is accepted" arm has no case at all —
- * the only header-less fakePost() in FakeMcpServerTest is an `initialize`, which returns
- * above the version gate. That arm is what the guard below reads (`$version !== null &&
- * …`), and a direct probe of a legacy `tools/list` sent without the header answers 200:
+ * null' tests/`).
  * - `initialize` issues `Mcp-Session-Id`, unless $session is null;
  * - while $session is not null, a request other than `initialize` that omits that header gets
  *   400/-32600, and one carrying any other id gets 404/-32005;
@@ -317,9 +313,11 @@ final class FakeMcpServer
 
     /**
      * The three `params._meta` fields a 2026-07-28 request carries, checked by shape: the
-     * protocol version verbatim, `clientCapabilities` as an object, and `clientInfo` with a
-     * string name and a string version. Neither the name nor the version string is pinned, so
-     * a client may change either without this fake noticing.
+     * protocol version verbatim, `clientCapabilities` as an array, and `clientInfo` with a
+     * string name and a string version. json_decode() makes that array of a JSON object and
+     * of a JSON list alike, so `["a"]` passes here as `{}` does; McpClientModernTest pins
+     * the client's `{}` on the raw body instead. Neither the name nor the version string is
+     * pinned, so a client may change either without this fake noticing.
      *
      * @param array<string, mixed> $meta
      */
