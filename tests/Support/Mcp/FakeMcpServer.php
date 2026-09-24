@@ -313,9 +313,11 @@ final class FakeMcpServer
 
     /**
      * The three `params._meta` fields a 2026-07-28 request carries, checked by shape: the
-     * protocol version verbatim, `clientCapabilities` as an object, and `clientInfo` with a
-     * string name and a string version. Neither the name nor the version string is pinned, so
-     * a client may change either without this fake noticing.
+     * protocol version verbatim, `clientCapabilities` as an array, and `clientInfo` with a
+     * string name and a string version. json_decode() makes that array of a JSON object and
+     * of a JSON list alike, so `["a"]` passes here as `{}` does; McpClientModernTest pins
+     * the client's `{}` on the raw body instead. Neither the name nor the version string is
+     * pinned, so a client may change either without this fake noticing.
      *
      * @param array<string, mixed> $meta
      */
