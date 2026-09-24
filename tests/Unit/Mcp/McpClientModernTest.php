@@ -129,8 +129,9 @@ test('a modern header error is an RPC error, never a fallback', function () {
 
 test('a pinned 2026-07-28 never falls back, and is never written to the store', function () {
     // McpRpcException, not the McpProtocolException the plan's listing asked for: the
-    // fallback 400 carries the Adapter's -32600, and the parent class cannot tell "the pin
-    // refused the fallback" from any other protocol error. Probed, the class is the
+    // fallback 400 is FakeMcpServer LEGACY's missing-session answer (400/-32600, the value
+    // this fake sends), and the parent class cannot tell "the pin refused the fallback" from
+    // any other protocol error. Probed, the class is the
     // subclass. The empty store is the other half: session() builds a pinned 2026-07-28
     // session in memory and nothing detected anything, so remember() is never reached.
     $fake = new FakeMcpServer(FakeMcpServer::LEGACY);
