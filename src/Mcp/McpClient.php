@@ -594,7 +594,9 @@ final class McpClient implements McpClientInterface
      * text reaches a message at all: every other message in this file, in HttpExchange and in
      * HttpReply is formatted from the method name, the HTTP status and this client's own
      * configured limits (maxResponseBytes and MAX_PAGES are interpolated; nothing the server
-     * sent is).
+     * sent is). redact() does not reach a previous exception: the previous HttpExchange chains
+     * to a transport failure is the HTTP client's own exception, and its message can quote the
+     * URL or the host (HttpExchange's docblock).
      *
      * What this covers, exactly:
      * - every non-empty value in McpServer::$headers, whatever the header is named. An empty

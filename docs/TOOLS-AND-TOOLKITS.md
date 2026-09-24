@@ -591,7 +591,7 @@ request is made. A `$protocolVersion` that is neither constant, or a non-positiv
 
 ```text
 McpException extends \RuntimeException
-├── McpTransportException          network, timeout, byte cap, and unexpected statuses
+├── McpTransportException          network, timeout, byte cap, unexpected statuses, and a header holding CR, LF or NUL
 │   └── McpRedirectException       a 3xx, or an answer reached by following one; carries $status and $location
 ├── McpAuthException               401, 403; carries $status
 └── McpProtocolException           malformed or unexpected response
@@ -616,6 +616,13 @@ them — can publish the token. Other headers are matched only as configured, ne
 trimmed or split, and the match is literal: a credential the server decodes, encodes or
 otherwise transforms before echoing it — `user:pass` from `Basic dXNlcjpwYXNz`, say — is not
 removed. Treat these messages as untrusted text even so, and log them on that footing.
+
+The `McpTransportException` for a transport failure keeps the HTTP client's exception as its
+previous, and that message can quote the URL or the host — a query-string token in the URL
+included, so keep secrets out of `McpServer::$url` if you log exception chains. A header name or
+value holding CR, LF or NUL — a token read from a file with its trailing newline, say — is
+refused before the request with an `McpTransportException` that names the method alone and has
+no previous, because the HTTP client's own refusal quotes the whole header line.
 
 The redaction reaches what the client received. An id the client never received — a server
 that puts an `Mcp-Session-Id` on a reply the client does not read that header from, and then

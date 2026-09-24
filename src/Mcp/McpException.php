@@ -17,6 +17,9 @@ namespace CarmeloSantana\PHPAgents\Mcp;
  * in the text for the same reason. McpProtocolException, McpTransportException,
  * McpUnsupportedVersionException and this class declare no constructor and take a free-form
  * message from their caller, so for those the guarantee is only as good as the call site.
+ * A previous exception carries a message of its own: HttpExchange chains the HTTP client's
+ * exception to the McpTransportException it throws for a transport failure, and that message
+ * can quote the URL or the host (spec §2, amendment 16, 2026-09-24).
  *
  * McpRpcException declares a constructor that reads the server's own text: it splices up
  * to 200 bytes of `error.message`, which is where a server that echoes a configured header
