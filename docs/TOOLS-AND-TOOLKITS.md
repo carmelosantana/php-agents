@@ -622,7 +622,10 @@ previous, and that message can quote the URL or the host — a query-string toke
 included, so keep secrets out of `McpServer::$url` if you log exception chains. A header name or
 value holding CR, LF or NUL — a token read from a file with its trailing newline, say — is
 refused before the request with an `McpTransportException` that names the method alone and has
-no previous, because the HTTP client's own refusal quotes the whole header line.
+no previous, because the HTTP client's own refusal quotes the whole header line. That check
+reads header values as strings, as `McpServer::$headers`' `array<string, string>` documents. A
+value given as an array is outside it: `['Authorization' => ["Bearer sk-live-123\n"]]` gets past
+the check, and the HTTP client's refusal, quoting the whole header line, is chained again.
 
 The redaction reaches what the client received. An id the client never received — a server
 that puts an `Mcp-Session-Id` on a reply the client does not read that header from, and then
