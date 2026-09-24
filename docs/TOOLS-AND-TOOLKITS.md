@@ -480,7 +480,8 @@ closure to use your own scheme.
 `description`, `inputSchema` and `annotations`. The top-level `title` is not part of it,
 because it is a display label; `annotations` is hashed as sent, `annotations.title` included.
 Every non-list array has its keys sorted, so key order in the server's JSON does not move the
-digest of an object whose keys are not all numeric strings, while lists keep their order, since
+digest of an object whose keys are not all numeric strings (a key the server repeats keeps its
+last value, so the order of the repeats does move it), while lists keep their order, since
 reordering an `enum` changes what a tool accepts. An object keyed `"0"` to `"n"` in order is
 decoded as a list, and keeps that order. Out of order it is sorted as strings, which restores
 the order while every key is a single digit but puts `"10"` before `"2"`, so from `"10"` up an
