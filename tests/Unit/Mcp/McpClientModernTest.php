@@ -282,7 +282,7 @@ test('a 2026-07-28 answer arriving as text/event-stream is read the same way', f
 /*
  * Redaction on the modern path (spec §2, amendment 3; Task 12 owns redact()).
  *
- * Every test in this file whose name ends "is redacted" covers one branch on which
+ * Every test in this file whose name contains "is redacted" covers one branch on which
  * McpClient builds an McpRpcException out of a modern reply, and each names its branch in
  * its first comment. None of them says how many there are, and this one does not either:
  * the check that the set is complete is the mutation, not the prose. Making redact()
