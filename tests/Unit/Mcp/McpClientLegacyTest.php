@@ -403,9 +403,9 @@ test('the credentials part begins after every byte PCRE\'s \\s matches that foll
 
 test('an authorization value padded with SP or HTAB is judged with that padding trimmed', function (string $value, string $expected) {
     // RFC 9110 §5.5 leaves leading and trailing SP and HTAB out of a field value, and a
-    // server that strips them echoes the value without them. The text is what a server that strips both
-    // ends and splits on the first space answers: measured, Node reads each of these values
-    // as `Bearer sk-live-123`. The value as configured stays a needle too, and it matches
+    // server that strips them echoes the value without them. The text is what a server that
+    // strips both ends and splits on the first space answers: measured, Node reads each of
+    // these values as `Bearer sk-live-123`. The value as configured stays a needle too, and it matches
     // from the space before `Bearer`, so ` Bearer sk-live-123` takes that space along.
     $fake = legacyFake();
     $fake->once(answerFor('initialize', static fn($id) => FakeMcpServer::error(200, $id, -32001, 'invalid token sk-live-123 (sent Bearer sk-live-123)')));
@@ -424,9 +424,8 @@ test('an authorization value padded with SP or HTAB is judged with that padding 
 ]);
 
 test('the bytes an authorization value is trimmed and split on are the ones PCRE\'s \\s matches', function () {
-    // LF and CR are in the class too, though no request carries them: a value holding either
-    // fails with McpTransportException before a connection is opened, so this test is what
-    // pins them.
+    // Checks that AUTH_SPACE holds each byte preg_match('/\s/') matches out of all 256, LF
+    // and CR among them, once, and no other byte.
     $space = (new ReflectionClassConstant(McpClient::class, 'AUTH_SPACE'))->getValue();
     $matched = implode('', array_filter(array_map('chr', range(0, 255)), static fn(string $b): bool => preg_match('/\s/', $b) === 1));
 
