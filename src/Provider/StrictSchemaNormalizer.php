@@ -16,7 +16,8 @@ namespace CarmeloSantana\PHPAgents\Provider;
  * Throughout, an object node is whatever normalize() would rewrite as an object:
  * declared `type: object` (possibly nullable via a `type` array), or carrying
  * `properties` with no `type` at all — the shape a server-supplied MCP schema
- * leaves behind, since JsonSchemaRepair defaults only the ROOT `type`. Every check
+ * leaves behind below its root: SchemaTool::toFunctionSchema() defaults only the
+ * ROOT `type`, and JsonSchemaRepair defaults none. Every check
  * here shares that one definition, in {@see isObjectNode()}, including normalize()'s
  * own rewrite gate.
  *

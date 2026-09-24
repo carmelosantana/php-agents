@@ -730,8 +730,9 @@ final class McpClient implements McpClientInterface
     }
 
     /**
-     * The protocol versions a -32022 lists in `error.data.supported`. Anything that is not
-     * a list of strings yields none, which modern() reads as "no version in common".
+     * The string entries of a -32022's `error.data.supported`, in order; any other entry is
+     * dropped, so `[1, "2025-11-25"]` yields `["2025-11-25"]`. A value that is not an array,
+     * or holds no string, yields none, which modern() reads as "no version in common".
      *
      * @param array<array-key, mixed>|null $message
      * @return list<string>
