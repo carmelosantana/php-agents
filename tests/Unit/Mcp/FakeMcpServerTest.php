@@ -145,6 +145,16 @@ test('legacy mode tells the missing-session -32600 apart from the unsupported-ve
         ->and($accepted)->toBe(200);
 });
 
+test('legacy mode accepts a request past the session gate that carries no version header', function () {
+    $fake = new FakeMcpServer(FakeMcpServer::LEGACY);
+    $fake->tools = [FakeMcpServer::tool('search')];
+    [$status, $body] = fakePost($fake, ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list'], ['Mcp-Session-Id' => 'sess-1']);
+
+    expect($status)->toBe(200)
+        ->and($body['result']['tools'][0]['name'])->toBe('search')
+        ->and($fake->requests[0]['headers'])->not->toHaveKey('mcp-protocol-version');
+});
+
 test('pageSize pages tools/list, with nextCursor on every page but the last', function () {
     $fake = new FakeMcpServer(FakeMcpServer::LEGACY);
     // Four tools in pages of two, so the last page ends exactly on the boundary: an off-by-one
