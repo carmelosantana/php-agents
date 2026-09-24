@@ -309,6 +309,24 @@ test('a credential a 2026-07-28 server reflects in a 200 is redacted', function 
     }
 });
 
+test('a bearer token a 2026-07-28 server reflects without its scheme is redacted', function () {
+    // Branch: a 2xx carrying a JSON-RPC `error` that names the token without its scheme.
+    // redact() is shared by both protocol paths; this pins the credentials part on this one.
+    $fake = modernFake();
+    $fake->once(static fn(array $r) => ($r['body']['method'] ?? null) === 'tools/call'
+        ? FakeMcpServer::error(200, $r['body']['id'], -32603, 'token sk-modern refused')
+        : null);
+    $client = new McpClient(autoServer(['headers' => ['Authorization' => 'Bearer sk-modern']]), $fake->client());
+
+    try {
+        $client->callTool('search', []);
+        $this->fail('expected an RPC error');
+    } catch (McpRpcException $e) {
+        expect($e->getMessage())->not->toContain('sk-modern')
+            ->and($e->getMessage())->toEndWith(': token [redacted] refused');
+    }
+});
+
 test('a credential a 2026-07-28 server reflects in a 404 is redacted', function () {
     // Branch: a status that is neither 2xx nor 400, which goes to statusError() from inside
     // modern()'s loop.

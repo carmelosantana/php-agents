@@ -83,6 +83,12 @@ final class McpClient implements McpClientInterface
 
     private const REDACTED = '[redacted]';
 
+    /** Lower-cased names of the headers whose credentials part redact() also removes. */
+    private const AUTH_HEADERS = ['authorization', 'proxy-authorization'];
+
+    /** RFC 9110 §11.4: an auth-scheme token, 1*SP, then the credentials part, captured. */
+    private const AUTH_CREDENTIALS = '/\A[!#$%&\'*+\-.^_`|~0-9A-Za-z]+ +([^ ].*)\z/s';
+
     private readonly HttpExchange $exchange;
 
     private ?McpSession $session = null;
@@ -597,6 +603,17 @@ final class McpClient implements McpClientInterface
      *   *alternative* in a regular expression: measured, preg_replace('/|Bearer t/', '[R]',
      *   'abc Bearer t') gives "[R]a[R]b[R]c[R] [R][R][R]". str_replace() does not splice on an
      *   empty needle either; only the preg draft this guard was first written for could.
+     * - the credentials part of an `Authorization` or `Proxy-Authorization` value, the name
+     *   matched case-insensitively, beside the whole value (spec §2, amendment 13, 2026-09-24),
+     *   so a server that names a token without its scheme is caught too. Following RFC 9110
+     *   §11.4, a value has a credentials part when it opens with an auth-scheme token, then one
+     *   or more spaces, then a byte that is not a space; the part runs from that byte to the
+     *   end of the value as configured, so `Bearer   sk-x` gives `sk-x`. `Bearer` alone, or
+     *   followed by spaces alone, has none, so no empty needle comes from here. A value that
+     *   does not open with a token and a space — a `/` or a quote in the scheme, a tab after
+     *   it, a leading space — has none either. The part is a needle whatever its length, and a
+     *   short one takes every occurrence with it: measured, `Bearer t` turns the server text
+     *   "plain text" into "plain [redacted]ex[redacted]".
      * - every session id this instance has ever held — $held, filled by hold() as the store
      *   hands an entry over and as an `initialize` reply arrives, whatever this client then
      *   does with either, and never emptied. forget() stops the client sending an id; it does
@@ -617,8 +634,9 @@ final class McpClient implements McpClientInterface
      *   this way; it was never committed, so the probe above is the evidence, not the repo;
      * - at each position it tries the longest needle first, whatever order the map is in
      *   (measured both ways), so a value of `Bearer` beside a credential of `Bearer abc` cannot
-     *   match first and leave the tail published. Nothing here sorts; that guarantee is strtr's
-     *   and a test pins it;
+     *   match first and leave the tail published, and the credentials part `abc` cannot match
+     *   inside `Bearer abc` and leave "Bearer [redacted]". Nothing here sorts; that guarantee
+     *   is strtr's and tests pin both cases;
      * - it is byte-wise, so a configured header value may be any byte string, valid UTF-8 or not;
      * - a secret of digits only becomes an *integer* array key, which strtr() still matches as
      *   its decimal string. Pinned, because the coercion is PHP's and not obvious;
@@ -637,9 +655,16 @@ final class McpClient implements McpClientInterface
      * - McpRpcException::$data. rpcError() passes that property through untouched, and no
      *   part of it reaches any message, which is what spec §2 constrains. A host that logs
      *   $data itself can still log something a server reflected into it.
-     * - anything but a literal occurrence. A server that base64-encodes, URL-encodes, cases
-     *   differently or truncates a credential before reflecting it is not caught by
-     *   substring replacement.
+     * - anything but a literal occurrence. A server that decodes a credential before
+     *   reflecting it — a Basic credential echoed as `user:pass` where the header carries
+     *   `Basic dXNlcjpwYXNz` — or that base64-encodes, URL-encodes, cases differently or
+     *   truncates one, is not caught by substring replacement.
+     * - the tail of any other header. Only the two headers above are split: `X-Api-Key:
+     *   Token abc123` redacts `Token abc123`, and a bare `abc123` in the text stays.
+     * - the tail of an authorization value without a credentials part as defined above:
+     *   with `Bear/er sk-x`, the whole value is redacted and a bare `sk-x` stays.
+     * - a piece of a credentials part. The part is one needle: with `Digest username="u",
+     *   response="r"`, that string after the scheme is redacted, and `r` named alone stays.
      * - a session id this client never received. What it removes is what hold() recorded,
      *   and hold() is called with the store's entry and with the `Mcp-Session-Id` of an
      *   `initialize` reply. A server that puts that header on a reply this client does not
@@ -659,9 +684,13 @@ final class McpClient implements McpClientInterface
         foreach ($this->held as $sessionId) {
             $secrets[$sessionId] = self::REDACTED;
         }
-        foreach ($this->server->headers as $value) {
-            if ($value !== '') {
-                $secrets[$value] = self::REDACTED;
+        foreach ($this->server->headers as $name => $value) {
+            if ($value === '') {
+                continue;
+            }
+            $secrets[$value] = self::REDACTED;
+            if (in_array(strtolower((string) $name), self::AUTH_HEADERS, true) && preg_match(self::AUTH_CREDENTIALS, $value, $match) === 1) {
+                $secrets[$match[1]] = self::REDACTED;
             }
         }
 
