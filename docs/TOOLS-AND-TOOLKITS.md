@@ -605,8 +605,13 @@ for "this server is not usable right now".
 Messages are built from the method name, the HTTP or JSON-RPC status and the client's own
 configured limits. `McpRpcException` also splices up to 200 bytes of the server's own
 `error.message`, and `McpClient` replaces every non-empty `McpServer::$headers` value and every
-session id it has held with `[redacted]` before building it. Treat these messages as untrusted
-text even so, and log them on that footing.
+session id it has held with `[redacted]` before building it. For `Authorization` and
+`Proxy-Authorization`, whatever the case of the name, a value of the form `<scheme> <credentials>`
+also has its credentials part removed on its own, so a server that echoes `sk-live-123` from
+`Bearer sk-live-123` does not publish it. Other headers are redacted whole and never split, and
+the match is literal: a credential the server decodes, encodes or otherwise transforms before
+echoing it — `user:pass` from `Basic dXNlcjpwYXNz`, say — is not removed. Treat these messages
+as untrusted text even so, and log them on that footing.
 
 The redaction reaches what the client received. An id the client never received — a server
 that puts an `Mcp-Session-Id` on a reply the client does not read that header from, and then
