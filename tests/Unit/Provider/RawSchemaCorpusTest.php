@@ -217,6 +217,8 @@ test('gemini renders a raw schema as the payload it sends', function (string $na
     ['nested-array-objects', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"rows":{"type":"ARRAY","items":{"type":"OBJECT","properties":{"id":{"type":"STRING"},"tags":{"type":"OBJECT","properties":{}}}}}},"required":["rows"]}}]}]'],
     // `who` carries only `$ref`, which Gemini strips; the node that is left is `{}`, not `[]`.
     ['ref-defs', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"who":{}}}}]}]'],
+    // `target` carries only `oneOf`, which Gemini's Schema has no field for; the node that is left is `{}`.
+    ['one-of', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"target":{}}}}]}]'],
 ]);
 
 /**
