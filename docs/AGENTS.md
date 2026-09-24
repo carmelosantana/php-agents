@@ -133,7 +133,7 @@ $agent->addToolkit(new MyCustomToolkit());
 
 Tools returned by `tools()` are merged with toolkit tools. Guidelines from all toolkits are concatenated and appended to the system prompt.
 
-php-agents does not ship built-in toolkit implementations. Your application provides toolkits by implementing `ToolkitInterface`. See [Tools & Toolkits](tools-and-toolkits.md) for details on creating and publishing toolkits.
+Your application provides toolkits by implementing `ToolkitInterface`; the one implementation that ships with the library is `McpToolkit`, for a remote MCP server (`grep -rn 'implements ToolkitInterface' src/`). See [Tools & Toolkits](tools-and-toolkits.md) for details on creating and publishing toolkits.
 
 ## Observer Pattern
 

@@ -19,14 +19,26 @@ use Symfony\Component\HttpClient\Response\MockResponse;
  *
  * The two modern headers are not compared the same way: `Mcp-Name` is run through decodeName(),
  * `Mcp-Method` is compared raw. The MCP spec asks for the `=?base64?…?=` sentinel encoding on
- * `Mcp-Name` and `Mcp-Param-*` only, while this repo's spec line 158 puts `Mcp-Method` under it
- * too. A shared encoder that follows the sentinel rules is invisible here, because a JSON-RPC
- * method name is always header-safe and passes through unencoded; a client that encodes
- * `Mcp-Method` unconditionally gets -32020 on every modern request. Which of the two the client
- * owes is a spec question this fake does not settle, so do not read the raw comparison as a
- * ruling.
+ * `Mcp-Name` and `Mcp-Param-*` only, and this repo's spec §2 step 1 once put `Mcp-Method` under
+ * it too. A shared encoder that follows the sentinel rules is invisible here, because the
+ * method names McpClient posts are header-safe and pass through HeaderValue::encode()
+ * unchanged (measured); a client that base64-wraps `Mcp-Method` unconditionally gets -32020 on
+ * every modern request. Task 13 settled which the client owes for this repo: McpClient sends
+ * `Mcp-Method` raw, so the raw comparison here is the behaviour it is held to, and spec §2
+ * step 1 now records that raw header (amendment 6, 2026-09-22). (Cited by section, not by line: the
+ * earlier "line 158" here was the Mcp-Method line at the spec's first commit 6ba0aa7 and is
+ * amendment 3's redaction sentence today.)
  *
- * LEGACY speaks 2025-11-25 the way the WordPress MCP Adapter (trunk 4ff9806) does:
+ * LEGACY speaks 2025-11-25 modelled on the WordPress MCP Adapter (trunk 4ff9806). The
+ * bullets below are this fake's own behaviour and the error codes in them are the values
+ * this fake sends; spec §2 (amendment 10, 2026-09-22) records what was and was not read in
+ * the Adapter itself. They are not covered evenly, so do not read the list as pinned:
+ * FakeMcpServerTest drives the session gate, both -32600 arms and the unknown tool;
+ * $session = null is set by McpClientLegacyTest and by nothing else (`grep -rn 'session =
+ * null' tests/`); and the "an absent version header is accepted" arm has no case at all —
+ * the only header-less fakePost() in FakeMcpServerTest is an `initialize`, which returns
+ * above the version gate. That arm is what the guard below reads (`$version !== null &&
+ * …`), and a direct probe of a legacy `tools/list` sent without the header answers 200:
  * - `initialize` issues `Mcp-Session-Id`, unless $session is null;
  * - while $session is not null, a request other than `initialize` that omits that header gets
  *   400/-32600, and one carrying any other id gets 404/-32005;
@@ -257,8 +269,11 @@ final class FakeMcpServer
 
     /**
      * A MODERN reply always carries a `resultType`: a result without one is stamped `complete`.
-     * So this server cannot produce spec step 4's "resultType absent means complete" branch,
-     * and a test for it has to script the whole response through once().
+     * So MODERN cannot produce spec step 4's "resultType absent means complete" branch, and a
+     * test that wants it on the modern path has to script the whole response through once().
+     * LEGACY stamps nothing, so its tools/call results reach that branch as a matter of
+     * course: mutating McpClient's `?? 'complete'` fails a LEGACY tools/call test alongside
+     * the scripted modern one (measured, Task 13).
      *
      * @param array<string, mixed> $params
      */

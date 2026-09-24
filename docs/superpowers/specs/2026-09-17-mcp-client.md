@@ -155,12 +155,16 @@ The client only calls `tools/list` and `tools/call`, over Streamable HTTP, and o
 | 404 | Session rule below, otherwise `McpRpcException` for a JSON-RPC error body, otherwise `McpTransportException` |
 | Other 4xx, 5xx | `McpTransportException` |
 
-Exception messages name the method and status. They never contain a header value or the session id. A server's own JSON-RPC error text is spliced into `McpRpcException`'s message, and a server can reflect a credential back in it, so `McpClient` redacts every configured header value and the current session id from that text before it builds the exception (amendment 3, 2026-09-21; Task 12 owns the redaction).
+Exception messages name the method and status. They never contain a header value or a session id. A server's own JSON-RPC error text is spliced into `McpRpcException`'s message, and a server can reflect a credential back in it, so `McpClient` redacts every configured header value and every session id this client instance has held from that text before it builds the exception (amendment 3, 2026-09-21; Task 12 owns the redaction. amendment 7, 2026-09-22: "the current session id" was narrower than the code. `McpClient::hold()` records an id as the store hands an entry over and as an `initialize` reply arrives, whatever the client then does with either, and nothing empties that list — `forget()` stops the client *sending* an id, so an id it has stopped sending is still redacted if the server echoes it back).
+
+That promise is about exception **messages**. `McpRpcException::$data` is passed through as the server sent it, deliberately, because version negotiation reads `data.supported` from it; the consequence for a host is that logging `$e->data` logs unredacted server-supplied data (amendment 8, 2026-09-22).
+
+The redaction can only remove an id the client received. A server that puts an `Mcp-Session-Id` header on a reply the client does not read that header from — a `tools/list` reply, the `notifications/initialized` ack, or any 2026-07-28 reply — and then names that id in its own error text will leak it, because the client never held it. That is not a defect: MCP assigns the session id on the `InitializeResult`, and `McpClient` reads the header from the `initialize` reply alone, so an id it never received, never stored and never sends is not the session id this section promises about (amendment 9, 2026-09-22).
 
 **Protocol negotiation (Kanboard #4406)**
 1. If a store entry or an in-memory value exists, or `$protocolVersion` is pinned, use that version. Otherwise send the request as **2026-07-28**:
    - `MCP-Protocol-Version: 2026-07-28`;
-   - `Mcp-Method: <method>`, plus `Mcp-Name: <tool>` for `tools/call`, both using the spec's header value encoding;
+   - `Mcp-Name: <tool>` for `tools/call`, using the MCP spec's header value encoding, and `Mcp-Method: <method>` sent raw (amendment 6, 2026-09-22: this line said both went through the encoding; the line was what was wrong, not the code. `Internal\HeaderValue::encode()` returns `tools/list`, `tools/call`, `initialize` and `notifications/initialized` unchanged — measured on PHP 8.4.25 — so no request this client sends can tell the two readings apart on the wire, MCP 2026-07-28 Streamable HTTP §Request Metadata defines the `=?base64?…?=` sentinel for `Mcp-Name` and `Mcp-Param-*` and not for `Mcp-Method` — Value Encoding is written for `Mcp-Param-{Name}` and then extended with "The same encoding rule applies to the `Mcp-Name` header value", and Server Validation names those same two as the headers a server MUST decode before comparing them to the body — and `FakeMcpServer` compares `Mcp-Method` raw while decoding `Mcp-Name`);
    - `params._meta` containing `io.modelcontextprotocol/protocolVersion`, `io.modelcontextprotocol/clientCapabilities: {}` and `io.modelcontextprotocol/clientInfo {name: "php-agents", version: McpClient::CLIENT_VERSION}`. `src` has no version constant today, so `McpClient::CLIENT_VERSION` is a new public string constant that the release task sets to the tag version.
 2. A 400 whose body is a recognised modern error is from a modern server:
    - `-32022` UnsupportedProtocolVersion: retry once with a version from `data.supported` that the client speaks, otherwise throw `McpUnsupportedVersionException`.
@@ -172,7 +176,7 @@ Exception messages name the method and status. They never contain a header value
    - resend the original request with `MCP-Protocol-Version: 2025-11-25` and the session header.
    - If `initialize` answers with a version the client doesn't speak, throw `McpUnsupportedVersionException`.
 
-   The WordPress MCP Adapter answers a 2026 probe with 400 and `-32600` "Missing Mcp-Session-Id" (`HttpSessionValidator.php:50-53`, trunk `4ff9806`), so it takes this path.
+   The WordPress MCP Adapter takes this path. Read at trunk `4ff9806`: `includes/Transport/Infrastructure/HttpSessionValidator.php`'s `validate_session_with_error_handler()` opens by answering a request that carries no `Mcp-Session-Id` through `McpErrorFactory::invalid_request()`, which composes the message `Invalid Request: Missing Mcp-Session-Id header` and builds the error with `McpErrorFactory::INVALID_REQUEST`. What this client needs from that is only that the code is none of the three step 2 recognises (`-32020`, `-32021`, `-32022`), so the reply falls through to "any other 400" and the fallback runs. The client compares no number on this path (amendment 10, 2026-09-22: this line used to assert `-32600` and cite a four-line range in `HttpSessionValidator`. The line range is gone — it is a position in another repository that moves on its own, and nothing here pins it. The number is gone because it was not read: `McpErrorFactory::INVALID_REQUEST` is `WP\McpSchema\Common\McpConstants::INVALID_REQUEST`, from the separate `php-mcp-schema` package, described there as "Standard JSON-RPC error codes as defined in the specification"; a reader who wants the literal reads that constant in that package. The `-32003` in the session rules below is not an Adapter reading either, and is no longer written as one: it is the code `FakeMcpServer` sends for an unknown tool, asserted in `FakeMcpServerTest` and `McpClientLegacyTest` (`grep -rn '32003' src/ tests/`)).
 4. Handling 2026-07-28 results:
    - `resultType` absent means complete. `"complete"` is used as is. Any other value is an `McpProtocolException`, except `"input_required"`.
    - `"input_required"` with only `requestState`: resend with a new id, the same name and arguments, and `requestState` echoed back, at most 3 times.
@@ -192,7 +196,7 @@ Exception messages name the method and status. They never contain a header value
 - The store receives `McpSession(protocolVersion, sessionId)` after detection or `initialize`, and is read before the first request of a new instance.
 - On a 404 to a request that carried a session:
   - If the body has no JSON-RPC error, or its code is `-32001` or `-32005`, treat it as an expired session: `forget()`, run `initialize` again once, and retry the request once.
-  - Any other JSON-RPC error on a 404 (for example the Adapter's unknown-tool `-32003`) throws `McpRpcException` with no retry.
+  - Any other JSON-RPC error on a 404 — an unknown tool, say, which `FakeMcpServer` answers with `-32003` — throws `McpRpcException` with no retry.
 - The client never sends DELETE.
 - With `null` for the store, state lives only in the instance.
 
@@ -251,16 +255,16 @@ Not done: validating `structuredContent` against `outputSchema`.
   - Send `strict: false` when the schema contains a free-form object (`type: object` with no `properties`, or `additionalProperties` that is `true` or a schema), a `$ref`, or `patternProperties`.
   - Native `Tool`s keep strict mode.
 - **`GeminiProvider`**
-  - Recurse into `anyOf`/`oneOf`/`allOf`, `$defs` and `items`.
+  - Recurse into `properties`, `items` and each `anyOf`/`oneOf`/`allOf` branch (amendment 11, 2026-09-22: this bullet used to say `anyOf`/`oneOf`/`allOf`, `$defs` and `items`. It does not recurse into `$defs` — `$defs` is in `UNSUPPORTED_KEYWORDS`, so the keyword is removed outright and there is nothing left to descend into. Probed: `{"type":"object","$defs":{"D":{"type":"string","default":"x"}},"properties":{"p":{"type":"string","default":"y"}}}` comes back as `{"type":"OBJECT","properties":{"p":{"type":"STRING"}}}`. And it does recurse into `properties`, which the bullet left out).
   - Map `type: [X, "null"]` to `type: X` plus `nullable: true`.
-  - Strip unsupported keywords at every depth.
+  - Strip unsupported keywords wherever that recursion reaches (amendment 11, 2026-09-22: "at every depth" was false, and the same phrase has now been corrected in `GeminiProvider`'s own docblock and in `docs/TOOLS-AND-TOOLKITS.md`. A subschema reached any other way — under `not`, `contains`, `if`/`then`/`else`, `propertyNames`, `prefixItems` — is passed through as the server wrote it. Probed: a `not` holding `$ref` and `default` came back byte-for-byte).
 - **All providers.** No tool-formatting path may throw on a `stdClass` anywhere inside `parameters`. That covers OpenAI Chat's `required` injection, Ollama's `sanitizeSchema()` and the LlamaCpp normaliser, which must also stop producing `properties: []`.
 - **Regression corpus.** `tests/Fixtures/mcp-schemas/*.json` runs through every provider's tool formatting. Each case must not throw, and no map or schema position may encode as a JSON list. Responses and Gemini also get snapshot assertions.
 
 ### 5. Docs
 
 - **`docs/TOOLS-AND-TOOLKITS.md`**
-  - Rewrite the "Tool Execution Policies" example to the real signature, `shouldExecute(string $toolName, array $arguments): true|string` (`src/Contract/ToolExecutionPolicyInterface.php:23`), replacing the stale `(ToolInterface, ToolCall): bool`.
+  - Rewrite the "Tool Execution Policies" example to the real signature, `shouldExecute(string $toolName, array $arguments): true|string` (`CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface`), replacing the stale `(ToolInterface, ToolCall): bool`. `tests/Unit/Docs/ToolPolicyDocTest.php` reads the return type off that interface by reflection, so the doc cannot drift from it again (amendment 10, 2026-09-22: the line citation this used to carry into `ToolExecutionPolicyInterface` is dropped for the same reason as the one in step 3 above — it is a position with nothing pinning it, while the reflection in that test pins the thing the sentence is about).
   - Add a policy that asks for confirmation when `$toolkit->definition($name)?->destructive()`.
   - Add an MCP section: building a client, the toolkit, pinning and drift, the session store, the error tree, the Strauss note (no Symfony class names in strings), and a short non-HTTP `McpClientInterface` adapter example for hosts with a STDIO client.
 - **`docs/ARCHITECTURE.md`**: one paragraph and the `Mcp`/`Schema` namespaces.

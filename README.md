@@ -30,7 +30,8 @@ graph LR
 - **Streaming + tool calls** — all providers support streaming with assembled tool call deltas
 - **Structured output** — extract typed data from LLMs via JSON mode (OpenAI) or tool-use trick (Anthropic)
 - **Image input** — send images to vision models via base64, URL, or file path (auto-converts between provider formats; URLs pre-downloaded for providers that don't support them natively)
-- **Composable toolkits** — implement `ToolkitInterface` to give agents any capability; no built-in toolkit implementations
+- **Composable toolkits** — implement `ToolkitInterface` to give agents any capability; `McpToolkit` is the one implementation that ships (`grep -rn 'implements ToolkitInterface' src/`)
+- **Remote MCP servers as toolkits** — Streamable HTTP, 2026-07-28 and 2025-11-25, pinned tool allowlists
 - **Context window management** — automatic conversation pruning when approaching token limits
 - **Observer pattern** — attach `SplObserver` to watch agent lifecycle events in real time
 - **Embedding & vector stores** — `EmbeddingProviderInterface` and `VectorStoreInterface` for semantic search

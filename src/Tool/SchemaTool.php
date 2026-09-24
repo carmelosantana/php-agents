@@ -24,10 +24,13 @@ use CarmeloSantana\PHPAgents\Schema\JsonSchemaRepair;
  * - execute() calls the closure and does not validate. A throw, or a return value
  *   that is not a ToolResult, becomes an error naming the tool and not quoting the
  *   exception: a tool result is text the model reads and may repeat, and a
- *   transport exception can quote an endpoint. The cause is not discarded — it rides
- *   on the result's errorCode and metadata, which ToolResultMessage::toArray() does
- *   not copy into the message it sends, so a caller and its logs can reach the cause
- *   without the model seeing it.
+ *   transport exception can quote an endpoint. The errorCode says only where the
+ *   failure came from: it is the fixed string `schema_tool_error` on every failure,
+ *   a caught Throwable or a closure that answered with something else. What the cause
+ *   was rides on the metadata instead, and only when there was a Throwable to record:
+ *   `exception` holds its class and `message` its message. ToolResultMessage::toArray()
+ *   copies the content and the call id into the message it sends and neither of those,
+ *   so a caller and its logs can reach the cause without the model seeing it.
  */
 final class SchemaTool implements ToolInterface
 {
