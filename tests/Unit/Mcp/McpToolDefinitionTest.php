@@ -25,7 +25,7 @@ test('the fingerprint matches the pinned digest shared with Alpaca Bot', functio
     expect(sampleDefinition()->fingerprint())->toBe('4570eec83264fe710e33ab5938c6c02ab873586add40eb3e68cc68dacb845049');
 });
 
-test('key order at any depth does not change the fingerprint', function () {
+test('the order of non-numeric keys at any depth does not change the fingerprint', function () {
     $reordered = sampleDefinition([
         'inputSchema' => ['required' => ['q'], 'properties' => ['limit' => ['default' => 1.0, 'type' => 'integer'], 'q' => ['minLength' => 1, 'type' => 'string']], 'type' => 'object'],
         'annotations' => ['readOnlyHint' => true, 'title' => 'Search'],
@@ -78,8 +78,8 @@ test('slashes and non-ASCII text are encoded raw', function () {
     expect($definition->fingerprint())->toBe('2f202548ba2302779da6a611935c3ae53c463f21a4e5128901ff134691c1fff1');
 });
 
-// Cross-repo vector V4' (Alpaca Bot Kanboard #4364 comments 1300 and 1302). It is the only vector
-// that can catch a canonical() which ksorts lists as well as maps: a JSON object keyed "0".."10"
+// Cross-repo vector V4' (Alpaca Bot Kanboard #4364 comments 1300 and 1302). It catches a
+// canonical() which ksorts lists as well as maps: a JSON object keyed "0".."10" in order
 // decodes to a PHP list, and SORT_STRING would put "10" before "2", so sorting it changes the
 // digest. The plugin-side transcription computed both digests independently and reported the same
 // pair, which is why this one is a cross-repo pin rather than a regression pin.
@@ -102,9 +102,10 @@ function decodedDefinition(string $json): McpToolDefinition
     return new McpToolDefinition($entry['name'], $entry['description'], $entry['inputSchema'], $entry['annotations']);
 }
 
-// Cross-repo pins: AlpacaBot\Mcp\ToolDefinition at Alpaca Bot 3a2682e gives these two digests
-// for the same definitions. json_decode() turns `1e999` into INF, which json_encode() refuses, so
-// both are hashed from their serialize() form. They differ only in the description.
+// Measured on both sides, pinned here only: AlpacaBot\Mcp\ToolDefinition at Alpaca Bot 3a2682e
+// gives these two digests for the same definitions, and Alpaca Bot's tests do not pin them.
+// json_decode() turns `1e999` into INF, which json_encode() refuses, so both are hashed from their
+// serialize() form. They differ only in the description.
 test('a definition json_encode() refuses keeps a digest of its own', function () {
     $a = decodedDefinition('{"name":"t","description":"a","inputSchema":{"type":"object","properties":{"n":{"type":"number","maximum":1e999}}},"annotations":{"readOnlyHint":true}}');
     $b = decodedDefinition('{"name":"t","description":"b","inputSchema":{"type":"object","properties":{"n":{"type":"number","maximum":1e999}}},"annotations":{"readOnlyHint":true}}');
@@ -135,8 +136,9 @@ test('a schema nested past json_encode()\'s depth limit keeps a digest of its ow
         ->and($a->fingerprint())->not->toBe(hash('sha256', ''));
 });
 
-// Cross-repo pin: AlpacaBot\Mcp\ToolDefinition at Alpaca Bot 3a2682e gives this digest at
-// serialize_precision -1 and at 17. json_encode() writes 0.1 as 0.10000000000000001 at 17.
+// Measured on both sides, pinned here only: AlpacaBot\Mcp\ToolDefinition at Alpaca Bot 3a2682e
+// gives this digest at serialize_precision -1 and at 17, and Alpaca Bot's tests do not pin it.
+// json_encode() writes 0.1 as 0.10000000000000001 at 17.
 test('the digest does not depend on serialize_precision', function () {
     $definition = decodedDefinition('{"name":"t","description":"a","inputSchema":{"type":"object","properties":{"n":{"type":"number","maximum":0.1}}},"annotations":{}}');
     $before = ini_get('serialize_precision');
@@ -151,6 +153,41 @@ test('the digest does not depend on serialize_precision', function () {
 
     expect($shortest)->toBe('da6c52e490a72e261c856c1c1c1ddd7359577aec30c49bd649189647023ebc36')
         ->and($seventeen)->toBe('da6c52e490a72e261c856c1c1c1ddd7359577aec30c49bd649189647023ebc36');
+});
+
+// At serialize_precision 17 json_encode() writes 1e23 as 9.9999999999999992e+22, so an integral
+// float moves with the setting as well as 0.1 does.
+test('an integral float hashes as it does at serialize_precision -1 when the setting is 17', function () {
+    $definition = decodedDefinition('{"name":"t","description":"a","inputSchema":{"maximum":1e23},"annotations":{}}');
+    $before = ini_get('serialize_precision');
+    try {
+        ini_set('serialize_precision', '-1');
+        $shortest = $definition->fingerprint();
+        ini_set('serialize_precision', '17');
+        $seventeen = $definition->fingerprint();
+    } finally {
+        ini_set('serialize_precision', (string) $before);
+    }
+
+    expect($seventeen)->toBe($shortest);
+});
+
+// json_decode() makes a list of an object keyed "0" to "n" in order. Out of order it stays a map,
+// and ksort(SORT_STRING) restores the numeric order only while every key is a single digit: it
+// puts "10" before "2".
+test('an object keyed "0" to "n" hashes as its list in order, and out of order only up to "9"', function () {
+    $digest = static function (int $last, bool $reversed): string {
+        $keys = range(0, $last);
+        $pairs = array_map(static fn(int $k): string => sprintf('"%d":"v%d"', $k, $k), $reversed ? array_reverse($keys) : $keys);
+
+        return decodedDefinition('{"name":"t","description":"d","inputSchema":{"e":{' . implode(',', $pairs) . '}},"annotations":{}}')->fingerprint();
+    };
+    $list = static fn(int $last): string => (new McpToolDefinition('t', 'd', ['e' => array_map(static fn(int $k): string => "v{$k}", range(0, $last))]))->fingerprint();
+
+    expect($digest(9, false))->toBe($list(9))
+        ->and($digest(9, true))->toBe($list(9))
+        ->and($digest(10, false))->toBe($list(10))
+        ->and($digest(10, true))->not->toBe($list(10));
 });
 
 test('fingerprint() puts serialize_precision back as it found it', function () {
