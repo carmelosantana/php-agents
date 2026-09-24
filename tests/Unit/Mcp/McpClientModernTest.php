@@ -13,7 +13,7 @@ use Tests\Support\Mcp\FakeMcpServer;
 
 function autoServer(array $overrides = []): McpServer
 {
-    return new McpServer(...array_replace(['url' => 'https://mcp.example.test/mcp', 'headers' => ['Authorization' => 'Bearer t']], $overrides));
+    return new McpServer(...array_replace(['url' => 'https://mcp.example.test/mcp', 'headers' => ['Authorization' => 'Bearer sk-test-4f9a']], $overrides));
 }
 
 function modernFake(array $tools = ['search']): FakeMcpServer
@@ -49,7 +49,7 @@ function expectModernEnvelope(FakeMcpServer $fake): void
             ->and($request['url'])->toBe('https://mcp.example.test/mcp')
             ->and($request['headers']['accept'] ?? null)->toBe('application/json, text/event-stream')
             ->and($request['headers']['content-type'] ?? null)->toBe('application/json')
-            ->and($request['headers']['authorization'] ?? null)->toBe('Bearer t')
+            ->and($request['headers']['authorization'] ?? null)->toBe('Bearer sk-test-4f9a')
             ->and($request['headers']['mcp-protocol-version'] ?? null)->toBe('2026-07-28')
             ->and($request['headers']['mcp-method'] ?? null)->toBe($request['body']['method'])
             ->and($request['headers'])->not->toHaveKey('mcp-session-id');
@@ -348,7 +348,7 @@ test('a stored session id a pin contradicts is redacted after the entry is disca
     // branch runs — the id still has to be held, because the server can name it back.
     $fake = modernFake();
     $store = new ArraySessionStore();
-    $server = autoServer(['headers' => ['Authorization' => 'Bearer t'], 'protocolVersion' => '2026-07-28']);
+    $server = autoServer(['headers' => ['Authorization' => 'Bearer sk-test-4f9a'], 'protocolVersion' => '2026-07-28']);
     $store->sessions[$server->sessionKey()] = new McpSession('2025-11-25', 'ORPHAN-PINNED');
     $fake->once(static fn(array $r) => FakeMcpServer::error(200, $r['body']['id'], -32603, 'session ORPHAN-PINNED is still open'));
 

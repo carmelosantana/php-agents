@@ -19,7 +19,7 @@ function legacyServer(array $overrides = []): McpServer
 {
     return new McpServer(...array_replace([
         'url' => 'https://mcp.example.test/mcp',
-        'headers' => ['Authorization' => 'Bearer t'],
+        'headers' => ['Authorization' => 'Bearer sk-test-4f9a'],
         'protocolVersion' => McpServer::PROTOCOL_2025,
     ], $overrides));
 }
@@ -53,7 +53,7 @@ function answerFor(string $method, Closure $respond): Closure
  *
  * @param array<string, string> $configured McpServer::$headers, keyed by lower-case name
  */
-function expectEnvelope(FakeMcpServer $fake, array $configured = ['authorization' => 'Bearer t']): void
+function expectEnvelope(FakeMcpServer $fake, array $configured = ['authorization' => 'Bearer sk-test-4f9a']): void
 {
     expect($fake->requests)->not->toBeEmpty();
     foreach ($fake->requests as $request) {
@@ -82,7 +82,7 @@ test('the first request runs the handshake, then every request carries the sessi
         ->and($fake->requests[2]['headers']['mcp-session-id'])->toBe('sess-1')
         ->and($fake->requests[2]['headers']['mcp-protocol-version'])->toBe('2025-11-25');
     foreach ($fake->requests as $request) {
-        expect($request['headers']['authorization'])->toBe('Bearer t')
+        expect($request['headers']['authorization'])->toBe('Bearer sk-test-4f9a')
             ->and($request['url'])->toBe('https://mcp.example.test/mcp');
     }
     expectEnvelope($fake);
@@ -90,11 +90,11 @@ test('the first request runs the handshake, then every request carries the sessi
 
 test('every request carries Accept, Content-Type and every configured header', function () {
     $fake = legacyFake();
-    $server = legacyServer(['headers' => ['Authorization' => 'Bearer t', 'X-Tenant' => 'acme']]);
+    $server = legacyServer(['headers' => ['Authorization' => 'Bearer sk-test-4f9a', 'X-Tenant' => 'acme']]);
     (new McpClient($server, $fake->client()))->callTool('search', ['q' => 'x']);
 
     expect($fake->methods())->toBe(['initialize', 'notifications/initialized', 'tools/call']);
-    expectEnvelope($fake, ['authorization' => 'Bearer t', 'x-tenant' => 'acme']);
+    expectEnvelope($fake, ['authorization' => 'Bearer sk-test-4f9a', 'x-tenant' => 'acme']);
     // The notification carries the session and version headers too, not only the data requests.
     expect($fake->requests[1]['headers']['mcp-session-id'])->toBe('sess-1')
         ->and($fake->requests[1]['headers']['mcp-protocol-version'])->toBe('2025-11-25');
@@ -269,15 +269,15 @@ test('the result cap comes from the server config', function () {
 
 test('a credential and the session id a server reflects are redacted from the exception message', function () {
     $fake = legacyFake();
-    $reflected = 'rejected credential Bearer t for session sess-1 on tenant acme';
+    $reflected = 'rejected credential Bearer sk-test-4f9a for session sess-1 on tenant acme';
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, $reflected)));
-    $server = legacyServer(['headers' => ['Authorization' => 'Bearer t', 'X-Tenant' => 'acme']]);
+    $server = legacyServer(['headers' => ['Authorization' => 'Bearer sk-test-4f9a', 'X-Tenant' => 'acme']]);
 
     try {
         (new McpClient($server, $fake->client()))->listTools();
         $this->fail('expected an RPC error');
     } catch (McpRpcException $e) {
-        expect($e->getMessage())->not->toContain('Bearer t')
+        expect($e->getMessage())->not->toContain('Bearer sk-test-4f9a')
             ->not->toContain('sess-1')
             ->not->toContain('acme')
             ->and($e->getMessage())->toContain('MCP tools/list failed with JSON-RPC error -32603')
@@ -294,7 +294,7 @@ test('an empty header value leaves the server text untouched', function () {
     // emits — removing it keeps this test green and adds a PHP warning to the run.
     $fake = legacyFake();
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'plain text')));
-    $server = legacyServer(['headers' => ['Authorization' => 'Bearer t', 'X-Empty' => '']]);
+    $server = legacyServer(['headers' => ['Authorization' => 'Bearer sk-test-4f9a', 'X-Empty' => '']]);
 
     try {
         (new McpClient($server, $fake->client()))->listTools();
@@ -310,7 +310,7 @@ test('a credential straddling the 200-byte cut is redacted before the cut, not a
     // so cutting first would keep its first four bytes, "Bear", and publish them; redacting
     // first replaces the whole of it and the cut lands inside the marker. A credential that
     // sat wholly inside or wholly outside the window would not tell the two orders apart.
-    $reflected = str_repeat('x', 195) . ' Bearer t';
+    $reflected = str_repeat('x', 195) . ' Bearer sk-test-4f9a';
     $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, $reflected)));
 
     try {
@@ -339,11 +339,11 @@ test('a secret that is a prefix of another does not leave the rest of it publish
 
 test('a secret that occurs inside the marker does not corrupt what was already redacted', function () {
     $fake = legacyFake();
-    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'red Bearer t')));
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'red Bearer sk-test-4f9a')));
     // 'red' is a substring of "[redacted]". A replacement pass that re-reads its own output
-    // rewrites the marker it just wrote: measured, str_replace(['Bearer t', 'red'], …) answers
-    // this very text with "[redacted] [[redacted]acted]".
-    $server = legacyServer(['headers' => ['Authorization' => 'Bearer t', 'X-Odd' => 'red']]);
+    // rewrites the marker it just wrote: measured, str_replace(['Bearer sk-test-4f9a',
+    // 'red'], …) answers this very text with "[redacted] [[redacted]acted]".
+    $server = legacyServer(['headers' => ['Authorization' => 'Bearer sk-test-4f9a', 'X-Odd' => 'red']]);
 
     try {
         (new McpClient($server, $fake->client()))->listTools();
@@ -355,11 +355,11 @@ test('a secret that occurs inside the marker does not corrupt what was already r
 
 test('a header value that is not valid UTF-8 redacts byte-wise instead of wiping the message', function () {
     $fake = legacyFake();
-    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'plain Bearer t text')));
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'plain Bearer sk-test-4f9a text')));
     // A host may configure a credential of arbitrary bytes. Server text always arrives valid
     // (json_decode refuses anything else), so the only invalid UTF-8 redact() can meet is a
     // secret — which must not make the match fail and take the whole message with it.
-    $server = legacyServer(['headers' => ['Authorization' => 'Bearer t', 'X-Binary' => "\xC3\x28"]]);
+    $server = legacyServer(['headers' => ['Authorization' => 'Bearer sk-test-4f9a', 'X-Binary' => "\xC3\x28"]]);
 
     try {
         (new McpClient($server, $fake->client()))->listTools();
@@ -427,12 +427,12 @@ test('a configuration past PCRE\'s alternation limit still redacts, and keeps th
     // of more than 1 985 such values will not compile — "regular expression is too large" —
     // so the preg_replace() draft this replaced dropped the whole message here, by design but
     // needlessly. strtr() has no compile step, so the credential goes and the text stays.
-    $headers = ['Authorization' => 'Bearer t'];
+    $headers = ['Authorization' => 'Bearer sk-test-4f9a'];
     for ($i = 0; $i < 2000; $i++) {
         $headers['X-H' . $i] = str_pad((string) $i, 15, 'z');
     }
     $fake = legacyFake();
-    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'sent Bearer t and kept the rest')));
+    $fake->once(answerFor('tools/list', static fn($id) => FakeMcpServer::error(200, $id, -32603, 'sent Bearer sk-test-4f9a and kept the rest')));
 
     try {
         (new McpClient(legacyServer(['headers' => $headers]), $fake->client()))->listTools();
