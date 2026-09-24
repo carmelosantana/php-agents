@@ -825,7 +825,7 @@ MCP tool taking no input publishes is returned, and re-encoded, as `[]`. Establi
 | --- | --- |
 | OpenAI Chat Completions | sent as written, except that a missing `required` is added as `[]`, which OpenAI insists on |
 | OpenAI Responses | strict mode only when `StrictSchemaNormalizer::qualifies()` says the schema can be closed without changing what it accepts; otherwise the schema goes out as written with `strict: false` |
-| Gemini | rewritten: types upper-cased, `type: [X, "null"]` becomes `type: X` plus `nullable: true`, and `additionalProperties`, `$schema`, `$ref`, `$defs`, `definitions`, `patternProperties` and `default` are stripped, as are `oneOf`, `allOf`, `not`, `if`, `then`, `else`, `contains`, `prefixItems`, `propertyNames`, `dependentSchemas` and `dependentRequired`, which Gemini's `Schema` has no field for, each with whatever it holds. The walk descends through `properties`, `items` and the `anyOf` branches and strips at each node it reaches; a property named like a stripped keyword keeps its name. A subschema under a keyword the walk neither descends into nor strips, such as `unevaluatedProperties`, is passed through unchanged |
+| Gemini | rewritten: types upper-cased, `type: [X, "null"]` becomes `type: X` plus `nullable: true`, and `additionalProperties`, `$schema`, `$ref`, `$defs`, `definitions`, `patternProperties` and `default` are stripped, as are `oneOf`, `allOf`, `not`, `if`, `then`, `else`, `contains`, `prefixItems`, `propertyNames`, `dependentSchemas` and `dependentRequired`, which Gemini's `Schema` has no field for, each with whatever it holds. The walk descends through `properties`, `items` and the `anyOf` branches and strips at each node it reaches; a property named like a stripped keyword keeps its name. It does not reach the members of a `properties` map held as an object, which `repair()` makes of a map keyed `"0"`, `"1"`, … in order, or of a draft-04 tuple `items`: those keep a stripped keyword and a lower-case `type`. A subschema under a keyword the walk neither descends into nor strips, such as `unevaluatedProperties`, is passed through unchanged |
 | Ollama | rewritten more heavily: `anyOf`/`oneOf`/`allOf` are flattened to their first non-null branch, and `DEMOTABLE_KEYWORDS` — the numeric and length bounds, `pattern`, `minItems`, `maxItems`, `const`, `default` and `format` — are restated in the description before being stripped |
 | llama.cpp | the same flattening, demotion and stripping as Ollama, over the same keyword lists, and it adds `required: []` to an object node that has no `required` |
 
@@ -838,7 +838,8 @@ branch. Gemini keeps every `anyOf` branch and normalises each, and removes a `on
 `allOf` whole.
 
 Each of the three walks a narrow set of positions, and not the same set. Gemini descends
-through `properties`, `items` and each `anyOf` branch. Ollama and llama.cpp descend through
+through `properties`, `items` and each `anyOf` branch, but not to the members of a `properties`
+map held as an object or of a draft-04 tuple `items`. Ollama and llama.cpp descend through
 `properties` and `items` only, having already merged a combinator's first non-null branch into
 the node instead of descending into it. A subschema reached any other way is passed through as
 the server wrote it by Ollama and llama.cpp, and by Gemini unless its keyword is one Gemini

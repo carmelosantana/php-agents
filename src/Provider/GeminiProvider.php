@@ -633,21 +633,27 @@ final class GeminiProvider extends AbstractProvider
      * Normalize JSON Schema for Gemini compatibility, at the depths the walk below reaches.
      *
      * Gemini expects upper-case type names (STRING, OBJECT, …), a single type per
-     * node with `nullable` for "or null", and none of UNSUPPORTED_KEYWORDS. The
-     * walk descends through `properties`, `items` and the `anyOf` branches, so a
-     * raw schema's nested nodes are normalised as well as its top level.
+     * node with `nullable` for "or null", and none of UNSUPPORTED_KEYWORDS. The walk
+     * descends through `properties`, `items` and the `anyOf` branches, so a raw
+     * schema's nested nodes are normalised as well as its top level, with two
+     * exceptions. A `properties` map that is a `\stdClass` is not descended into, so
+     * its members keep a lower-case `type` and any UNSUPPORTED_KEYWORDS keyword. And
+     * a draft-04 tuple `items`, a list of subschemas, is handed to the walk as
+     * though it were one node, so its members are not normalised either.
      * stripKeywords then unsets each UNSUPPORTED_KEYWORDS keyword — `$defs`,
      * `oneOf`, `not` and `if` among them — on each node the walk reaches, and
-     * whatever the keyword holds goes with it. A child node left with
-     * nothing becomes `{}` in normalizeChildForGemini(). A subschema under a
-     * keyword the walk neither descends into nor strips, such as
-     * `unevaluatedProperties`, is passed through unchanged.
+     * whatever the keyword holds goes with it. A child node left with nothing
+     * becomes `{}` in normalizeChildForGemini(). A subschema under a keyword the
+     * walk neither descends into nor strips, such as `unevaluatedProperties`, is
+     * passed through unchanged.
      *
-     * stripKeywords acts on the node, not on its `properties` map, whose members
-     * are walked one by one: a property named `not` or `oneOf` keeps its name and
-     * is normalised, and a `required` list naming it is left as it is.
+     * stripKeywords acts on the node, not on its `properties` map, whose members are
+     * walked one by one when the map is an array: a property named `not` or `oneOf`
+     * keeps its name and is normalised, and a `required` list naming it is left as
+     * it is.
      *
-     * JsonSchemaRepair restores an empty `{}` as a `\stdClass`, so a subschema
+     * JsonSchemaRepair restores an empty `{}` as a `\stdClass`, and casts to one a
+     * `properties` map whose keys run "0", "1", … in order, so a subschema or a map
      * here may not be an array. Each descent tests is_array() first and leaves
      * anything else alone rather than raising a TypeError.
      *

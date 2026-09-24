@@ -10,8 +10,11 @@ use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 
 // Gemini's Schema has `anyOf` and no field for the keywords below, so the tool path and
-// structured() strip them from the root, a `properties` member, `items` and an `anyOf` branch
-// (Kanboard subtask 6482, widened to `oneOf` and `allOf` on Kanboard #4437 comment 1382).
+// structured() strip them from each node the walk reaches: the root, a `properties` member,
+// `items` and an `anyOf` branch (Kanboard subtask 6482, widened to `oneOf` and `allOf` on
+// Kanboard #4437 comment 1382). The walk does not reach a member of a `properties` map held
+// as a \stdClass, which JsonSchemaRepair makes of a map keyed "0", "1", … in order, or a
+// member of a draft-04 tuple `items`; there the keywords stay.
 
 /**
  * Format one raw schema as a Gemini tool and return its `parameters`, JSON-encoded.
