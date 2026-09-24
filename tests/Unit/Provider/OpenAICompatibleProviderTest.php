@@ -752,3 +752,14 @@ test('stream reasoning chunks have empty content', function () {
         expect($chunk->content)->toBe('');
     }
 });
+
+test('structured output disables strict for a nested free-form object and forwards it untouched', function () {
+    // Mirrors the Responses-tool case. `{"type":"object"}` with no properties means
+    // "any keys"; closing it to additionalProperties:false would mean "no keys at
+    // all", so structured() drops strict and forwards the schema byte-for-byte.
+    $bare = '{"type":"object","properties":{"payload":{"type":"object"}},"required":["payload"]}';
+    $jsonSchema = structuredSchemaPayload($bare);
+
+    expect($jsonSchema['strict'])->toBeFalse()
+        ->and($jsonSchema['schema'])->toBe(json_decode($bare, true));
+});

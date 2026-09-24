@@ -290,11 +290,13 @@ final class OpenAIResponsesProvider extends AbstractProvider
             $schema = $tool->toFunctionSchema();
             $parameters = $schema['function']['parameters'] ?? ['type' => 'object', 'properties' => new \stdClass()];
 
-            $strict = !StrictSchemaNormalizer::containsOpenObject($parameters);
+            // Strict mode only when normalize() can close the schema without changing
+            // what it accepts (StrictSchemaNormalizer::qualifies() documents what it
+            // can't); anything else, e.g. a raw MCP schema with a free-form object,
+            // goes out without strict-mode rewriting.
+            $strict = StrictSchemaNormalizer::qualifies($parameters);
 
             if ($strict) {
-                // Strict mode requires every key in properties to be listed in
-                // required, with optional properties typed as nullable (anyOf null).
                 $parameters = StrictSchemaNormalizer::normalize($parameters);
             }
 

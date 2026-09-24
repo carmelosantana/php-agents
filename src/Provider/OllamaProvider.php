@@ -376,16 +376,35 @@ final class OllamaProvider extends OpenAICompatibleProvider
         if (isset($schema['properties']) && is_array($schema['properties'])) {
             foreach ($schema['properties'] as $key => $property) {
                 if (is_array($property)) {
-                    $schema['properties'][$key] = $this->sanitizeSchema($property);
+                    $schema['properties'][$key] = $this->sanitizeChild($property);
                 }
             }
         }
 
         // Recurse into array items
         if (isset($schema['items']) && is_array($schema['items'])) {
-            $schema['items'] = $this->sanitizeSchema($schema['items']);
+            $schema['items'] = $this->sanitizeChild($schema['items']);
         }
 
         return $schema;
+    }
+
+    /**
+     * Sanitize a subschema, keeping it an object when nothing survives.
+     *
+     * A node built only of stripped keywords — `{"$ref": "#/$defs/x"}` from an MCP
+     * server — sanitizes to an empty array, which json_encode() writes as `[]`.
+     * A subschema position must carry an object, so an emptied node becomes `{}`:
+     * the schema that accepts anything, which is what is left once the keyword
+     * that constrained it is gone.
+     *
+     * @param array<string, mixed> $schema
+     * @return array<string, mixed>|\stdClass
+     */
+    private function sanitizeChild(array $schema): array|\stdClass
+    {
+        $sanitized = $this->sanitizeSchema($schema);
+
+        return $sanitized === [] ? new \stdClass() : $sanitized;
     }
 }
