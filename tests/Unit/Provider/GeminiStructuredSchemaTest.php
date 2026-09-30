@@ -10,9 +10,11 @@ use Symfony\Component\HttpClient\Response\MockResponse;
 // structured() builds `responseSchema` from a schema handed in from outside, so it meets the
 // same shapes the tool path does — a `type` that is an array, a nested node needing Gemini's
 // upper-case spelling, and an empty or "0", "1", … keyed `properties` map, which
-// json_decode(..., true) makes a PHP list. It went through its own one-line uppercase of the
-// root `type` and raised a TypeError on a type array. A body decoded to arrays cannot show
-// whether a map went out as a JSON object or a list, so the map tests decode it to objects.
+// json_decode(..., true) makes a PHP list. These tests pin that it normalises a root type
+// array, sends every such map as a JSON object, and applies the OBJECT default after the walk,
+// so a root type array that does not collapse to one type still goes out as an object. A
+// body decoded to arrays cannot show whether a map went out as a JSON object or a list, so
+// the tests that depend on that read the body as sent.
 
 /**
  * A provider whose one request is captured: the second element decodes the body to arrays,
@@ -86,3 +88,11 @@ test('structured sends every properties map as a JSON object', function (string 
     'an empty map at depth' => ['{"type":"object","properties":{"meta":{"type":"object","properties":{}}}}', '{"type":"OBJECT","properties":{"meta":{"type":"OBJECT","properties":{}}}}'],
     'an empty map under the schema envelope' => ['{"schema":{"type":"object","properties":{}}}', '{"type":"OBJECT","properties":{}}'],
 ]);
+
+test('structured applies the OBJECT default after the walk drops a type array that does not collapse', function () {
+    [$provider, , $body] = geminiStructuredCapture();
+
+    $provider->structured([new UserMessage('hi')], '{"type":["string","integer"]}');
+
+    expect(json_encode(json_decode($body(), false)->generationConfig->responseSchema))->toBe('{"type":"OBJECT"}');
+});

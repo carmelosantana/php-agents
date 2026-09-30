@@ -12,8 +12,8 @@ use Symfony\Component\HttpClient\Response\MockResponse;
 // Gemini's Schema has `anyOf` and no field for the keywords below, so the tool path and
 // structured() strip them from each node the walk reaches: the root, a `properties` member,
 // `items` and an `anyOf` branch (Kanboard subtask 6482, widened to `oneOf` and `allOf` on
-// Kanboard #4437 comment 1382). The walk also reaches a member of a `properties` map held as
-// a \stdClass, which JsonSchemaRepair makes of a map keyed "0", "1", … in order. A draft-04
+// Kanboard #4437 comment 1382). The walk also reaches an array member of a `properties` map
+// held as a \stdClass, which JsonSchemaRepair makes of a map keyed "0", "1", … in order. A draft-04
 // tuple `items` is replaced with `{}`, so its members are not sent, keywords and all, and
 // Gemini loses the tuple's per-position constraints.
 
@@ -65,6 +65,10 @@ function geminiStripPositions(): array
         ],
         'properties member' => [
             static fn(array $node): array => ['type' => 'object', 'properties' => ['x' => $node]],
+            '{"type":"OBJECT","properties":{"x":{"type":"OBJECT"}}}',
+        ],
+        '\\stdClass properties member' => [
+            static fn(array $node): array => ['type' => 'object', 'properties' => (object) ['x' => $node]],
             '{"type":"OBJECT","properties":{"x":{"type":"OBJECT"}}}',
         ],
         'items' => [
