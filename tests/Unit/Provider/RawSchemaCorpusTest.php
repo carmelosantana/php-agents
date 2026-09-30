@@ -271,16 +271,19 @@ test('the gemini predicate reports what Gemini\'s Schema rejects', function (str
     'properties named type and items' => ['{"type":"OBJECT","properties":{"type":{"type":"STRING"},"items":{"type":"ARRAY","items":{"type":"INTEGER"}}}}', []],
 ]);
 
-// A `\stdClass` is a handle, so normalising its members in place would rewrite the schema the
-// caller still holds — structured() is handed the caller's own array.
-test('gemini normalises a stdClass properties map without changing the caller\'s object', function () {
-    $provider = new GeminiProvider(httpClient: new MockHttpClient());
-    $properties = (object) ['0' => ['type' => 'string']];
+// A `\stdClass` is a handle, and JsonSchemaRepair hands back as-is a `\stdClass` it was given,
+// so a SchemaTool built with a `properties` map held as one stores that very object. Normalising
+// its members in place would rewrite the tool's own schema on the first Gemini call, and every
+// provider formatting the same tool afterwards would send Gemini's upper-case types.
+test('gemini normalises a stdClass properties map without changing the tool\'s schema', function () {
+    $tool = new SchemaTool('raw_tool', 'Raw.', ['type' => 'object', 'properties' => (object) ['0' => ['type' => 'string']]], fn(array $a): ToolResult => ToolResult::success('x'));
+    $before = json_encode($tool->toFunctionSchema(), JSON_THROW_ON_ERROR);
 
-    $normalized = (new ReflectionMethod($provider, 'normalizeSchemaForGemini'))->invoke($provider, ['type' => 'object', 'properties' => $properties]);
+    $gemini = json_encode(rawSchemaFormatters()['gemini']([$tool]), JSON_THROW_ON_ERROR);
 
-    expect(json_encode($normalized['properties'], JSON_THROW_ON_ERROR))->toBe('{"0":{"type":"STRING"}}')
-        ->and(json_encode($properties, JSON_THROW_ON_ERROR))->toBe('{"0":{"type":"string"}}');
+    expect($gemini)->toContain('"properties":{"0":{"type":"STRING"}}')
+        ->and(json_encode($tool->toFunctionSchema(), JSON_THROW_ON_ERROR))->toBe($before)
+        ->and(json_encode(rawSchemaFormatters()['openai-chat']([$tool]), JSON_THROW_ON_ERROR))->toContain('"properties":{"0":{"type":"string"}}');
 });
 
 test('gemini tool payloads carry nothing Gemini\'s Schema rejects', function (string $file) {
