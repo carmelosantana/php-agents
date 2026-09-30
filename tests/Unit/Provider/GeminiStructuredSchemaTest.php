@@ -11,10 +11,11 @@ use Symfony\Component\HttpClient\Response\MockResponse;
 // same shapes the tool path does — a `type` that is an array, a nested node needing Gemini's
 // upper-case spelling, and an empty or "0", "1", … keyed `properties` map, which
 // json_decode(..., true) makes a PHP list. These tests pin that it normalises a root type
-// array, sends every such map as a JSON object, and applies the OBJECT default after the walk,
-// so a root type array that does not collapse to one type still goes out as an object. A
-// body decoded to arrays cannot show whether a map went out as a JSON object or a list, so
-// the tests that depend on that read the body as sent.
+// array; that it sends as a JSON object an empty map, a map keyed "0", "1", an empty map at
+// depth and an empty map under the schema envelope; and that it applies the OBJECT default
+// after the walk, so a root type array that does not collapse to one type still goes out as an
+// object. A body decoded to arrays cannot show whether a map went out as a JSON object or a
+// list, so the tests that depend on that read the body as sent.
 
 /**
  * A provider whose one request is captured: the second element decodes the body to arrays,

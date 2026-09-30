@@ -853,10 +853,13 @@ do not reach its members, and they do not reach the members of a `properties` ma
 object, so those members go out as written: a `minLength` there is neither demoted nor stripped.
 A subschema under any other keyword of a node the walk reaches is passed through as the server
 wrote it by all three, unless that provider strips the keyword, in which case it is removed with
-whatever it holds. Probed with a schema carrying `not: {"$ref": "…"}` beside a `properties.p`
-holding `minLength` and `format`: all three rewrote `p`, Ollama and llama.cpp left `not` exactly
-as it arrived, and Gemini removed it. So expect a tool's schema to reach these providers
-rewritten in some positions and untouched in others, and in neither case complete.
+whatever it holds. The exception is an `anyOf`, `oneOf` or `allOf` under Ollama and llama.cpp,
+which is not removed whole: its first non-null branch is merged into the node, demoted and
+walked, and its other branches are dropped. Probed with a schema carrying `not: {"$ref": "…"}`
+beside a `properties.p` holding `minLength` and `format`: all three rewrote `p`, Ollama and
+llama.cpp left `not` exactly as it arrived, and Gemini removed it. So expect a tool's schema to
+reach these providers rewritten in some positions and untouched in others, and in neither case
+complete.
 
 ## Publishing Toolkit Packages
 
