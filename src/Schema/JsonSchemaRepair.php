@@ -35,8 +35,9 @@ namespace CarmeloSantana\PHPAgents\Schema;
  * all — the `{}` an MCP tool that takes no input publishes — has nothing to fire on
  * and is returned, and re-encoded, as `[]`; the signature returns an array, so a root
  * `\stdClass` is not a value repair() can produce. A caller that may be handed such a
- * schema must establish a root `type` before calling, the way
- * SchemaTool::toFunctionSchema() does with `$schema['type'] ??= 'object'`.
+ * schema must give the root a `type` itself: SchemaTool::toFunctionSchema() does so
+ * before calling, with `$schema['type'] ??= 'object'`, and GeminiProvider::structured()
+ * after normalising the repaired schema, with `$responseSchema['type'] ??= 'OBJECT'`.
  */
 final class JsonSchemaRepair
 {

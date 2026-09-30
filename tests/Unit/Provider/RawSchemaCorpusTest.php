@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
+use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
 use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppToolSchemaNormalizer;
@@ -14,6 +15,7 @@ use CarmeloSantana\PHPAgents\Provider\XAIProvider;
 use CarmeloSantana\PHPAgents\Tool\SchemaTool;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Response\MockResponse;
 
 // Every MCP-style schema in tests/Fixtures/mcp-schemas goes through every provider's tool
 // formatting. It must not throw, and wherever JSON Schema needs an object (a map or a
@@ -199,6 +201,7 @@ test('openai responses goes non-strict exactly for the schemas it cannot close',
         'numeric-keys' => false,
         'one-of' => true,
         'ref-defs' => false,
+        'tuple-items' => true,
         'type-arrays' => true,
         'x-mcp-header' => true,
     ]);
@@ -219,7 +222,100 @@ test('gemini renders a raw schema as the payload it sends', function (string $na
     ['ref-defs', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"who":{}}}}]}]'],
     // `target` carries only `oneOf`, which Gemini's Schema has no field for; the node that is left is `{}`.
     ['one-of', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"target":{}}}}]}]'],
+    // A `properties` map JsonSchemaRepair cast to an object still has its members normalised.
+    ['numeric-keys', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"0":{"type":"STRING"},"1":{"type":"STRING"}}}}]}]'],
+    // Gemini's `items` is one Schema, so a draft-04 tuple becomes `{}`, the schema that accepts anything.
+    ['tuple-items', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"pair":{"type":"ARRAY","items":{}}}}}]}]'],
 ]);
+
+/**
+ * Walk a json_decode(..., false) tree; report every position Gemini's Schema rejects.
+ *
+ * The rules are transcribed from Gemini's v1beta discovery document
+ * (https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta, schemas.Schema),
+ * where `items` is a single Schema and `type` is an enum of upper-case names. So this reports
+ * every key `items` whose value is a JSON array, and every key `type` whose value is a string
+ * that is not upper-case. It tests the value, not where the key sits, so a property *named*
+ * `type` or `items` whose schema is an object is not reported.
+ *
+ * @return list<string>
+ */
+function geminiSchemaDefects(mixed $node, string $path = '$'): array
+{
+    $bad = [];
+    if ($node instanceof stdClass) {
+        foreach (get_object_vars($node) as $key => $value) {
+            $here = "{$path}.{$key}";
+            if ($key === 'items' && is_array($value)) {
+                $bad[] = $here;
+            } elseif ($key === 'type' && is_string($value) && $value !== strtoupper($value)) {
+                $bad[] = $here;
+            }
+            $bad = [...$bad, ...geminiSchemaDefects($value, $here)];
+        }
+    } elseif (is_array($node)) {
+        foreach ($node as $i => $value) {
+            $bad = [...$bad, ...geminiSchemaDefects($value, "{$path}[{$i}]")];
+        }
+    }
+
+    return $bad;
+}
+
+// The Gemini oracle gets the same kind of probes: each defect it names is reported, and a
+// property that merely carries one of the keyword names is not.
+test('the gemini predicate reports what Gemini\'s Schema rejects', function (string $payload, array $expected) {
+    expect(geminiSchemaDefects(json_decode($payload, false)))->toBe($expected);
+})->with([
+    'tuple items' => ['{"type":"ARRAY","items":[{"type":"STRING"},{"type":"INTEGER"}]}', ['$.items']],
+    'lower-case type' => ['{"type":"OBJECT","properties":{"a":{"type":"string"}}}', ['$.properties.a.type']],
+    'a clean gemini payload' => ['[{"functionDeclarations":[{"name":"t","parameters":{"type":"OBJECT","properties":{"a":{"type":"ARRAY","items":{"type":"STRING"}},"b":{}}}}]}]', []],
+    'properties named type and items' => ['{"type":"OBJECT","properties":{"type":{"type":"STRING"},"items":{"type":"ARRAY","items":{"type":"INTEGER"}}}}', []],
+]);
+
+// A `\stdClass` is a handle, and JsonSchemaRepair hands back as-is a `\stdClass` it was given,
+// so a SchemaTool built with a `properties` map held as one stores that very object. Normalising
+// its members in place would rewrite the tool's own schema on the first Gemini call, and every
+// provider formatting the same tool afterwards would send Gemini's upper-case types.
+test('gemini normalises a stdClass properties map without changing the tool\'s schema', function () {
+    $tool = new SchemaTool('raw_tool', 'Raw.', ['type' => 'object', 'properties' => (object) ['0' => ['type' => 'string']]], fn(array $a): ToolResult => ToolResult::success('x'));
+    $before = json_encode($tool->toFunctionSchema(), JSON_THROW_ON_ERROR);
+
+    $gemini = json_encode(rawSchemaFormatters()['gemini']([$tool]), JSON_THROW_ON_ERROR);
+
+    expect($gemini)->toContain('"properties":{"0":{"type":"STRING"}}')
+        ->and(json_encode($tool->toFunctionSchema(), JSON_THROW_ON_ERROR))->toBe($before)
+        ->and(json_encode(rawSchemaFormatters()['openai-chat']([$tool]), JSON_THROW_ON_ERROR))->toContain('"properties":{"0":{"type":"string"}}');
+});
+
+test('gemini tool payloads carry nothing Gemini\'s Schema rejects', function (string $file) {
+    $tool = new SchemaTool('raw_tool', 'Raw.', json_decode((string) file_get_contents($file), true), fn(array $a): ToolResult => ToolResult::success('x'));
+    $decoded = json_decode(json_encode(rawSchemaFormatters()['gemini']([$tool]), JSON_THROW_ON_ERROR), false);
+
+    expect(geminiSchemaDefects($decoded))->toBe([], 'gemini emitted what its Schema rejects for ' . basename($file));
+})->with(rawSchemaFixtures());
+
+// structured() takes its schema as a JSON string, decodes it itself and sends it as
+// `generationConfig.responseSchema`, so it meets the corpus by a path that has no SchemaTool.
+test('gemini structured() sends every raw schema without a list where an object belongs', function (string $file) {
+    $body = '';
+    $client = new MockHttpClient(function (string $method, string $url, array $options) use (&$body): MockResponse {
+        $body = (string) $options['body'];
+
+        return new MockResponse(
+            (string) json_encode(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => '{}']]], 'finishReason' => 'STOP']]]),
+            ['http_code' => 200],
+        );
+    });
+
+    (new GeminiProvider(apiKey: 'test-key', httpClient: $client))
+        ->structured([new UserMessage('hi')], (string) file_get_contents($file));
+    $responseSchema = json_decode($body, false)->generationConfig->responseSchema ?? null;
+
+    expect($responseSchema)->toBeInstanceOf(stdClass::class, 'gemini structured() sent no responseSchema for ' . basename($file))
+        ->and(listsWhereObjectsBelong($responseSchema))->toBe([], 'gemini structured() emitted a list where an object belongs for ' . basename($file))
+        ->and(geminiSchemaDefects($responseSchema))->toBe([], 'gemini structured() emitted what its Schema rejects for ' . basename($file));
+})->with(rawSchemaFixtures());
 
 /**
  * A tool whose toFunctionSchema() puts something other than a schema array in `parameters`.

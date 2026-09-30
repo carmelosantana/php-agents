@@ -9,6 +9,7 @@ use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
+use CarmeloSantana\PHPAgents\Schema\JsonSchemaRepair;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -191,14 +192,16 @@ final class GeminiProvider extends AbstractProvider
         }
 
         // responseSchema is the same Gemini Schema a function declaration's parameters are,
-        // and arrives from outside with the same shapes — a `type` that is an array, a
-        // lower-case type on a nested node. normalizeSchemaForGemini() is what the tool path
-        // already does with those, so this defers to it rather than upper-casing the root
-        // `type` alone, which raised a TypeError on a type array. A type array that does not
-        // collapse to a single non-null type comes back with no `type` at all, so the OBJECT
-        // default is applied after the walk, not before it.
+        // and arrives from outside with the same shapes: a `type` that is an array, a
+        // lower-case type on a nested node, and, since json_decode() above returns arrays, an
+        // empty or "0", "1", … keyed `properties` map that would encode as a JSON list.
+        // JsonSchemaRepair::repair() turns those maps back into objects, and
+        // normalizeSchemaForGemini() then rewrites the schema as formatTools() does a tool's
+        // parameters. A type array that does not collapse to a single non-null type comes
+        // back with no `type` at all, so the OBJECT default is applied after the walk, not
+        // before it.
         unset($responseSchema['name'], $responseSchema['description']);
-        $responseSchema = $this->normalizeSchemaForGemini($responseSchema);
+        $responseSchema = $this->normalizeSchemaForGemini(JsonSchemaRepair::repair($responseSchema));
         $responseSchema['type'] ??= 'OBJECT';
 
         $options['generationConfig'] = array_merge(
@@ -634,13 +637,9 @@ final class GeminiProvider extends AbstractProvider
      *
      * Gemini expects upper-case type names (STRING, OBJECT, …), a single type per
      * node with `nullable` for "or null", and none of UNSUPPORTED_KEYWORDS. The walk
-     * descends through `properties`, `items` and the `anyOf` branches, so a raw
-     * schema's nested nodes are normalised as well as its top level, with two
-     * exceptions. A `properties` map that is a `\stdClass` is not descended into, so
-     * its members keep a lower-case `type` and any UNSUPPORTED_KEYWORDS keyword. And
-     * a draft-04 tuple `items`, a list of subschemas, is handed to the walk as
-     * though it were one node, so its members are not normalised either.
-     * stripKeywords then unsets each UNSUPPORTED_KEYWORDS keyword — `$defs`,
+     * descends through the members of `properties`, a single-schema `items` and the
+     * `anyOf` branches, so a raw schema's nested nodes are normalised as well as its
+     * top level. stripKeywords then unsets each UNSUPPORTED_KEYWORDS keyword — `$defs`,
      * `oneOf`, `not` and `if` among them — on each node the walk reaches, and
      * whatever the keyword holds goes with it. A child node left with nothing
      * becomes `{}` in normalizeChildForGemini(). A subschema under a keyword the
@@ -648,14 +647,18 @@ final class GeminiProvider extends AbstractProvider
      * passed through unchanged.
      *
      * stripKeywords acts on the node, not on its `properties` map, whose members are
-     * walked one by one when the map is an array: a property named `not` or `oneOf`
-     * keeps its name and is normalised, and a `required` list naming it is left as
-     * it is.
+     * walked one by one: a property named `not` or `oneOf` keeps its name and is
+     * normalised, and a `required` list naming it is left as it is.
      *
      * JsonSchemaRepair restores an empty `{}` as a `\stdClass`, and casts to one a
      * `properties` map whose keys run "0", "1", … in order, so a subschema or a map
-     * here may not be an array. Each descent tests is_array() first and leaves
-     * anything else alone rather than raising a TypeError.
+     * here may not be an array. A `properties` map that is a `\stdClass` is copied,
+     * its array members are normalised in the copy, and the copy goes out as a
+     * `\stdClass`, so it still encodes as a JSON object and the caller's object is
+     * left as it was. Gemini's `items` is one Schema, so a draft-04 tuple `items`, a
+     * non-empty list of subschemas, is replaced with `{}`, the schema that accepts
+     * anything. Anything else in those positions that is not an array is left alone
+     * rather than raising a TypeError.
      *
      * @param array<array-key, mixed> $schema
      * @return array<array-key, mixed>
@@ -684,10 +687,20 @@ final class GeminiProvider extends AbstractProvider
                     $schema['properties'][$key] = $this->normalizeChildForGemini($property);
                 }
             }
+        } elseif (isset($schema['properties']) && $schema['properties'] instanceof \stdClass) {
+            $properties = clone $schema['properties'];
+            foreach (get_object_vars($properties) as $key => $property) {
+                if (is_array($property)) {
+                    $properties->{$key} = $this->normalizeChildForGemini($property);
+                }
+            }
+            $schema['properties'] = $properties;
         }
 
         if (isset($schema['items']) && is_array($schema['items'])) {
-            $schema['items'] = $this->normalizeChildForGemini($schema['items']);
+            $schema['items'] = $schema['items'] !== [] && array_is_list($schema['items'])
+                ? new \stdClass()
+                : $this->normalizeChildForGemini($schema['items']);
         }
 
         if (isset($schema['anyOf']) && is_array($schema['anyOf'])) {
