@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
+use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
 use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppToolSchemaNormalizer;
@@ -14,6 +15,7 @@ use CarmeloSantana\PHPAgents\Provider\XAIProvider;
 use CarmeloSantana\PHPAgents\Tool\SchemaTool;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Response\MockResponse;
 
 // Every MCP-style schema in tests/Fixtures/mcp-schemas goes through every provider's tool
 // formatting. It must not throw, and wherever JSON Schema needs an object (a map or a
@@ -291,6 +293,28 @@ test('gemini tool payloads carry nothing Gemini\'s Schema rejects', function (st
     $decoded = json_decode(json_encode(rawSchemaFormatters()['gemini']([$tool]), JSON_THROW_ON_ERROR), false);
 
     expect(geminiSchemaDefects($decoded))->toBe([], 'gemini emitted what its Schema rejects for ' . basename($file));
+})->with(rawSchemaFixtures());
+
+// structured() takes its schema as a JSON string, decodes it itself and sends it as
+// `generationConfig.responseSchema`, so it meets the corpus by a path that has no SchemaTool.
+test('gemini structured() sends every raw schema without a list where an object belongs', function (string $file) {
+    $body = '';
+    $client = new MockHttpClient(function (string $method, string $url, array $options) use (&$body): MockResponse {
+        $body = (string) $options['body'];
+
+        return new MockResponse(
+            (string) json_encode(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => '{}']]], 'finishReason' => 'STOP']]]),
+            ['http_code' => 200],
+        );
+    });
+
+    (new GeminiProvider(apiKey: 'test-key', httpClient: $client))
+        ->structured([new UserMessage('hi')], (string) file_get_contents($file));
+    $responseSchema = json_decode($body, false)->generationConfig->responseSchema ?? null;
+
+    expect($responseSchema)->toBeInstanceOf(stdClass::class, 'gemini structured() sent no responseSchema for ' . basename($file))
+        ->and(listsWhereObjectsBelong($responseSchema))->toBe([], 'gemini structured() emitted a list where an object belongs for ' . basename($file))
+        ->and(geminiSchemaDefects($responseSchema))->toBe([], 'gemini structured() emitted what its Schema rejects for ' . basename($file));
 })->with(rawSchemaFixtures());
 
 /**

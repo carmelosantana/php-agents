@@ -9,6 +9,7 @@ use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
+use CarmeloSantana\PHPAgents\Schema\JsonSchemaRepair;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -191,14 +192,16 @@ final class GeminiProvider extends AbstractProvider
         }
 
         // responseSchema is the same Gemini Schema a function declaration's parameters are,
-        // and arrives from outside with the same shapes — a `type` that is an array, a
-        // lower-case type on a nested node. normalizeSchemaForGemini() is what the tool path
-        // already does with those, so this defers to it rather than upper-casing the root
-        // `type` alone, which raised a TypeError on a type array. A type array that does not
-        // collapse to a single non-null type comes back with no `type` at all, so the OBJECT
-        // default is applied after the walk, not before it.
+        // and arrives from outside with the same shapes: a `type` that is an array, a
+        // lower-case type on a nested node, and, since json_decode() above returns arrays, an
+        // empty or "0", "1", … keyed `properties` map that would encode as a JSON list.
+        // JsonSchemaRepair::repair() turns those maps back into objects, and
+        // normalizeSchemaForGemini() then rewrites the schema as formatTools() does a tool's
+        // parameters. A type array that does not collapse to a single non-null type comes
+        // back with no `type` at all, so the OBJECT default is applied after the walk, not
+        // before it.
         unset($responseSchema['name'], $responseSchema['description']);
-        $responseSchema = $this->normalizeSchemaForGemini($responseSchema);
+        $responseSchema = $this->normalizeSchemaForGemini(JsonSchemaRepair::repair($responseSchema));
         $responseSchema['type'] ??= 'OBJECT';
 
         $options['generationConfig'] = array_merge(
