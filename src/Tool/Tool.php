@@ -37,6 +37,19 @@ final class Tool implements ToolInterface
 
     public function execute(array $input): ToolResult
     {
+        // Reject arguments the published schema does not declare
+        // (`additionalProperties: false`) before any validation or callback.
+        $declared = array_map(static fn(Parameter $param): string => $param->name, $this->parameters);
+        $unknown = array_diff(array_map('strval', array_keys($input)), $declared);
+
+        if ($unknown !== []) {
+            return ToolResult::error(sprintf(
+                'Unknown parameters: %s. Allowed: %s.',
+                UnknownKeys::format($unknown),
+                $declared === [] ? 'none' : UnknownKeys::format($declared),
+            ));
+        }
+
         // Validate required parameters before executing
         $missing = [];
         foreach ($this->parameters as $param) {
