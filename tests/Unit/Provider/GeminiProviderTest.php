@@ -356,7 +356,7 @@ test('a blocked prompt with no candidates maps to ContentFilter', function () {
         ->and($response->content)->toBe('');
 });
 
-test('ContentFilter and Error are not overwritten by ToolUse and emit no tool calls', function (string $raw, ProviderFinishReason $expected) {
+test('ContentFilter, Error and MaxTokens are not overwritten by ToolUse and emit no tool calls', function (string $raw, ProviderFinishReason $expected) {
     $mockClient = new MockHttpClient([
         mockGeminiResponse(['candidates' => [[
             'content' => ['role' => 'model', 'parts' => [['functionCall' => ['name' => 'get_weather', 'args' => ['city' => 'NYC']]]]],
@@ -370,7 +370,22 @@ test('ContentFilter and Error are not overwritten by ToolUse and emit no tool ca
 })->with([
     'MALFORMED_FUNCTION_CALL' => ['MALFORMED_FUNCTION_CALL', ProviderFinishReason::Error],
     'SAFETY' => ['SAFETY', ProviderFinishReason::ContentFilter],
+    'MAX_TOKENS' => ['MAX_TOKENS', ProviderFinishReason::MaxTokens],
 ]);
+
+test('stream MAX_TOKENS alongside a functionCall part yields MaxTokens and no tool calls', function () {
+    $sseData = 'data: ' . json_encode(['candidates' => [[
+        'content' => ['role' => 'model', 'parts' => [['functionCall' => ['name' => 'done', 'args' => ['response' => 'Half']]]]],
+        'finishReason' => 'MAX_TOKENS',
+    ]]]) . "\n\n";
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $chunks = iterator_to_array((new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->stream([new UserMessage('hi')]), false);
+
+    expect($chunks)->toHaveCount(1)
+        ->and($chunks[0]->finishReason)->toBe(ProviderFinishReason::MaxTokens)
+        ->and($chunks[0]->toolCalls)->toBe([]);
+});
 
 test('stream yields ContentFilter for a blocked prompt with no candidates', function () {
     $sseData = 'data: ' . json_encode(['promptFeedback' => ['blockReason' => 'SAFETY'], 'usageMetadata' => ['promptTokenCount' => 3, 'totalTokenCount' => 3]]) . "\n\n";

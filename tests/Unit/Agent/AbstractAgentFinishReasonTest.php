@@ -331,3 +331,29 @@ test('max tokens with no text ends the run as Error instead of nudging', functio
         ->and($recorder->dataFor('agent.empty_response'))->toBe([])
         ->and(finishReasonUserMessages($output))->toHaveCount(1);
 })->with('max tokens with no text');
+
+test('a Gemini MAX_TOKENS chunk carrying a done call runs no tool and emits no agent.done', function () {
+    $sseData = 'data: ' . json_encode(['candidates' => [[
+        'content' => ['role' => 'model', 'parts' => [['functionCall' => ['name' => 'done', 'args' => ['response' => 'Half an ans']]]]],
+        'finishReason' => 'MAX_TOKENS',
+    ]]]) . "\n\n";
+
+    $provider = new \CarmeloSantana\PHPAgents\Provider\GeminiProvider(
+        apiKey: 'k',
+        httpClient: new \Symfony\Component\HttpClient\MockHttpClient([
+            new \Symfony\Component\HttpClient\Response\MockResponse($sseData, ['http_code' => 200]),
+        ]),
+    );
+    $executor = new FinishReasonSpyExecutor();
+    $recorder = new FinishReasonEventRecorder();
+    $agent = new FinishReasonTestAgent(provider: $provider, toolExecutor: $executor);
+    $agent->attach($recorder);
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Error)
+        ->and($output->providerFinishReason)->toBe(ProviderFinishReason::MaxTokens)
+        ->and($executor->calls)->toBe(0)
+        ->and($recorder->dataFor('agent.tool_call'))->toBe([])
+        ->and($recorder->dataFor('agent.done'))->toBe([]);
+});

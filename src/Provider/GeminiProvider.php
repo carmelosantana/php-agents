@@ -166,8 +166,8 @@ final class GeminiProvider extends AbstractProvider
                 );
             }
 
-            // A blocked or failed candidate emits no tool calls.
-            if ($this->isBlockedOrFailed($finishReason)) {
+            // A blocked, failed or truncated (MAX_TOKENS) candidate emits no tool calls.
+            if ($this->dropsToolCalls($finishReason)) {
                 $toolCalls = [];
             }
 
@@ -966,9 +966,9 @@ final class GeminiProvider extends AbstractProvider
 
         $finishReason = $this->finishReasonOf($data);
 
-        // Tool calls make it ToolUse, unless the candidate was blocked or
-        // failed: then no tool calls are emitted.
-        if ($this->isBlockedOrFailed($finishReason)) {
+        // Tool calls make it ToolUse, unless the candidate was blocked,
+        // failed or cut off at MAX_TOKENS: then no tool calls are emitted.
+        if ($this->dropsToolCalls($finishReason)) {
             $toolCalls = [];
         } elseif (!empty($toolCalls)) {
             $finishReason = ProviderFinishReason::ToolUse;
@@ -999,9 +999,11 @@ final class GeminiProvider extends AbstractProvider
         return $this->mapGeminiFinishReason($data['candidates'][0]['finishReason'] ?? null);
     }
 
-    private function isBlockedOrFailed(ProviderFinishReason $reason): bool
+    private function dropsToolCalls(ProviderFinishReason $reason): bool
     {
-        return $reason === ProviderFinishReason::ContentFilter || $reason === ProviderFinishReason::Error;
+        return $reason === ProviderFinishReason::ContentFilter
+            || $reason === ProviderFinishReason::Error
+            || $reason === ProviderFinishReason::MaxTokens;
     }
 
     /**
