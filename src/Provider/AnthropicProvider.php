@@ -12,6 +12,7 @@ use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
+use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -20,6 +21,12 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 final class AnthropicProvider extends AbstractProvider
 {
     private const MODELS_MAX_PAGES = 10;
+
+    /** Constraint keywords that native structured outputs reject. */
+    private const UNSUPPORTED_SCHEMA_KEYWORDS = ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength'];
+
+    /** Keywords whose value is a schema, a map of schemas or a list of schemas. */
+    private const SCHEMA_KEYWORDS = ['properties', '$defs', 'definitions', 'items', 'prefixItems', 'anyOf', 'allOf', 'oneOf'];
 
     private string $apiVersion = '2023-06-01';
 
@@ -354,29 +361,34 @@ final class AnthropicProvider extends AbstractProvider
         // Native structured outputs: the model answers with one text block of
         // JSON matching the schema. A forced tool_choice returns a 400 on
         // current models, so none is sent, not even the caller's.
-        $schemaData = json_decode($schema, true);
-        if (!is_array($schemaData)) {
+        // Decoded with objects kept as stdClass, so `{}` encodes back as `{}`.
+        $schemaData = json_decode($schema);
+        if (!$schemaData instanceof \stdClass && !is_array($schemaData)) {
             return $this->chat($messages, [], $options);
         }
 
-        $outputSchema = $schemaData['schema'] ?? $schemaData['parameters'] ?? $schemaData;
-
-        if (!isset($outputSchema['type'])) {
-            $outputSchema['type'] = 'object';
-        }
-
-        // Structured outputs need every object closed and fully required.
-        // Normalize when that does not change what the schema accepts;
-        // otherwise send it as written.
-        if (StrictSchemaNormalizer::qualifies($outputSchema)) {
-            $outputSchema = StrictSchemaNormalizer::normalize($outputSchema);
-        }
+        // An envelope's name and description are not sent.
+        $outputSchema = $schemaData instanceof \stdClass
+            ? ($schemaData->schema ?? $schemaData->parameters ?? $schemaData)
+            : $schemaData;
 
         unset($options['tool_choice']);
         $outputConfig = is_array($options['output_config'] ?? null) ? $options['output_config'] : [];
+        unset($outputConfig['format']);
+
+        $root = $outputSchema instanceof \stdClass ? clone $outputSchema : $outputSchema;
+        if ($root instanceof \stdClass && !isset($root->type)) {
+            $root->type = 'object';
+        }
+
+        $prepared = $this->prepareAnthropicSchema($root);
+        if ($prepared === null) {
+            return $this->structuredWithoutNativeSchema($messages, $outputSchema, $outputConfig, $options);
+        }
+
         $options['output_config'] = [
             ...$outputConfig,
-            'format' => ['type' => 'json_schema', 'schema' => $outputSchema],
+            'format' => ['type' => 'json_schema', 'schema' => $prepared],
         ];
 
         $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->requestLimits->apply([
@@ -399,6 +411,143 @@ final class AnthropicProvider extends AbstractProvider
         }
 
         return $this->parseResponse($data);
+    }
+
+    /**
+     * Best-effort JSON for a schema native structured outputs cannot take: no
+     * output_config.format, and one extra user instruction with the schema.
+     *
+     * @param MessageInterface[] $messages
+     * @param array<string, mixed> $outputConfig The caller's output_config without `format`
+     * @param array<string, mixed> $options
+     */
+    private function structuredWithoutNativeSchema(array $messages, mixed $outputSchema, array $outputConfig, array $options): mixed
+    {
+        unset($options['output_config']);
+        if ($outputConfig !== []) {
+            $options['output_config'] = $outputConfig;
+        }
+
+        $messages[] = new UserMessage(
+            "Respond with only a JSON value that matches this JSON Schema, with no other text:\n" . json_encode($outputSchema),
+        );
+
+        $response = $this->chat($messages, [], $options);
+
+        if ($response->finishReason === ProviderFinishReason::Stop) {
+            foreach ($response->contentBlocks as $block) {
+                if (($block['type'] ?? '') === 'text') {
+                    $decoded = json_decode(is_string($block['text'] ?? null) ? $block['text'] : '', true);
+                    if (is_array($decoded)) {
+                        return $decoded;
+                    }
+                    break;
+                }
+            }
+        }
+
+        return $response;
+    }
+
+    /**
+     * Prepare a JSON Schema for Anthropic native structured outputs: close
+     * every object that lists `properties` and has no `additionalProperties`
+     * (keeping `required` as written, adding no null types) and strip the
+     * numeric and string constraint keywords the API rejects.
+     *
+     * Returns null when the schema cannot be represented: an open object
+     * (no `properties` with `additionalProperties` missing or true, or
+     * `additionalProperties` set to a schema), or a value that is not a
+     * schema object where a schema is expected.
+     */
+    private function prepareAnthropicSchema(mixed $node): ?\stdClass
+    {
+        if (!$node instanceof \stdClass) {
+            return null;
+        }
+
+        $prepared = new \stdClass();
+        foreach (get_object_vars($node) as $key => $value) {
+            if (in_array($key, self::UNSUPPORTED_SCHEMA_KEYWORDS, true)) {
+                continue;
+            }
+
+            $value = match ($key) {
+                'properties', '$defs', 'definitions' => $this->prepareSchemaMap($value),
+                'items' => $this->prepareAnthropicSchema($value),
+                'prefixItems', 'anyOf', 'allOf', 'oneOf' => $this->prepareSchemaList($value),
+                default => $value,
+            };
+
+            if ($value === null && in_array($key, self::SCHEMA_KEYWORDS, true)) {
+                return null;
+            }
+
+            $prepared->{$key} = $value;
+        }
+
+        $type = $node->type ?? null;
+        $isObject = $type === 'object'
+            || (is_array($type) && in_array('object', $type, true))
+            || property_exists($node, 'properties')
+            || property_exists($node, 'additionalProperties');
+
+        if (!$isObject) {
+            return $prepared;
+        }
+
+        if (!property_exists($node, 'additionalProperties')) {
+            if (!property_exists($node, 'properties')) {
+                return null;
+            }
+            $prepared->additionalProperties = false;
+        } elseif ($node->additionalProperties !== false) {
+            return null;
+        }
+
+        return $prepared;
+    }
+
+    /**
+     * @return \stdClass|null A map of name to prepared schema; null when any entry is not representable
+     */
+    private function prepareSchemaMap(mixed $map): ?\stdClass
+    {
+        if (!$map instanceof \stdClass) {
+            return null;
+        }
+
+        $prepared = new \stdClass();
+        foreach (get_object_vars($map) as $name => $schema) {
+            $schema = $this->prepareAnthropicSchema($schema);
+            if ($schema === null) {
+                return null;
+            }
+            $prepared->{$name} = $schema;
+        }
+
+        return $prepared;
+    }
+
+    /**
+     * @return list<\stdClass>|null The prepared schemas; null when any entry is not representable
+     */
+    private function prepareSchemaList(mixed $list): ?array
+    {
+        if (!is_array($list) || !array_is_list($list)) {
+            return null;
+        }
+
+        $prepared = [];
+        foreach ($list as $schema) {
+            $schema = $this->prepareAnthropicSchema($schema);
+            if ($schema === null) {
+                return null;
+            }
+            $prepared[] = $schema;
+        }
+
+        return $prepared;
     }
 
     /**

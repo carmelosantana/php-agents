@@ -11,7 +11,6 @@ use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 use CarmeloSantana\PHPAgents\Provider\Response;
-use CarmeloSantana\PHPAgents\Provider\StrictSchemaNormalizer;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Symfony\Component\HttpClient\MockHttpClient;
@@ -378,107 +377,237 @@ function structuredClient(?array &$payload, array $overrides): MockHttpClient
     });
 }
 
+const ANTHROPIC_STRUCTURED_INSTRUCTION = "Respond with only a JSON value that matches this JSON Schema, with no other text:\n";
+
+const ANTHROPIC_CLOSED_SCHEMA = '{"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}';
+
+/**
+ * The text of the last content block of the last message in a request payload.
+ *
+ * @param array<string, mixed> $payload
+ */
+function anthropicLastUserText(array $payload): string
+{
+    $last = end($payload['messages']);
+    $content = $last['content'];
+
+    return is_string($content) ? $content : (string) end($content)['text'];
+}
+
 test('structured sends output_config.format and no forced tool_choice', function () {
     $payload = null;
     $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
         'content' => [['type' => 'text', 'text' => '{"name":"Alice"}']],
     ]));
-    $inner = ['type' => 'object', 'properties' => ['name' => ['type' => 'string']]];
+    $inner = ['type' => 'object', 'properties' => ['name' => ['type' => 'string']], 'required' => ['name']];
     $schema = json_encode([
         'name' => 'extract_data',
         'description' => 'Extract structured data',
         'schema' => $inner,
     ]);
 
-    $provider->structured([new UserMessage('My name is Alice')], $schema);
+    $result = $provider->structured([new UserMessage('My name is Alice')], $schema);
 
-    expect($payload)->not->toHaveKey('tools')
+    expect($result)->toBe(['name' => 'Alice'])
+        ->and($payload)->not->toHaveKey('tools')
         ->and($payload)->not->toHaveKey('tool_choice')
         ->and($payload['output_config'])->toBe(['format' => [
             'type' => 'json_schema',
-            'schema' => StrictSchemaNormalizer::normalize($inner),
+            'schema' => [...$inner, 'additionalProperties' => false],
         ]])
-        ->and($payload['output_config']['format']['schema']['additionalProperties'])->toBeFalse()
-        ->and($payload['output_config']['format']['schema']['required'])->toBe(['name']);
+        ->and(json_encode($payload))->not->toContain('extract_data')
+        ->and(json_encode($payload))->not->toContain('Extract structured data');
 });
 
-test('structured sends a schema that does not qualify unchanged, with root type object', function () {
+test('structured keeps an optional property optional and adds no null type', function () {
+    $payload = null;
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
+        'content' => [['type' => 'text', 'text' => '{"name":"Alice"}']],
+    ]));
+    $schema = '{"type":"object","properties":{"name":{"type":"string"},"nickname":{"type":"string"}},"required":["name"]}';
+
+    $provider->structured([new UserMessage('hi')], $schema);
+
+    expect($payload['output_config']['format']['schema'])->toBe([
+        'type' => 'object',
+        'properties' => ['name' => ['type' => 'string'], 'nickname' => ['type' => 'string']],
+        'required' => ['name'],
+        'additionalProperties' => false,
+    ]);
+});
+
+test('structured closes nested, array item and $defs objects', function () {
     $payload = null;
     $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
         'content' => [['type' => 'text', 'text' => '{}']],
     ]));
-    $schema = ['properties' => ['tags' => ['type' => 'object', 'additionalProperties' => ['type' => 'string']]]];
+    $schema = json_encode([
+        'type' => 'object',
+        'properties' => [
+            'address' => ['type' => 'object', 'properties' => ['city' => ['type' => 'string']]],
+            'items' => ['type' => 'array', 'items' => ['properties' => ['sku' => ['type' => 'string']]]],
+            'pick' => ['anyOf' => [['type' => 'object', 'properties' => ['a' => ['type' => 'string']]], ['type' => 'string']]],
+            'pair' => ['type' => 'array', 'prefixItems' => [['type' => 'object', 'properties' => ['x' => ['type' => 'number']]]]],
+            'ref' => ['$ref' => '#/$defs/Thing'],
+            'legacy' => ['$ref' => '#/definitions/Old'],
+        ],
+        '$defs' => ['Thing' => ['type' => 'object', 'properties' => ['id' => ['type' => 'integer']], 'additionalProperties' => false]],
+        'definitions' => ['Old' => ['allOf' => [['type' => 'object', 'properties' => ['v' => ['type' => 'string']]]]]],
+    ]);
 
-    $provider->structured([new UserMessage('hi')], json_encode($schema));
+    $provider->structured([new UserMessage('hi')], $schema);
+    $sent = $payload['output_config']['format']['schema'];
 
-    expect($payload['output_config']['format']['schema'])->toBe([...$schema, 'type' => 'object']);
+    expect($sent['additionalProperties'])->toBeFalse()
+        ->and($sent['properties']['address']['additionalProperties'])->toBeFalse()
+        ->and($sent['properties']['items']['items']['additionalProperties'])->toBeFalse()
+        ->and($sent['properties']['pick']['anyOf'][0]['additionalProperties'])->toBeFalse()
+        ->and($sent['properties']['pick']['anyOf'][1])->toBe(['type' => 'string'])
+        ->and($sent['properties']['pair']['prefixItems'][0]['additionalProperties'])->toBeFalse()
+        ->and($sent['$defs']['Thing'])->toBe(['type' => 'object', 'properties' => ['id' => ['type' => 'integer']], 'additionalProperties' => false])
+        ->and($sent['definitions']['Old']['allOf'][0]['additionalProperties'])->toBeFalse()
+        ->and($sent)->not->toHaveKey('required')
+        ->and($sent['properties']['address'])->not->toHaveKey('required');
 });
 
-test('structured drops a caller tool_choice and keeps caller tools', function () {
+test('structured strips the numeric and string constraint keywords', function () {
+    $payload = null;
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
+        'content' => [['type' => 'text', 'text' => '{}']],
+    ]));
+    $schema = json_encode([
+        'type' => 'object',
+        'properties' => [
+            'age' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 150, 'exclusiveMinimum' => -1, 'exclusiveMaximum' => 151, 'multipleOf' => 1],
+            'code' => ['type' => 'string', 'minLength' => 2, 'maxLength' => 8, 'pattern' => '^[A-Z]+$'],
+            'minimum' => ['type' => 'string', 'description' => 'A property named like a keyword is kept'],
+        ],
+    ]);
+
+    $provider->structured([new UserMessage('hi')], $schema);
+    $properties = $payload['output_config']['format']['schema']['properties'];
+
+    expect($properties['age'])->toBe(['type' => 'integer'])
+        ->and($properties['code'])->toBe(['type' => 'string', 'pattern' => '^[A-Z]+$'])
+        ->and($properties['minimum'])->toBe(['type' => 'string', 'description' => 'A property named like a keyword is kept']);
+});
+
+dataset('anthropic schemas native structured outputs cannot represent', [
+    'open object' => ['{"type":"object"}', '{"type":"object"}'],
+    'open object in an envelope' => ['{"name":"x","schema":{"type":"object"}}', '{"type":"object"}'],
+    'additionalProperties schema map' => [
+        '{"properties":{"tags":{"type":"object","additionalProperties":{"type":"string"}}}}',
+        '{"properties":{"tags":{"type":"object","additionalProperties":{"type":"string"}}}}',
+    ],
+    'additionalProperties true' => [
+        '{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":true}',
+        '{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":true}',
+    ],
+    'nested open object' => [
+        '{"type":"object","properties":{"meta":{"type":"object"}}}',
+        '{"type":"object","properties":{"meta":{"type":"object"}}}',
+    ],
+    'items not a schema' => [
+        '{"type":"object","properties":{"list":{"type":"array","items":true}}}',
+        '{"type":"object","properties":{"list":{"type":"array","items":true}}}',
+    ],
+    'non-array envelope schema' => ['{"schema":"x"}', '"x"'],
+]);
+
+test('structured falls back to a JSON instruction when the schema is not representable', function (string $schema, string $encodedSchema) {
+    $payload = null;
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
+        'content' => [['type' => 'text', 'text' => '{"name":"Alice","age":30}']],
+    ]));
+
+    $result = $provider->structured([new UserMessage('My name is Alice')], $schema, [
+        'tool_choice' => ['type' => 'any'],
+        'output_config' => ['format' => ['type' => 'text']],
+    ]);
+
+    expect($result)->toBe(['name' => 'Alice', 'age' => 30])
+        ->and($payload)->not->toHaveKey('output_config')
+        ->and($payload)->not->toHaveKey('tool_choice')
+        ->and(anthropicLastUserText($payload))->toBe(ANTHROPIC_STRUCTURED_INSTRUCTION . $encodedSchema)
+        ->and($payload['messages'][0]['content'][0]['text'])->toBe('My name is Alice');
+})->with('anthropic schemas native structured outputs cannot represent');
+
+dataset('anthropic structured paths', [
+    'native' => [ANTHROPIC_CLOSED_SCHEMA, true],
+    'fallback' => ['{"type":"object"}', false],
+]);
+
+test('structured drops a caller tool_choice and keeps caller tools', function (string $schema, bool $native) {
     $payload = null;
     $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
         'content' => [['type' => 'text', 'text' => '{}']],
     ]));
     $tools = [['name' => 'lookup', 'input_schema' => ['type' => 'object']]];
 
-    $provider->structured([new UserMessage('hi')], '{"type":"object"}', [
+    $provider->structured([new UserMessage('hi')], $schema, [
         'tools' => $tools,
         'tool_choice' => ['type' => 'any'],
     ]);
 
     expect($payload)->not->toHaveKey('tool_choice')
-        ->and($payload['tools'])->toBe($tools);
-});
+        ->and($payload['tools'])->toBe($tools)
+        ->and(isset($payload['output_config']['format']))->toBe($native);
+})->with('anthropic structured paths');
 
-test('structured returns the decoded JSON object', function () {
+test('structured returns the decoded JSON object', function (string $schema, bool $native) {
     $payload = null;
     $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
-        'content' => [['type' => 'text', 'text' => '{"name":"Alice","age":30}']],
+        'content' => [['type' => 'text', 'text' => '{"name":"Alice","age":30}'], ['type' => 'text', 'text' => 'trailing']],
     ]));
 
-    $result = $provider->structured([new UserMessage('My name is Alice')], '{"type":"object"}');
+    $result = $provider->structured([new UserMessage('My name is Alice')], $schema);
 
-    expect($result)->toBe(['name' => 'Alice', 'age' => 30]);
-});
+    expect($result)->toBe(['name' => 'Alice', 'age' => 30])
+        ->and(isset($payload['output_config']['format']))->toBe($native);
+})->with('anthropic structured paths');
 
-test('structured keeps caller output_config.effort', function () {
+test('structured keeps caller output_config.effort', function (string $schema, bool $native) {
     $payload = null;
     $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
         'content' => [['type' => 'text', 'text' => '{}']],
     ]));
 
-    $provider->structured([new UserMessage('hi')], '{"type":"object"}', [
+    $provider->structured([new UserMessage('hi')], $schema, [
         'output_config' => ['effort' => 'low', 'format' => ['type' => 'text']],
     ]);
 
-    expect($payload['output_config']['effort'])->toBe('low')
-        ->and($payload['output_config']['format']['type'])->toBe('json_schema');
-});
+    expect($payload['output_config']['effort'])->toBe('low');
+    if ($native) {
+        expect($payload['output_config']['format']['type'])->toBe('json_schema');
+    } else {
+        expect($payload['output_config'])->toBe(['effort' => 'low']);
+    }
+})->with('anthropic structured paths');
 
-test('structured falls back to Response on refusal', function () {
+test('structured falls back to Response on refusal', function (string $schema) {
     $payload = null;
     $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
         'content' => [['type' => 'text', 'text' => '{"partial":true}']],
         'stop_reason' => 'refusal',
     ]));
 
-    $result = $provider->structured([new UserMessage('hi')], '{"type":"object"}');
+    $result = $provider->structured([new UserMessage('hi')], $schema);
 
     expect($result)->toBeInstanceOf(Response::class)
         ->and($result->finishReason)->toBe(ProviderFinishReason::Refusal);
-});
+})->with('anthropic structured paths');
 
-test('structured falls back to Response when the text is not a JSON object', function () {
+test('structured falls back to Response when the text is not JSON', function (string $schema) {
     $payload = null;
     $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
         'content' => [['type' => 'text', 'text' => 'not json']],
     ]));
 
-    $result = $provider->structured([new UserMessage('hi')], '{"type":"object"}');
+    $result = $provider->structured([new UserMessage('hi')], $schema);
 
     expect($result)->toBeInstanceOf(Response::class)
         ->and($result->content)->toBe('not json');
-});
+})->with('anthropic structured paths');
 
 test('tool result messages serialize as tool_result blocks and ignore tool result metadata', function () {
     $requestPayload = null;

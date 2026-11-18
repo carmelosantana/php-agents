@@ -69,3 +69,20 @@ test('the Anthropic structured output section describes native structured output
         ->and($section)->not->toContain('tool_choice')
         ->and($section)->not->toContain('tool-use trick');
 });
+
+test('the Anthropic structured output section describes the schema preparation and the fallback path', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../docs/PROVIDERS.md');
+    $anthropic = substr($doc, (int) strpos($doc, '## AnthropicProvider'));
+    $start = (int) strpos($anthropic, '### Structured Output');
+    $section = substr($anthropic, $start, (int) strpos($anthropic, '### Model List') - $start);
+    $stripped = (new ReflectionClassConstant(AnthropicProvider::class, 'UNSUPPORTED_SCHEMA_KEYWORDS'))->getValue();
+    $keywords = array_map(fn(string $k): string => '`' . $k . '`', $stripped);
+    $last = array_pop($keywords);
+
+    expect($section)->toContain("an envelope's `name` and `description` are not")
+        ->and($section)->toContain('keeps `required` exactly as you wrote it (optional properties stay optional and no `null` type is added)')
+        ->and($section)->toContain('strips the keywords the API rejects: ' . implode(', ', $keywords) . ' and ' . $last . '.')
+        ->and($section)->toContain('falls back to best-effort JSON')
+        ->and($section)->toContain('`Respond with only a JSON value that matches this JSON Schema, with no other text:`')
+        ->and($section)->not->toContain('nullable');
+});
