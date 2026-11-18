@@ -716,6 +716,35 @@ test('stream error event with a message that is not a string throws a generic Pr
     'null' => [null],
 ])->throws(ProviderException::class, 'server_error: unknown stream error');
 
+dataset('responses statuses that are not completed', [
+    'incomplete max_output_tokens' => [['status' => 'incomplete', 'incomplete_details' => ['reason' => 'max_output_tokens']], ProviderFinishReason::MaxTokens],
+    'incomplete content_filter' => [['status' => 'incomplete', 'incomplete_details' => ['reason' => 'content_filter']], ProviderFinishReason::ContentFilter],
+    'failed' => [['status' => 'failed'], ProviderFinishReason::Error],
+]);
+
+test('chat drops tool calls when the response is not completed', function (array $overrides, ProviderFinishReason $expected) {
+    $mockClient = new MockHttpClient([mockResponsesApiResponse([...$overrides, 'output' => [
+        ['type' => 'message', 'content' => [['type' => 'output_text', 'text' => 'Calling']]],
+        ['type' => 'function_call', 'call_id' => 'call_1', 'name' => 'get_weather', 'arguments' => '{"city":"NYC"}'],
+    ]])]);
+    $response = (new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient))->chat([new UserMessage('hi')]);
+
+    expect($response->finishReason)->toBe($expected)
+        ->and($response->toolCalls)->toBe([])
+        ->and($response->content)->toBe('Calling');
+})->with('responses statuses that are not completed');
+
+test('chat keeps tool calls when the response is completed', function () {
+    $mockClient = new MockHttpClient([mockResponsesApiResponse(['output' => [
+        ['type' => 'function_call', 'call_id' => 'call_1', 'name' => 'get_weather', 'arguments' => '{"city":"NYC"}'],
+    ]])]);
+    $response = (new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient))->chat([new UserMessage('hi')]);
+
+    expect($response->finishReason)->toBe(ProviderFinishReason::ToolUse)
+        ->and($response->toolCalls)->toHaveCount(1)
+        ->and($response->toolCalls[0]->arguments)->toBe(['city' => 'NYC']);
+});
+
 test('stream yields refusal delta text as content and ends with Refusal', function () {
     $chunks = responsesStreamChunks([
         ['type' => 'response.refusal.delta', 'delta' => 'I cannot '],

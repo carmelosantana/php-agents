@@ -426,9 +426,17 @@ final class OpenAIResponsesProvider extends AbstractProvider
             }
         }
 
+        $finishReason = $this->mapStatus($data, !empty($toolCalls), $refused);
+
+        // Tool calls run only from a completed response; an incomplete or
+        // failed one may carry truncated arguments (as in the stream path).
+        if (($data['status'] ?? 'completed') !== 'completed') {
+            $toolCalls = [];
+        }
+
         return new Response(
             content: $content,
-            finishReason: $this->mapStatus($data, !empty($toolCalls), $refused),
+            finishReason: $finishReason,
             toolCalls: $toolCalls,
             model: $data['model'] ?? $this->model,
             usage: $this->parseUsage($data),
