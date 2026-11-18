@@ -190,12 +190,14 @@ test('isAvailable returns false with invalid API key (no real API)', function ()
 });
 
 test('models returns list of known Anthropic models', function () {
-    $provider = new AnthropicProvider(apiKey: 'test');
+    $client = new MockHttpClient(fn() => throw new \RuntimeException('offline'));
+    $provider = new AnthropicProvider(apiKey: 'test', httpClient: $client);
     $models = $provider->models();
 
     expect($models)->toBeArray()
         ->and($models)->not->toBeEmpty()
-        ->and($models[0]->provider)->toBe('anthropic');
+        ->and($models[0]->provider)->toBe('anthropic')
+        ->and($models[0]->metadataSource)->toBe('static-fallback');
 });
 
 test('chat merges consecutive same-role messages with mixed content types', function () {
