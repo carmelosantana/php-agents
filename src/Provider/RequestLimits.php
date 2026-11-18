@@ -18,6 +18,8 @@ use CarmeloSantana\PHPAgents\Exception\ProviderException;
  *   no redirect is followed and request headers such as an API key never reach a host
  *   a 3xx names.
  *
+ * Any negative value throws \InvalidArgumentException.
+ *
  * The byte cap and the redirect count are enforced in an `on_progress` callback that
  * throws ProviderException. symfony/http-client wraps what that callback throws in its
  * own TransportException, so the caller sees a TransportExceptionInterface whose
@@ -32,7 +34,13 @@ final readonly class RequestLimits
         public float $maxDuration = 600.0,
         public int $maxResponseBytes = self::DEFAULT_MAX_RESPONSE_BYTES,
         public int $maxRedirects = 0,
-    ) {}
+    ) {
+        foreach (['idleTimeout' => $idleTimeout, 'maxDuration' => $maxDuration, 'maxResponseBytes' => $maxResponseBytes, 'maxRedirects' => $maxRedirects] as $name => $value) {
+            if ($value < 0) {
+                throw new \InvalidArgumentException(sprintf('RequestLimits $%s must not be negative, got %s.', $name, $value));
+            }
+        }
+    }
 
     /**
      * Returns $options with `timeout`, `max_duration`, `max_redirects` and `on_progress`

@@ -102,3 +102,18 @@ test('redirectRefused() wraps the redirection exception as a refusal', function 
         ->toBe(sprintf('Provider request refused: redirect not followed (%s)', $redirect->getMessage()))
         ->and($refused->getPrevious())->toBe($redirect);
 });
+
+test('a negative limit is refused', function (array $arguments) {
+    expect(fn() => new RequestLimits(...$arguments))->toThrow(InvalidArgumentException::class);
+})->with([
+    'idleTimeout' => [['idleTimeout' => -1.0]],
+    'maxDuration' => [['maxDuration' => -0.5]],
+    'maxResponseBytes' => [['maxResponseBytes' => -1]],
+    'maxRedirects' => [['maxRedirects' => -1]],
+]);
+
+test('zero limits are accepted', function () {
+    $limits = new RequestLimits(idleTimeout: 0.0, maxDuration: 0.0, maxResponseBytes: 0, maxRedirects: 0);
+
+    expect($limits->maxResponseBytes)->toBe(0);
+});
