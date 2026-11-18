@@ -78,6 +78,27 @@ test('a private address is never requested', function (string $url) {
     'ipv6 loopback' => 'http://[::1]/a.png',
 ]);
 
+test('an IPv6 address PHP calls global but that reaches a private network is refused', function (string $ip) {
+    $url = "http://[{$ip}]/a.png";
+    $result = geminiImageDownload($url, [$url => pngResponse()]);
+
+    expect($result['gets'])->toBe([])
+        ->and($result['part']['text'])->toContain('[Image: could not download');
+})->with([
+    'NAT64 well-known /96' => '64:ff9b::7f00:1',
+    'NAT64 local-use /48' => '64:ff9b:1::a9fe:a9fe',
+    'site-local fec0::/10' => 'fec0::1',
+    'multicast ff00::/8' => 'ff02::1',
+    'IPv4-translated ::ffff:0:0/96' => '::ffff:0:7f00:1',
+]);
+
+test('a public IPv6 address is still accepted by the deny-list', function () {
+    $url = 'http://[2606:4700::1111]/a.png';
+    $result = geminiImageDownload($url, [$url => pngResponse()]);
+
+    expect($result['gets'])->toBe([$url]);
+});
+
 test('localhost resolves to a refused address', function () {
     $result = geminiImageDownload('http://localhost/a.png', ['http://localhost/a.png' => pngResponse()]);
 

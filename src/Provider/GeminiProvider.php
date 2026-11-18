@@ -538,8 +538,9 @@ final class GeminiProvider extends AbstractProvider
      * Download an image URL and return a Gemini inlineData part.
      *
      * Each hop must be http(s) and its host must resolve only to global addresses
-     * (FILTER_FLAG_GLOBAL_RANGE), so loopback, private, link-local, CGNAT and other
-     * reserved ranges are never requested. The checked address is pinned with the
+     * (FILTER_FLAG_GLOBAL_RANGE, plus the IPv6 DENIED_IPV6_RANGES), so loopback, private,
+     * link-local, CGNAT, NAT64, site-local, multicast and other reserved ranges are never
+     * requested. The checked address is pinned with the
      * `resolve` option so the connection goes to that address. The client follows no
      * redirects; this method follows up to IMAGE_MAX_REDIRECTS 3xx hops itself and checks
      * each Location the same way. Every hop is limited to 10s idle, 30s total and 20 MiB.
@@ -638,12 +639,51 @@ final class GeminiProvider extends AbstractProvider
         }
 
         foreach ($addresses as $ip) {
-            if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_GLOBAL_RANGE) === false) {
+            if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_GLOBAL_RANGE) === false || self::inDeniedIpv6Range($ip)) {
                 return null;
             }
         }
 
         return [$host => $addresses[0]];
+    }
+
+    /**
+     * IPv6 ranges FILTER_FLAG_GLOBAL_RANGE accepts that can still reach a private or
+     * non-unicast address: NAT64 (/96 well-known, /48 local-use), deprecated site-local,
+     * multicast, IPv4-mapped (::ffff:0:0/96, also refused by PHP) and IPv4-translated
+     * (::ffff:0:0:0/96, RFC 2765).
+     */
+    private const array DENIED_IPV6_RANGES = [
+        ['64:ff9b::', 96],
+        ['64:ff9b:1::', 48],
+        ['fec0::', 10],
+        ['ff00::', 8],
+        ['::ffff:0:0', 96],
+        ['::ffff:0:0:0', 96],
+    ];
+
+    /** True when $ip is an IPv6 address inside one of DENIED_IPV6_RANGES. */
+    private static function inDeniedIpv6Range(string $ip): bool
+    {
+        $packed = @inet_pton($ip);
+        if ($packed === false || strlen($packed) !== 16) {
+            return false;
+        }
+
+        foreach (self::DENIED_IPV6_RANGES as [$prefix, $bits]) {
+            $range = (string) inet_pton($prefix);
+            $bytes = intdiv($bits, 8);
+            if (strncmp($packed, $range, $bytes) !== 0) {
+                continue;
+            }
+            $rest = $bits % 8;
+            $mask = $rest === 0 ? 0 : (0xFF << (8 - $rest)) & 0xFF;
+            if ($rest === 0 || (ord($packed[$bytes]) & $mask) === (ord($range[$bytes]) & $mask)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
