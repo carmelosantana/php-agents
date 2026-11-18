@@ -61,6 +61,7 @@ $provider = new LlamaCppProvider(
 
 - A `data:` URI (base64 only) is decoded and checked by an `ImagePolicy` (20 MiB and PNG, JPEG, GIF or WebP by default). An over-size URI is refused before it is decoded, and the MIME type sniffed from the bytes replaces the declared one.
 - A local path, `file://` URL or `http(s)://` URL is refused unless the host passes an `ImageResolverInterface`: `LocalImageResolver` reads only files under the roots it is given, and `RemoteImageResolver` downloads only from public addresses with time, size and redirect limits.
+- Every image a resolver returns is checked again against the normalizer's own `ImagePolicy`, even when the resolver has a policy of its own, and the MIME type sniffed from the bytes is the one sent.
 - The older `$remoteImageFetcher` callable still works for `http(s)://` when no resolver is set; it is trusted host code, and its bytes are policy checked.
 - Vision support and the image count are checked before any image is read.
 

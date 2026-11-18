@@ -6,17 +6,23 @@ namespace CarmeloSantana\PHPAgents\Image;
 
 /**
  * What image bytes are accepted: at most $maxBytes, and a MIME type sniffed from the
- * bytes (finfo) that is in $allowedMimeTypes.
+ * bytes (finfo) that is in $allowedMimeTypes. $maxBytes is at least 1.
  */
 final readonly class ImagePolicy
 {
     /**
      * @param list<string> $allowedMimeTypes
+     * @throws \InvalidArgumentException when $maxBytes is below 1.
      */
     public function __construct(
         public int $maxBytes = 20_971_520,
         public array $allowedMimeTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
-    ) {}
+    ) {
+        // 0 would reach RequestLimits as "no response cap" through RemoteImageResolver.
+        if ($maxBytes < 1) {
+            throw new \InvalidArgumentException('maxBytes must be at least 1.');
+        }
+    }
 
     /**
      * Returns the MIME type sniffed from $bytes. $declaredMime (a Content-Type header, a

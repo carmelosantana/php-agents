@@ -17,7 +17,9 @@ use CarmeloSantana\PHPAgents\Runtime\RuntimeModelMetadata;
  *
  * A `data:` URI is decoded and checked against the ImagePolicy. A path, `file://` or
  * `http(s)://` reference is refused unless the host configures an ImageResolverInterface
- * (or, for http(s), the legacy $remoteImageFetcher, whose bytes are policy checked too).
+ * (or, for http(s), the legacy $remoteImageFetcher). Every image is checked against this
+ * normalizer's ImagePolicy, whatever supplied it: resolver results too, even when the
+ * resolver has its own policy, and the MIME type sniffed from the bytes is the one used.
  * Vision support and the image count are checked before any image is read.
  */
 final class LlamaCppMultimodalNormalizer
@@ -147,7 +149,7 @@ final class LlamaCppMultimodalNormalizer
 
         if (preg_match('#^https?://#i', $url) === 1) {
             if ($this->imageResolver !== null) {
-                return $this->imageResolver->resolve($url);
+                return $this->checked($this->imageResolver->resolve($url));
             }
             if ($this->remoteImageFetcher !== null) {
                 $bytes = ($this->remoteImageFetcher)($url);
@@ -162,10 +164,16 @@ final class LlamaCppMultimodalNormalizer
         }
 
         if ($this->imageResolver !== null) {
-            return $this->imageResolver->resolve($url);
+            return $this->checked($this->imageResolver->resolve($url));
         }
 
         throw new ImageInputException('Local image paths are disabled; pass a data: URI or configure an ImageResolverInterface.');
+    }
+
+    /** A resolver's image re-checked against this normalizer's policy; the sniffed MIME type wins. */
+    private function checked(ResolvedImage $image): ResolvedImage
+    {
+        return new ResolvedImage($this->imagePolicy->check($image->bytes, $image->mimeType), $image->bytes);
     }
 
     private function decodeDataUri(string $url): ResolvedImage

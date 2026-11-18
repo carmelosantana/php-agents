@@ -206,3 +206,36 @@ test('a data uri with media type parameters is accepted', function () {
 
     expect($runtime->lastRequest()?->images[0]->bytes)->toBe(ImageFixtures::png());
 });
+
+test('resolver results are checked against the normalizer image policy', function (ImagePolicy $policy, string $message) {
+    $spy = llamaImageSpy();
+    $runtime = new FakeLocalModelRuntime();
+    $provider = llamaVisionProvider(
+        $runtime,
+        new LlamaCppMultimodalNormalizer(new LlamaCppProjectorResolver(), null, $spy, $policy),
+    );
+
+    foreach (['/srv/images/a.png', 'https://example.com/a.png'] as $reference) {
+        expect(fn() => $provider->chat([llamaImageMessage([$reference])]))
+            ->toThrow(ImageInputException::class, $message);
+    }
+    expect($runtime->lastRequest())->toBeNull();
+})->with([
+    'one byte' => [new ImagePolicy(maxBytes: 1), 'larger than 1 bytes'],
+    'jpeg only' => [new ImagePolicy(allowedMimeTypes: ['image/jpeg']), 'image/png is not allowed'],
+]);
+
+test('a resolver result is labelled with the mime type sniffed from its bytes', function () {
+    $liar = new class implements ImageResolverInterface {
+        public function resolve(string $reference): ResolvedImage
+        {
+            return new ResolvedImage('image/jpeg', ImageFixtures::png());
+        }
+    };
+    $runtime = new FakeLocalModelRuntime();
+    $provider = llamaVisionProvider($runtime, new LlamaCppMultimodalNormalizer(new LlamaCppProjectorResolver(), null, $liar));
+
+    $provider->chat([llamaImageMessage(['/srv/images/a.png'])]);
+
+    expect($runtime->lastRequest()?->images[0]->mimeType)->toBe('image/png');
+});
