@@ -377,7 +377,7 @@ Gemini uses `functionCall`/`functionResponse` parts within the Content format. T
 Gemini uses `inlineData` parts with base64-encoded image data. The provider automatically converts OpenAI-format `image_url` blocks:
 
 - **Base64 data URIs** are extracted and sent as `inlineData` with the correct MIME type
-- **URL images** are auto-downloaded and converted to base64 `inlineData` (Gemini doesn't support URL references natively)
+- **URL images** are auto-downloaded and converted to base64 `inlineData` (Gemini doesn't support URL references natively), only from public addresses and only when the answer is `image/*` (see [Gemini image URLs](#gemini-image-urls))
 
 ```php
 // Both formats work transparently:
@@ -580,6 +580,48 @@ The Claude SDK JSON output reports `usage.input_tokens`, `output_tokens`,
 `cache_read_input_tokens`, `cache_creation_input_tokens`, and `total_cost_usd`. The adapter folds the
 input + cache tokens into `Usage.promptTokens` so host-side budget tracking works the same as for
 HTTP providers.
+
+## Request Limits
+
+Every provider and embedding request carries a `RequestLimits` value object. `RequestLimits::apply()` turns it into per-request symfony/http-client options (`timeout`, `max_duration`, `max_redirects` and an `on_progress` byte check), so the limits hold even when the host injects its own HTTP client.
+
+| Limit | Default | Meaning |
+|-------|---------|---------|
+| `idleTimeout` | `300.0` | Seconds to wait between two chunks (`timeout`) |
+| `maxDuration` | `600.0` | Seconds for the whole request, stream included (`max_duration`); `0.0` means no total limit |
+| `maxResponseBytes` | `33_554_432` | Bytes of response body (32 MiB); `0` means no cap |
+| `maxRedirects` | `0` | Redirects followed; any caller `max_redirects` is replaced |
+
+Embedding providers (`OpenAIEmbeddingProvider`, `OllamaEmbeddingProvider`) use the same defaults with `idleTimeout` `60.0`. Some requests keep a shorter idle timeout of their own: `isAvailable()` waits 5 s, and `models()` on Anthropic and Gemini and Ollama's `/api/show` model lookup wait 10 s. Ollama `pull()` keeps the provider's idle timeout and refuses redirects, but has no total limit and no byte cap, because a model download can run far longer than 600 s.
+
+`withRequestLimits()` returns a copy with new limits, like `withModel()`; the original keeps its own. `requestLimits()` returns the current ones:
+
+```php
+use CarmeloSantana\PHPAgents\Provider\RequestLimits;
+
+$provider = $provider->withRequestLimits(new RequestLimits(maxDuration: 45.0));
+
+$provider->requestLimits()->maxDuration; // 45.0
+```
+
+A response over the byte cap is aborted with a `ProviderException` whose message contains `exceeded`. symfony/http-client wraps it in its own `TransportExceptionInterface`, so look for the `ProviderException` as the previous exception. `SseStreamParser` also caps a stream line that has no newline yet at 1_048_576 bytes.
+
+### No Redirects
+
+Providers follow no redirect. A base URL that answers 3xx, including a same-host `http://` to `https://` redirect, fails with `ProviderException` and the message `Provider request refused: redirect not followed (...)`, instead of re-sending the API key header and the conversation to the host the `Location` names. A streamed request refuses a 3xx before reading any data, and lets a 4xx or 5xx propagate unchanged so the API error body still reaches the agent. Embedding providers do not follow a 3xx either: `embedText()` reports it as `ProviderException::embeddingFailed()`, and `embedDocuments()` lets symfony/http-client's `RedirectionExceptionInterface` through. Point the base URL at the final address.
+
+### Gemini Image URLs
+
+`GeminiProvider` downloads `image_url` URLs on the server to send them as `inlineData`. The download:
+
+- accepts only `http` and `https` URLs;
+- resolves the host and refuses it unless every resolved address passes `FILTER_FLAG_GLOBAL_RANGE`, so loopback, private, link-local and reserved addresses (such as `127.0.0.1`, `10.0.0.5`, `169.254.169.254` and `::1`) are never fetched;
+- pins the checked address through the `resolve` option, so the connection goes to the address that was checked;
+- follows up to 3 redirects by hand, checking and pinning each hop again;
+- limits each hop to 10 s idle, 30 s total and 20 MiB (20_971_520 bytes), independent of `withRequestLimits()`;
+- keeps the image only when the answer is 2xx with an `image/*` content type.
+
+Any refusal or failure sends the existing `[Image: could not download …]` text part instead of the image.
 
 ## Shared Provider Utilities
 
