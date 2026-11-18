@@ -25,3 +25,10 @@ test('the Output section documents providerFinishReason', function () {
         ->and($doc)->toContain("'Provider paused the turn (pause_turn); server-tool continuation is not supported.'")
         ->and($doc)->toContain("| `MaxTokens` with no text | `AgentFinishReason::Error` with content `'Provider stopped at max_tokens before producing an answer; raise max_tokens in providerOptions.'`");
 });
+
+test('AGENTS.md says the first failure reason of a turn is sticky', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../docs/AGENTS.md');
+
+    expect($doc)->not->toContain("The run's accumulated reason is the last chunk reason that is not `Stop`;")
+        ->and($doc)->toContain('The first failure reason a chunk carries (`Error`, `Refusal`, `ContentFilter`, `ContextWindowExceeded`, `PauseTurn` or `MaxTokens`) is the turn\'s reason: no later chunk changes it to `ToolUse` or `Stop`, and every tool call of the turn is dropped.');
+});
