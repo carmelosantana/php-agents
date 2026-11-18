@@ -109,7 +109,7 @@ function summaryPayload(Output $output, string $model): array
         'summary' => $output->content,
         'model' => $output->model ?: $model,
         'iterations' => $output->iterations,
-        'tokens' => $output->usage?->totalTokens ?? 0,
+        'tokens' => $output->usage->totalTokens ?? 0,
         'finish_reason' => $output->finishReason->value,
         'tools_used' => array_map(
             fn($r) => ['id' => $r->callId, 'status' => $r->status->value],
