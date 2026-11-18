@@ -1176,18 +1176,13 @@ abstract class AbstractAgent implements AgentInterface
      */
     private function doneArgumentsError(ToolCall $toolCall): ?ToolResult
     {
-        $declared = array_map(
-            static fn(Parameter $param): string => $param->name,
-            DoneTool::create()->parameters(),
+        $unknownError = UnknownKeys::error(
+            $toolCall->arguments,
+            array_values(array_map(static fn(Parameter $param): string => $param->name, DoneTool::create()->parameters())),
         );
-        $unknown = array_diff(array_map('strval', array_keys($toolCall->arguments)), $declared);
 
-        if ($unknown !== []) {
-            return ToolResult::error(sprintf(
-                'Unknown parameters: %s. Allowed: %s.',
-                UnknownKeys::format($unknown),
-                UnknownKeys::format($declared),
-            ))->withCallId($toolCall->id);
+        if ($unknownError !== null) {
+            return ToolResult::error($unknownError)->withCallId($toolCall->id);
         }
 
         if (!is_string($toolCall->arguments['response'] ?? null)) {

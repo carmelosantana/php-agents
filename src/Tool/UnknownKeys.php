@@ -16,6 +16,27 @@ final class UnknownKeys
     private const MAX_NAME_LENGTH = 64;
 
     /**
+     * The error for top-level arguments a schema does not declare, or null when every key is declared.
+     *
+     * @param array<int|string, mixed> $input
+     * @param list<string> $declared
+     */
+    public static function error(array $input, array $declared): ?string
+    {
+        $unknown = array_diff(array_map('strval', array_keys($input)), $declared);
+
+        if ($unknown === []) {
+            return null;
+        }
+
+        return sprintf(
+            'Unknown parameters: %s. Allowed: %s.',
+            self::format($unknown),
+            $declared === [] ? 'none' : self::format($declared),
+        );
+    }
+
+    /**
      * @param array<int|string> $names
      */
     public static function format(array $names): string

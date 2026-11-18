@@ -40,15 +40,13 @@ final class Tool implements ToolInterface
     {
         // Reject arguments the published schema does not declare
         // (`additionalProperties: false`) before any validation or callback.
-        $declared = array_map(static fn(Parameter $param): string => $param->name, $this->parameters);
-        $unknown = array_diff(array_map('strval', array_keys($input)), $declared);
+        $unknownError = UnknownKeys::error(
+            $input,
+            array_values(array_map(static fn(Parameter $param): string => $param->name, $this->parameters)),
+        );
 
-        if ($unknown !== []) {
-            return ToolResult::error(sprintf(
-                'Unknown parameters: %s. Allowed: %s.',
-                UnknownKeys::format($unknown),
-                $declared === [] ? 'none' : UnknownKeys::format($declared),
-            ));
+        if ($unknownError !== null) {
+            return ToolResult::error($unknownError);
         }
 
         // Validate required parameters before executing
