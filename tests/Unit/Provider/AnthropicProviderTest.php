@@ -512,7 +512,74 @@ dataset('anthropic schemas native structured outputs cannot represent', [
         '{"type":"object","properties":{"list":{"type":"array","items":true}}}',
     ],
     'non-array envelope schema' => ['{"schema":"x"}', '"x"'],
+    'self-recursive definition' => [
+        '{"type":"object","properties":{"root":{"$ref":"#/$defs/Node"}},"additionalProperties":false,"$defs":{"Node":{"type":"object","properties":{"children":{"type":"array","items":{"$ref":"#/$defs/Node"}}},"additionalProperties":false}}}',
+        '{"type":"object","properties":{"root":{"$ref":"#\/$defs\/Node"}},"additionalProperties":false,"$defs":{"Node":{"type":"object","properties":{"children":{"type":"array","items":{"$ref":"#\/$defs\/Node"}}},"additionalProperties":false}}}',
+    ],
+    'mutually recursive definitions' => [
+        '{"type":"object","properties":{"a":{"$ref":"#/definitions/A"}},"definitions":{"A":{"type":"object","properties":{"b":{"$ref":"#/$defs/B"}}}},"$defs":{"B":{"anyOf":[{"type":"null"},{"$ref":"#/definitions/A"}]}}}',
+        '{"type":"object","properties":{"a":{"$ref":"#\/definitions\/A"}},"definitions":{"A":{"type":"object","properties":{"b":{"$ref":"#\/$defs\/B"}}}},"$defs":{"B":{"anyOf":[{"type":"null"},{"$ref":"#\/definitions\/A"}]}}}',
+    ],
+    'root recursion' => [
+        '{"type":"object","properties":{"next":{"$ref":"#"}}}',
+        '{"type":"object","properties":{"next":{"$ref":"#"}}}',
+    ],
+    'external ref' => [
+        '{"type":"object","properties":{"a":{"$ref":"https://example.test/schema.json"}}}',
+        '{"type":"object","properties":{"a":{"$ref":"https:\/\/example.test\/schema.json"}}}',
+    ],
+    'unknown definition' => [
+        '{"type":"object","properties":{"a":{"$ref":"#/$defs/Missing"}},"$defs":{"Other":{"type":"string"}}}',
+        '{"type":"object","properties":{"a":{"$ref":"#\/$defs\/Missing"}},"$defs":{"Other":{"type":"string"}}}',
+    ],
+    'pointer below a definition' => [
+        '{"type":"object","properties":{"a":{"$ref":"#/$defs/T/properties/x"}},"$defs":{"T":{"type":"object","properties":{"x":{"type":"string"}}}}}',
+        '{"type":"object","properties":{"a":{"$ref":"#\/$defs\/T\/properties\/x"}},"$defs":{"T":{"type":"object","properties":{"x":{"type":"string"}}}}}',
+    ],
+    'ref that is not a string' => [
+        '{"type":"object","properties":{"a":{"$ref":5}}}',
+        '{"type":"object","properties":{"a":{"$ref":5}}}',
+    ],
+    'unwalked keyword not' => [
+        '{"type":"object","properties":{"a":{"type":"string","not":{"const":"x"}}}}',
+        '{"type":"object","properties":{"a":{"type":"string","not":{"const":"x"}}}}',
+    ],
 ]);
+
+test('structured treats every unwalked keyword as not representable', function (string $keyword) {
+    $payload = null;
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
+        'content' => [['type' => 'text', 'text' => '{}']],
+    ]));
+    $schema = json_encode(['type' => 'object', 'properties' => ['a' => ['type' => 'string', $keyword => ['type' => 'object']]], 'additionalProperties' => false]);
+
+    $provider->structured([new UserMessage('hi')], $schema);
+
+    expect($payload)->not->toHaveKey('output_config')
+        ->and(anthropicLastUserText($payload))->toStartWith(ANTHROPIC_STRUCTURED_INSTRUCTION);
+})->with(['not', 'if', 'then', 'else', 'dependentSchemas', 'patternProperties', 'contains', 'propertyNames', 'unevaluatedProperties']);
+
+test('structured keeps the native path for non-recursive refs between definitions', function () {
+    $payload = null;
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
+        'content' => [['type' => 'text', 'text' => '{}']],
+    ]));
+    $schema = json_encode([
+        'type' => 'object',
+        'properties' => ['a' => ['$ref' => '#/$defs/Outer'], 'b' => ['$ref' => '#/$defs/Inner'], 'c' => ['$ref' => '#/definitions/Leaf']],
+        'additionalProperties' => false,
+        '$defs' => [
+            'Outer' => ['type' => 'object', 'properties' => ['inner' => ['$ref' => '#/$defs/Inner'], 'leaf' => ['$ref' => '#/definitions/Leaf']], 'additionalProperties' => false],
+            'Inner' => ['type' => 'array', 'items' => ['$ref' => '#/definitions/Leaf']],
+        ],
+        'definitions' => ['Leaf' => ['type' => 'string']],
+    ]);
+
+    $provider->structured([new UserMessage('hi')], $schema);
+
+    expect($payload['output_config']['format']['schema']['properties']['a'])->toBe(['$ref' => '#/$defs/Outer'])
+        ->and($payload['output_config']['format']['schema']['$defs']['Inner']['items'])->toBe(['$ref' => '#/definitions/Leaf']);
+});
 
 test('structured falls back to a JSON instruction when the schema is not representable', function (string $schema, string $encodedSchema) {
     $payload = null;

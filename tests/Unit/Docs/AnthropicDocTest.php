@@ -86,3 +86,17 @@ test('the Anthropic structured output section describes the schema preparation a
         ->and($section)->toContain('`Respond with only a JSON value that matches this JSON Schema, with no other text:`')
         ->and($section)->not->toContain('nullable');
 });
+
+test('the Anthropic structured output section lists recursive refs and the unwalked keywords as fallbacks', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../docs/PROVIDERS.md');
+    $anthropic = substr($doc, (int) strpos($doc, '## AnthropicProvider'));
+    $start = (int) strpos($anthropic, '### Structured Output');
+    $section = substr($anthropic, $start, (int) strpos($anthropic, '### Model List') - $start);
+    $unwalked = (new ReflectionClassConstant(AnthropicProvider::class, 'UNWALKED_SCHEMA_KEYWORDS'))->getValue();
+    $keywords = array_map(fn(string $k): string => '`' . $k . '`', $unwalked);
+    $last = array_pop($keywords);
+
+    expect($section)->toContain('a recursive schema (a `$ref` cycle between definitions, including a definition that refers to itself)')
+        ->and($section)->toContain('a `$ref` that is not a local `#/$defs/...` or `#/definitions/...` pointer to an existing definition')
+        ->and($section)->toContain('a schema that uses ' . implode(', ', $keywords) . ' or ' . $last);
+});

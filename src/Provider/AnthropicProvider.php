@@ -28,6 +28,9 @@ final class AnthropicProvider extends AbstractProvider
     /** Keywords whose value is a schema, a map of schemas or a list of schemas. */
     private const SCHEMA_KEYWORDS = ['properties', '$defs', 'definitions', 'items', 'prefixItems', 'anyOf', 'allOf', 'oneOf'];
 
+    /** Keywords whose value is a schema the preparer does not walk; a schema using one is not representable. */
+    private const UNWALKED_SCHEMA_KEYWORDS = ['not', 'if', 'then', 'else', 'dependentSchemas', 'patternProperties', 'contains', 'propertyNames', 'unevaluatedProperties'];
+
     private string $apiVersion = '2023-06-01';
 
     public function __construct(
@@ -381,7 +384,9 @@ final class AnthropicProvider extends AbstractProvider
             $root->type = 'object';
         }
 
-        $prepared = $this->prepareAnthropicSchema($root);
+        $prepared = $root instanceof \stdClass && $this->hasRepresentableRefs($root)
+            ? $this->prepareAnthropicSchema($root)
+            : null;
         if ($prepared === null) {
             return $this->structuredWithoutNativeSchema($messages, $outputSchema, $outputConfig, $options);
         }
@@ -468,6 +473,10 @@ final class AnthropicProvider extends AbstractProvider
 
         $prepared = new \stdClass();
         foreach (get_object_vars($node) as $key => $value) {
+            if (in_array($key, self::UNWALKED_SCHEMA_KEYWORDS, true)) {
+                return null;
+            }
+
             if (in_array($key, self::UNSUPPORTED_SCHEMA_KEYWORDS, true)) {
                 continue;
             }
@@ -506,6 +515,108 @@ final class AnthropicProvider extends AbstractProvider
         }
 
         return $prepared;
+    }
+
+    /**
+     * Whether every `$ref` in the schema is a local `#/$defs/X` or
+     * `#/definitions/X` pointer to an existing definition and the definitions
+     * reference each other without a cycle. Anthropic rejects recursive
+     * schemas, so a self-reference or a mutual one is not representable.
+     */
+    private function hasRepresentableRefs(\stdClass $root): bool
+    {
+        /** @var array<string, mixed> $definitions Definition key ("$defs/X" or "definitions/X") to schema */
+        $definitions = [];
+        foreach (['$defs', 'definitions'] as $keyword) {
+            if (isset($root->{$keyword}) && $root->{$keyword} instanceof \stdClass) {
+                foreach (get_object_vars($root->{$keyword}) as $name => $schema) {
+                    $definitions[$keyword . '/' . $name] = $schema;
+                }
+            }
+        }
+
+        /** @var array<string, list<string>> $edges */
+        $edges = [];
+        foreach ($definitions as $key => $schema) {
+            $refs = $this->collectRefs($schema);
+            if ($refs === null) {
+                return false;
+            }
+            $edges[$key] = $refs;
+        }
+
+        $rootRefs = $this->collectRefs($root);
+        if ($rootRefs === null) {
+            return false;
+        }
+
+        foreach ([...$rootRefs, ...array_merge(...array_values($edges))] as $target) {
+            if (!array_key_exists($target, $definitions)) {
+                return false;
+            }
+        }
+
+        // Depth-first search: a definition met again while still on the path is a cycle.
+        /** @var array<string, 'visiting'|'done'> $state */
+        $state = [];
+        $visit = function (string $key) use (&$visit, &$state, $edges): bool {
+            if (($state[$key] ?? null) === 'done') {
+                return true;
+            }
+            if (($state[$key] ?? null) === 'visiting') {
+                return false;
+            }
+            $state[$key] = 'visiting';
+            foreach ($edges[$key] as $target) {
+                if (!$visit($target)) {
+                    return false;
+                }
+            }
+            $state[$key] = 'done';
+
+            return true;
+        };
+
+        foreach (array_keys($edges) as $key) {
+            if (!$visit($key)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Every `$ref` under a node, as a definition key ("$defs/X" or
+     * "definitions/X"). Null when a `$ref` is not a local pointer to a
+     * top-level definition, such as `#`, an external URL or a deeper path.
+     *
+     * @return list<string>|null
+     */
+    private function collectRefs(mixed $node): ?array
+    {
+        if (!$node instanceof \stdClass && !is_array($node)) {
+            return [];
+        }
+
+        $refs = [];
+        foreach ($node instanceof \stdClass ? get_object_vars($node) : $node as $key => $value) {
+            if ($key === '$ref' && $node instanceof \stdClass && !$value instanceof \stdClass) {
+                if (!is_string($value) || preg_match('@^#/(\$defs|definitions)/([^/~%]+)$@D', $value, $match) !== 1) {
+                    return null;
+                }
+                $refs[] = $match[1] . '/' . $match[2];
+                continue;
+            }
+
+            $nested = $this->collectRefs($value);
+            if ($nested === null) {
+                return null;
+            }
+            $refs = [...$refs, ...$nested];
+        }
+
+        return $refs;
     }
 
     /**
