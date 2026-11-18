@@ -55,6 +55,14 @@ final class GeminiProvider extends AbstractProvider
         'dependentRequired',
     ];
 
+    /**
+     * Test seam for the image guard's DNS lookup: host name to its addresses. Null uses
+     * lookupHostAddresses(). Private and set only by reflection in tests; not public API.
+     *
+     * @var (\Closure(string): list<string>)|null
+     */
+    private ?\Closure $hostResolver = null;
+
     public function __construct(
         string $model = 'gemini-2.5-flash',
         string $baseUrl = 'https://generativelanguage.googleapis.com/v1beta',
@@ -692,8 +700,8 @@ final class GeminiProvider extends AbstractProvider
     }
 
     /**
-     * Returns the host itself when it is an IP literal, otherwise its A records
-     * (gethostbynamel) followed by its AAAA records (dns_get_record). Empty when nothing
+     * Returns the host itself when it is an IP literal, otherwise the addresses
+     * $hostResolver (by default lookupHostAddresses()) gives for it. Empty when nothing
      * resolves.
      *
      * @return list<string>
@@ -704,6 +712,17 @@ final class GeminiProvider extends AbstractProvider
             return [$host];
         }
 
+        return ($this->hostResolver ?? $this->lookupHostAddresses(...))($host);
+    }
+
+    /**
+     * The host name's A records (gethostbynamel) followed by its AAAA records
+     * (dns_get_record). Empty when nothing resolves.
+     *
+     * @return list<string>
+     */
+    private function lookupHostAddresses(string $host): array
+    {
         $addresses = gethostbynamel($host) ?: [];
 
         $aaaa = @dns_get_record($host, DNS_AAAA);

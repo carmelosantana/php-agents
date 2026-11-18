@@ -12,12 +12,14 @@ use Symfony\Component\HttpClient\Response\MockResponse;
  * only answers generateContent and fails the test on any GET; image GETs go to a separate
  * MockHttpClient injected as imageHttpClient. $images maps a GET URL to the MockResponse it
  * answers with; any other GET answers 404. Returns the GET URLs asked for, their options,
- * and the image part of the generateContent body.
+ * and the image part of the generateContent body. $hostResolver, when given, replaces the
+ * provider's DNS lookup (private property, set by reflection) so host names need no real DNS.
  *
  * @param array<string, MockResponse> $images
+ * @param (\Closure(string): list<string>)|null $hostResolver
  * @return array{gets: list<string>, options: list<array<string, mixed>>, part: array<string, mixed>}
  */
-function geminiImageDownload(string $imageUrl, array $images = []): array
+function geminiImageDownload(string $imageUrl, array $images = [], ?\Closure $hostResolver = null): array
 {
     $gets = [];
     $getOptions = [];
@@ -46,6 +48,9 @@ function geminiImageDownload(string $imageUrl, array $images = []): array
     });
 
     $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $apiClient, imageHttpClient: $imageClient);
+    if ($hostResolver !== null) {
+        (new ReflectionProperty(GeminiProvider::class, 'hostResolver'))->setValue($provider, $hostResolver);
+    }
     $provider->chat([
         new UserMessage([
             ['type' => 'image_url', 'image_url' => ['url' => $imageUrl]],
@@ -129,6 +134,48 @@ test('an IPv4-literal host sends no resolve pin and no redirect budget', functio
 
     expect($result['options'][0]['resolve'] ?? [])->toBe([])
         ->and($result['options'][0]['max_redirects'])->toBe(0);
+});
+
+test('a host name is pinned to the address it resolved to', function () {
+    $result = geminiImageDownload(
+        'https://img.test/a.png',
+        ['https://img.test/a.png' => geminiImagePngResponse()],
+        fn(string $host): array => $host === 'img.test' ? ['93.184.216.34'] : [],
+    );
+
+    expect($result['gets'])->toBe(['https://img.test/a.png'])
+        ->and($result['options'][0]['resolve'])->toBe(['img.test' => '93.184.216.34'])
+        ->and($result['part'])->toHaveKey('inlineData');
+});
+
+test('a redirect to another host name is pinned to that host\'s address', function () {
+    $result = geminiImageDownload(
+        'https://img.test/a.png',
+        [
+            'https://img.test/a.png' => geminiImageRedirectTo('https://cdn.test/b.png'),
+            'https://cdn.test/b.png' => geminiImagePngResponse(),
+        ],
+        fn(string $host): array => match ($host) {
+            'img.test' => ['93.184.216.34'],
+            'cdn.test' => ['93.184.216.35'],
+            default => [],
+        },
+    );
+
+    expect($result['gets'])->toBe(['https://img.test/a.png', 'https://cdn.test/b.png'])
+        ->and($result['options'][1]['resolve'])->toBe(['cdn.test' => '93.184.216.35'])
+        ->and($result['part'])->toHaveKey('inlineData');
+});
+
+test('a host name that resolves to a private address is never requested', function () {
+    $result = geminiImageDownload(
+        'https://img.test/a.png',
+        ['https://img.test/a.png' => geminiImagePngResponse()],
+        fn(string $host): array => ['10.0.0.1'],
+    );
+
+    expect($result['gets'])->toBe([])
+        ->and($result['part']['text'])->toContain('[Image: could not download');
 });
 
 test('a non-image content type is refused', function () {
