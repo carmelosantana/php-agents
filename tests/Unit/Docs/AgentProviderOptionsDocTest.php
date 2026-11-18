@@ -10,10 +10,10 @@ use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
 test('the constructor table and example document providerOptions', function () {
     $doc = (string) file_get_contents(__DIR__ . '/../../../docs/AGENTS.md');
     $parameters = (new ReflectionMethod(AbstractAgent::class, '__construct'))->getParameters();
-    $last = $parameters[array_key_last($parameters)];
+    $byName = array_column(array_map(fn(ReflectionParameter $p) => [$p->getName(), $p], $parameters), 1, 0);
 
-    expect($last->getName())->toBe('providerOptions')
-        ->and($last->getDefaultValue())->toBe([])
+    expect($byName)->toHaveKey('providerOptions')
+        ->and($byName['providerOptions']->getDefaultValue())->toBe([])
         ->and($doc)->toContain('| `providerOptions` | `array` | `[]` |')
         ->and($doc)->toContain("providerOptions: ['max_tokens' => 8192]");
 });

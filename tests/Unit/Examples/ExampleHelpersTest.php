@@ -17,17 +17,23 @@ require_once __DIR__ . '/../../../examples/helpers.php';
 // The examples are local demos, but they still handle model output and request input.
 // These pin the helpers that keep that handling safe.
 
-test('the README tool takes no parameters and reads only README.md, whatever it is sent', function () {
+test('the README tool takes no parameters and reads only README.md', function () {
     $readme = dirname(__DIR__, 3) . '/README.md';
     $tool = readmeTool($readme);
 
     expect($tool->parameters())->toBe([]);
 
-    foreach ([[], ['path' => '/etc/passwd'], ['path' => '../../.env', 'file' => 'composer.json']] as $input) {
+    $result = $tool->execute([]);
+    expect($result->status)->toBe(ToolResultStatus::Success)
+        ->and($result->content)->toBe(file_get_contents($readme));
+
+    // A path the model sends is an undeclared argument: refused before the tool runs.
+    foreach ([['path' => '/etc/passwd'], ['path' => '../../.env', 'file' => 'composer.json']] as $input) {
         $result = $tool->execute($input);
 
-        expect($result->status)->toBe(ToolResultStatus::Success)
-            ->and($result->content)->toBe(file_get_contents($readme));
+        expect($result->status)->toBe(ToolResultStatus::Error)
+            ->and($result->content)->toStartWith('Unknown parameters: ')
+            ->and($result->content)->not->toContain('root:');
     }
 });
 

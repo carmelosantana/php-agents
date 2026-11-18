@@ -22,3 +22,12 @@ test('the MCP section documents the contract names', function () {
         expect($doc)->toContain($name);
     }
 });
+
+test('the policy section says the policy authorizes done and is not output moderation', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../docs/TOOLS-AND-TOOLKITS.md');
+
+    expect($doc)->toContain('The policy also sees the built-in `done` call')
+        ->and($doc)->toContain('Only one done call is allowed per response.')
+        ->and($doc)->toContain('Parameter "response" must be a string.')
+        ->and($doc)->toContain('not output moderation');
+});

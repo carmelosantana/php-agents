@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Tool\Parameter;
 
+use CarmeloSantana\PHPAgents\Tool\UnknownKeys;
+
 final readonly class ObjectParameter extends Parameter
 {
     /**
@@ -30,12 +32,19 @@ final readonly class ObjectParameter extends Parameter
             }
         }
 
-        return [
+        $schema = [
             'type' => 'object',
             'description' => $this->description,
             'properties' => $props,
             'required' => $required,
         ];
+
+        // With no declared properties this stays a free-form object.
+        if ($this->properties !== []) {
+            $schema['additionalProperties'] = false;
+        }
+
+        return $schema;
     }
 
     public function validate(mixed $value): ValidationResult
@@ -54,6 +63,25 @@ final readonly class ObjectParameter extends Parameter
 
         if (!is_array($value)) {
             return ValidationResult::failure(sprintf('Parameter "%s" must be an object.', $this->name));
+        }
+
+        // A JSON array (or `{"0":…}`, which decodes the same) is not an object. `{}`
+        // decodes to [], so the empty list stays accepted.
+        if ($this->properties !== [] && $value !== [] && array_is_list($value)) {
+            return ValidationResult::failure(sprintf('Parameter "%s" must be an object.', $this->name));
+        }
+
+        if ($this->properties !== []) {
+            $declared = array_map(static fn(Parameter $param): string => $param->name, $this->properties);
+            $unknown = array_diff(array_map('strval', array_keys($value)), $declared);
+
+            if ($unknown !== []) {
+                return ValidationResult::failure(sprintf(
+                    'Parameter "%s" has unknown properties: %s.',
+                    $this->name,
+                    UnknownKeys::format($unknown),
+                ));
+            }
         }
 
         $validated = $value;

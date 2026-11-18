@@ -43,6 +43,9 @@ interface ContextWindowInterface
 
     /**
      * Update usage with server-reported actual tokens.
+     *
+     * The figure comes from the provider, so implementations should not let a lower reported
+     * figure replace a higher local estimate.
      */
     public function report(Usage $usage): void;
 

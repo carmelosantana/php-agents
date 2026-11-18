@@ -9,6 +9,7 @@ use CarmeloSantana\PHPAgents\Mcp\Internal\HttpExchange;
 use CarmeloSantana\PHPAgents\Mcp\Internal\HttpReply;
 use CarmeloSantana\PHPAgents\Mcp\Internal\ParamHeaders;
 use CarmeloSantana\PHPAgents\Mcp\Internal\ResultMapper;
+use CarmeloSantana\PHPAgents\Security\UntrustedText;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
@@ -62,6 +63,12 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * `notifications/initialized`, from initialize(), and the `tools/list` and `tools/call` that
  * listTools() and callTool() hand to call(). Each goes out through HttpExchange::post(),
  * which is how this class reaches the network.
+ *
+ * redact() covers results too, not only exception messages: callTool() hands ResultMapper a
+ * closure that runs redact() (every configured header value and every session id held) and
+ * then UntrustedText::redactSecrets() (credential-shaped strings) over every content part,
+ * before the cap, and over every string key and value in `metadata['mcp']`. An opaque
+ * credential that is neither configured here nor matches a pattern is not removed.
  *
  * @see HttpExchange for the request it makes, its limits and its status mapping
  * @see ResultMapper for how a tools/call result becomes a ToolResult
@@ -160,7 +167,11 @@ final class McpClient implements McpClientInterface
             $result = $this->call('tools/call', $params, $name, $arguments);
             $type = $result['resultType'] ?? 'complete';
             if ($type === 'complete') {
-                return ResultMapper::toToolResult($result, $this->server->maxResultBytes);
+                return ResultMapper::toToolResult(
+                    $result,
+                    $this->server->maxResultBytes,
+                    fn(string $text): string => UntrustedText::redactSecrets($this->redact($text)),
+                );
             }
             if ($type !== 'input_required') {
                 throw new McpProtocolException('MCP tools/call returned an unknown resultType.');

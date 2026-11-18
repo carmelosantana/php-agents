@@ -13,6 +13,7 @@ use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\PendingInputProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\TickCallbackInterface;
+use CarmeloSantana\PHPAgents\Contract\ToolGrantInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolExecutorInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
@@ -21,6 +22,7 @@ use CarmeloSantana\PHPAgents\Enum\AgentFinishReason;
 use CarmeloSantana\PHPAgents\Enum\EmptyResponseHandling;
 use CarmeloSantana\PHPAgents\Enum\ModelCapability;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Enum\ToolResultStatus;
 use CarmeloSantana\PHPAgents\Exception\TerminationException;
 use CarmeloSantana\PHPAgents\Exception\ToolNotFoundException;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
@@ -31,10 +33,14 @@ use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Prompt\SystemPrompt;
 use CarmeloSantana\PHPAgents\Provider\Response;
 use CarmeloSantana\PHPAgents\Provider\Usage;
+use CarmeloSantana\PHPAgents\Security\UntrustedText;
 use CarmeloSantana\PHPAgents\Tool\DoneTool;
+use CarmeloSantana\PHPAgents\Tool\Parameter\Parameter;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
+use CarmeloSantana\PHPAgents\Tool\UnknownKeys;
 use SplObserver;
+use Symfony\Component\HttpClient\Response\StreamableInterface;
 use Symfony\Contracts\HttpClient\Exception\ClientExceptionInterface;
 
 abstract class AbstractAgent implements AgentInterface
@@ -44,6 +50,25 @@ abstract class AbstractAgent implements AgentInterface
      * Use 0 to indicate unlimited iterations (maps to PHP_INT_MAX internally).
      */
     public const int DEFAULT_MAX_ITERATIONS = 25;
+
+    /** Characters of a provider exception message, and of an API error message, that reach Output and agent.error. */
+    private const int PROVIDER_ERROR_MAX_CHARS = 300;
+
+    /** Bytes of a provider's HTTP error body read before decoding it. */
+    private const int PROVIDER_ERROR_BODY_MAX_BYTES = 65536;
+
+    /** Characters of error tool-result text that reach the conversation, Output and events. */
+    private const int TOOL_ERROR_MAX_CHARS = 500;
+
+    private const int ERROR_CODE_MAX_CHARS = 64;
+
+    private const string RUN_TIME_LIMIT_REACHED = 'Run time limit reached.';
+
+    private const string RESPONSE_SIZE_LIMIT_REACHED = 'Response size limit reached.';
+
+    private const string TOKEN_LIMIT_REACHED = 'Token limit reached.';
+
+    private const string INPUT_TOO_LARGE = 'Input is too large.';
 
     /** @var SplObserver[] */
     private array $observers = [];
@@ -62,6 +87,8 @@ abstract class AbstractAgent implements AgentInterface
 
     private readonly TickCallbackInterface $tickCallback;
 
+    private readonly RunLimits $runLimits;
+
     public function setMaxTools(int $max): void
     {
         $this->maxTools = $max;
@@ -70,6 +97,8 @@ abstract class AbstractAgent implements AgentInterface
     /**
      * @param array<string, mixed> $providerOptions Provider-specific request options (e.g. max_tokens,
      *                                              thinking) sent with every stream() call in the loop.
+     * @param ?RunLimits $runLimits Tool-call caps and the execution boundary for each run();
+     *                              null means new RunLimits() (no caps, advertised tools only).
      */
     public function __construct(
         private readonly ProviderInterface $provider,
@@ -87,9 +116,11 @@ abstract class AbstractAgent implements AgentInterface
         private readonly EmptyResponseHandling $emptyResponseHandling = EmptyResponseHandling::Nudge,
         private readonly int $maxEmptyResponseRetries = 2,
         private readonly array $providerOptions = [],
+        ?RunLimits $runLimits = null,
     ) {
         $this->toolExecutor = $toolExecutor ?? new SynchronousToolExecutor();
         $this->tickCallback = $tickCallback ?? new NullTickCallback();
+        $this->runLimits = $runLimits ?? new RunLimits();
     }
 
     abstract public function instructions(): string;
@@ -137,15 +168,28 @@ abstract class AbstractAgent implements AgentInterface
 
     public function run(MessageInterface $input, ?Conversation $history = null): Output
     {
+        $runStartedNs = (float) hrtime(true);
         $this->notify('agent.start', $input);
 
         // Advertised tools are capped by maxTools and sent to the provider.
-        // Executable tools are the full uncapped set — used by findTool() so
-        // that tools discovered via tool_search can still be executed even
-        // when not in the provider's tool schema payload.
-        // executableToolIndex is name-keyed for O(1) lookup in findTool().
+        // Only they are executable, plus any tool a ToolGrantInterface tool
+        // grants during this run (added to executableToolIndex from the full
+        // index). RunLimits::executeUnadvertisedTools makes the full index
+        // executable instead. Both indexes are name-keyed and local to this
+        // run, so grants never outlive it.
         $advertisedTools = $this->allTools();
-        $executableToolIndex = $this->collectAllToolsIndexed();
+        $fullToolIndex = $this->collectAllToolsIndexed();
+        $executableToolIndex = $this->runLimits->executeUnadvertisedTools
+            ? $fullToolIndex
+            : array_combine(
+                array_map(fn(ToolInterface $tool): string => $tool->name(), $advertisedTools),
+                $advertisedTools,
+            );
+        $runToolCalls = 0;
+        $toolSchemaTokens = $this->toolSchemaTokens($advertisedTools);
+        // Provider-independent RunLimits totals: bytes received and local token estimates.
+        $runResponseBytes = 0;
+        $spentTokens = 0;
         $systemPrompt = $this->buildSystemPrompt($advertisedTools);
 
         $conversation = new Conversation();
@@ -191,6 +235,10 @@ abstract class AbstractAgent implements AgentInterface
         // (usagePercent, isWarning, isCritical) is accurate from iteration 1.
         $this->contextWindow?->estimate($conversation->estimateTokens());
 
+        if ($this->inputTooLarge($input)) {
+            return $this->runLimitOutput(self::INPUT_TOO_LARGE, $conversation, $allToolResults, $totalUsage, 0);
+        }
+
         for ($i = 0; $i < $effectiveMax; $i++) {
             // Apply context window pruning when a budget is configured.
             // Use the full input window (maxTokens - reservedTokens) as the
@@ -225,6 +273,10 @@ abstract class AbstractAgent implements AgentInterface
                 );
             }
 
+            if ($this->runTimeExceeded($runStartedNs)) {
+                return $this->runLimitOutput(self::RUN_TIME_LIMIT_REACHED, $conversation, $allToolResults, $totalUsage, $i + 1);
+            }
+
             // Budget wrap-up countdown: after the threshold fires, the agent
             // gets budgetExitWrapUpIterations to call done(). If it doesn't,
             // force-exit here at the top of the next iteration.
@@ -245,13 +297,30 @@ abstract class AbstractAgent implements AgentInterface
             }
 
             // Inject any pending external input into the conversation
+            // Each pending input is new input too, measured against maxInputTokens.
             if ($this->pendingInputProvider !== null) {
                 foreach ($this->pendingInputProvider->consumePendingInputs() as $pendingInput) {
+                    if ($this->inputTooLarge($pendingInput)) {
+                        return $this->runLimitOutput(self::INPUT_TOO_LARGE, $conversation, $allToolResults, $totalUsage, $i + 1);
+                    }
                     $conversation->add($pendingInput);
                 }
             }
 
             $this->notify('agent.iteration', $i + 1);
+
+            // Local request estimate: the conversation plus the tool schemas sent with it.
+            // It never depends on what the provider reports.
+            $requestTokens = $conversation->estimateTokens() + $toolSchemaTokens;
+            $maxTokens = $this->runLimits->maxEstimatedTokens;
+            if ($maxTokens > 0 && $spentTokens + $requestTokens > $maxTokens) {
+                return $this->runLimitOutput(self::TOKEN_LIMIT_REACHED, $conversation, $allToolResults, $totalUsage, $i + 1);
+            }
+            $spentTokens += $requestTokens;
+            $this->contextWindow?->estimate($requestTokens);
+
+            $callBytes = 0;
+            $streamLimit = null;
 
             try {
                 $contentParts = [];
@@ -271,6 +340,25 @@ abstract class AbstractAgent implements AgentInterface
                     // Check cancellation between stream chunks so ESC/Ctrl+C returns
                     // to the prompt immediately without waiting for the full response.
                     if ($this->cancellationToken?->isCancelled()) {
+                        break;
+                    }
+
+                    // Cumulative limits, checked before the chunk is used. Breaking
+                    // abandons the stream.
+                    $chunkBytes = $this->chunkBytes($chunk);
+                    $callBytes += $chunkBytes;
+                    $runResponseBytes += $chunkBytes;
+                    if ($this->runLimits->maxResponseBytes > 0 && $runResponseBytes > $this->runLimits->maxResponseBytes) {
+                        $streamLimit = self::RESPONSE_SIZE_LIMIT_REACHED;
+                        break;
+                    }
+                    if ($this->runTimeExceeded($runStartedNs)) {
+                        $streamLimit = self::RUN_TIME_LIMIT_REACHED;
+                        break;
+                    }
+                    // $spentTokens already includes this request's estimate.
+                    if ($maxTokens > 0 && $spentTokens + (int) ceil($callBytes / 4) > $maxTokens) {
+                        $streamLimit = self::TOKEN_LIMIT_REACHED;
                         break;
                     }
 
@@ -342,27 +430,7 @@ abstract class AbstractAgent implements AgentInterface
                     contentBlocks: $contentBlocks,
                 );
             } catch (\Throwable $e) {
-                $errorMessage = $e->getMessage();
-
-                // Extract API response body for HTTP client errors (4xx/5xx)
-                // Symfony's ClientException only includes the status line, not the
-                // API error body, for non-RFC-7807 APIs like Anthropic and OpenAI.
-                if ($e instanceof ClientExceptionInterface) {
-                    try {
-                        $body = $e->getResponse()->getContent(false);
-                        $decoded = json_decode($body, true);
-
-                        // Anthropic: {"type":"error","error":{"message":"..."}}
-                        // OpenAI:    {"error":{"message":"..."}}
-                        $apiMessage = $decoded['error']['message']
-                            ?? $decoded['message']
-                            ?? $body;
-
-                        $errorMessage .= "\n\nAPI response: " . $apiMessage;
-                    } catch (\Throwable) {
-                        // If we can't read the body, fall through with original message
-                    }
-                }
+                $errorMessage = $this->providerErrorMessage($e);
 
                 $this->notify('agent.error', $errorMessage);
 
@@ -376,6 +444,16 @@ abstract class AbstractAgent implements AgentInterface
                 );
             }
 
+            if ($streamLimit !== null) {
+                return $this->runLimitOutput($streamLimit, $conversation, $allToolResults, $totalUsage, $i + 1);
+            }
+
+            // The response counts as at least one token per 4 bytes received,
+            // whatever usage the provider reports.
+            $responseTokens = (int) ceil($callBytes / 4);
+            $spentTokens += max($response->usage->completionTokens ?? 0, $responseTokens);
+            $this->contextWindow?->estimate($requestTokens + $responseTokens);
+
             if ($response->usage !== null) {
                 $totalUsage = new Usage(
                     promptTokens: $totalUsage->promptTokens + $response->usage->promptTokens,
@@ -387,19 +465,27 @@ abstract class AbstractAgent implements AgentInterface
                 $this->contextWindow?->report($response->usage);
             }
 
+            if ($maxTokens > 0 && $spentTokens > $maxTokens) {
+                return $this->runLimitOutput(self::TOKEN_LIMIT_REACHED, $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
+            }
+
             // Budget threshold detection: fire once when usage crosses the
             // configured threshold. Emit an event so external observers (e.g.
             // Coqui's BudgetExitObserver) can inject wrap-up instructions via
-            // PendingInputProvider for the NEXT iteration.
+            // PendingInputProvider for the NEXT iteration. The local estimate
+            // counts too, so a context window that under-reports cannot hide usage.
+            $usagePercent = $this->contextWindow !== null
+                ? $this->windowUsagePercent($this->contextWindow, $requestTokens + $responseTokens)
+                : 0.0;
             if (
                 !$budgetExitTriggered
                 && $this->budgetExitThreshold > 0.0
                 && $this->contextWindow !== null
-                && $this->contextWindow->usagePercent() >= $this->budgetExitThreshold * 100
+                && $usagePercent >= $this->budgetExitThreshold * 100
             ) {
                 $budgetExitTriggered = true;
                 $this->notify('agent.budget_warning', [
-                    'usagePercent' => $this->contextWindow->usagePercent(),
+                    'usagePercent' => $usagePercent,
                     'threshold' => $this->budgetExitThreshold,
                     'wrapUpIterations' => $this->budgetExitWrapUpIterations,
                 ]);
@@ -410,22 +496,25 @@ abstract class AbstractAgent implements AgentInterface
                 return $failedStop;
             }
 
-            foreach ($response->toolCalls as $toolCall) {
-                if ($toolCall->name === DoneTool::NAME) {
-                    $this->notify('agent.done', $toolCall->arguments);
+            // The first `done` call is authorized by the policy and validated; when it passes
+            // the run finishes. Otherwise it, and any later `done`, gets an error result that
+            // goes through executeToolCalls with the rest of the response.
+            $finishingCall = null;
+            $doneResults = $this->resolveDoneCalls($response->toolCalls, $finishingCall);
+            if ($finishingCall !== null) {
+                $this->notify('agent.done', $finishingCall->arguments);
 
-                    return new Output(
-                        content: $toolCall->arguments['response'] ?? '',
-                        toolResults: $allToolResults,
-                        usage: $totalUsage,
-                        model: $response->model,
-                        iterations: $i + 1,
-                        conversation: $conversation,
-                        finishReason: AgentFinishReason::Done,
-                        reasoning: $response->reasoning,
-                        providerFinishReason: $response->finishReason,
-                    );
-                }
+                return new Output(
+                    content: (string) $finishingCall->arguments['response'],
+                    toolResults: $allToolResults,
+                    usage: $totalUsage,
+                    model: $response->model,
+                    iterations: $i + 1,
+                    conversation: $conversation,
+                    finishReason: AgentFinishReason::Done,
+                    reasoning: $response->reasoning,
+                    providerFinishReason: $response->finishReason,
+                );
             }
 
             if (!empty($response->toolCalls)) {
@@ -436,11 +525,19 @@ abstract class AbstractAgent implements AgentInterface
                 // turn is never replayed.
                 $conversation->add(new AssistantMessage($response->content, $response->toolCalls, $response->contentBlocks));
 
+                $runLimitReached = false;
+                $runTimeReached = false;
                 $executionResult = $this->executeToolCalls(
                     $response->toolCalls,
                     $executableToolIndex,
+                    $fullToolIndex,
+                    $runToolCalls,
+                    $runLimitReached,
+                    $runStartedNs,
+                    $runTimeReached,
                     $conversation,
                     $allToolResults,
+                    $doneResults,
                 );
 
                 if ($executionResult !== null) {
@@ -451,6 +548,25 @@ abstract class AbstractAgent implements AgentInterface
                         iterations: $i + 1,
                         conversation: $conversation,
                         finishReason: AgentFinishReason::Error,
+                        providerFinishReason: $response->finishReason,
+                    );
+                }
+
+                if ($runTimeReached) {
+                    return $this->runLimitOutput(self::RUN_TIME_LIMIT_REACHED, $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
+                }
+
+                if ($runLimitReached) {
+                    $this->notify('agent.warning', sprintf('Tool call limit reached: at most %d calls per run.', $this->runLimits->maxToolCallsPerRun));
+
+                    return new Output(
+                        content: 'Tool call limit reached for this run.',
+                        toolResults: $allToolResults,
+                        usage: $totalUsage,
+                        model: $response->model,
+                        iterations: $i + 1,
+                        conversation: $conversation,
+                        finishReason: AgentFinishReason::BudgetExhausted,
                         providerFinishReason: $response->finishReason,
                     );
                 }
@@ -543,6 +659,141 @@ abstract class AbstractAgent implements AgentInterface
             conversation: $conversation,
             finishReason: AgentFinishReason::MaxIterations,
         );
+    }
+
+    /**
+     * End the run on a RunLimits cumulative limit: agent.error carries the fixed $content.
+     *
+     * @param ToolResult[] $allToolResults
+     */
+    private function runLimitOutput(
+        string $content,
+        Conversation $conversation,
+        array $allToolResults,
+        Usage $totalUsage,
+        int $iterations,
+        string $model = '',
+    ): Output {
+        $this->notify('agent.error', $content);
+
+        return new Output(
+            content: $content,
+            toolResults: $allToolResults,
+            usage: $totalUsage,
+            model: $model,
+            iterations: $iterations,
+            conversation: $conversation,
+            finishReason: AgentFinishReason::BudgetExhausted,
+        );
+    }
+
+    /**
+     * Whether RunLimits::$maxRunSeconds has passed since $runStartedNs (hrtime(true)).
+     */
+    private function runTimeExceeded(float $runStartedNs): bool
+    {
+        $max = $this->runLimits->maxRunSeconds;
+
+        return $max > 0.0 && ((float) hrtime(true) - $runStartedNs) / 1e9 > $max;
+    }
+
+    /**
+     * Bytes one stream chunk carries: content, reasoning and the JSON of its tool calls and
+     * content blocks.
+     */
+    private function chunkBytes(Response $chunk): int
+    {
+        $bytes = strlen($chunk->content) + strlen($chunk->reasoning);
+        foreach ([$chunk->toolCalls, $chunk->contentBlocks] as $structured) {
+            if ($structured !== []) {
+                $bytes += strlen(json_encode($structured, \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR) ?: '');
+            }
+        }
+
+        return $bytes;
+    }
+
+    /**
+     * Whether $message is over RunLimits::$maxInputTokens (never, when that limit is 0).
+     */
+    private function inputTooLarge(MessageInterface $message): bool
+    {
+        return $this->runLimits->maxInputTokens > 0
+            && $this->messageTokens($message) > $this->runLimits->maxInputTokens;
+    }
+
+    /**
+     * Estimated tokens of one message, with the Conversation::estimateTokens() heuristic.
+     */
+    private function messageTokens(MessageInterface $message): int
+    {
+        $single = new Conversation();
+        $single->add($message);
+
+        return $single->estimateTokens();
+    }
+
+    /**
+     * Estimated tokens of the tool schemas sent with each request (1 token per 4 bytes of JSON).
+     *
+     * @param ToolInterface[] $tools
+     */
+    private function toolSchemaTokens(array $tools): int
+    {
+        $schemas = json_encode(
+            array_map(fn(ToolInterface $tool): array => $tool->toFunctionSchema(), $tools),
+            \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR,
+        );
+
+        return (int) ceil(strlen($schemas ?: '') / 4);
+    }
+
+    /**
+     * The higher of the window's own usage percent and $localTokens over its input budget.
+     */
+    private function windowUsagePercent(ContextWindowInterface $window, int $localTokens): float
+    {
+        $effective = $window->maxTokens() - $window->reservedTokens();
+        $local = $effective > 0 ? round(($localTokens / $effective) * 100, 1) : 100.0;
+
+        return max($window->usagePercent(), $local);
+    }
+
+    /**
+     * The text Output.content (after `Provider error: `) and agent.error carry for a
+     * provider failure. The exception message is redacted and bounded. For a 4xx, at most
+     * the first 64 KiB of the body are read and only a string `error.message` (Anthropic,
+     * OpenAI) or top-level `message` is appended, redacted and bounded; the raw body never is.
+     */
+    private function providerErrorMessage(\Throwable $e): string
+    {
+        $message = UntrustedText::forDisplay($e->getMessage(), self::PROVIDER_ERROR_MAX_CHARS);
+        if (!$e instanceof ClientExceptionInterface) {
+            return $message;
+        }
+
+        try {
+            $response = $e->getResponse();
+            if ($response instanceof StreamableInterface) {
+                $body = (string) stream_get_contents($response->toStream(false), self::PROVIDER_ERROR_BODY_MAX_BYTES);
+            } else {
+                $body = substr($response->getContent(false), 0, self::PROVIDER_ERROR_BODY_MAX_BYTES);
+            }
+            $decoded = json_decode($body, true);
+        } catch (\Throwable) {
+            return $message;
+        }
+
+        if (!is_array($decoded)) {
+            return $message;
+        }
+        $apiMessage = is_array($decoded['error'] ?? null) && is_string($decoded['error']['message'] ?? null)
+            ? $decoded['error']['message']
+            : ($decoded['message'] ?? null);
+
+        return is_string($apiMessage)
+            ? $message . "\n\nAPI response: " . UntrustedText::forDisplay($apiMessage, self::PROVIDER_ERROR_MAX_CHARS)
+            : $message;
     }
 
     /**
@@ -654,26 +905,45 @@ abstract class AbstractAgent implements AgentInterface
      * Execute tool calls from a provider response in three phases:
      *
      * 1. Pre-flight (serial): tick, cancellation check, emit agent.tool_call,
-     *    check execution policy, resolve tool. Collects approved tools into
-     *    a batch and immediately handles denied/missing tools.
+     *    apply the RunLimits per-turn and per-run caps, check execution policy,
+     *    resolve tool. Collects approved tools into a batch and immediately
+     *    handles capped/denied/missing tools. A capped call never reaches the
+     *    policy or executor. A tool outside $executableToolIndex resolves as
+     *    unknown, with the same text as a name that does not exist.
      * 2. Execution (batch or serial): if the executor supports batch execution
      *    and multiple approved tools exist, delegates to executeBatch().
      *    Otherwise executes each tool serially.
      * 3. Post-flight (serial): adds ToolResultMessages to conversation in call
-     *    order, emits agent.tool_result events.
+     *    order, emits agent.tool_result events, then adds the names granted by
+     *    ToolGrantInterface tools that ran and succeeded to $executableToolIndex.
      *
      * Returns null on normal completion, or TerminationException if a tool
      * requested immediate loop termination (e.g. restart_coqui).
      *
      * @param ToolCall[] $toolCalls
-     * @param array<string, ToolInterface> $executableToolIndex
+     * @param array<string, ToolInterface> $executableToolIndex Tools the model may run (grants are added by reference)
+     * @param array<string, ToolInterface> $fullToolIndex Every registered tool; a grant must name one
+     * @param int $runToolCalls Calls sent to the policy/executor so far this run (modified by reference)
+     * @param bool $runLimitReached Set when a call was refused by the per-run cap
+     * @param float $runStartedNs hrtime(true) at the start of run(), for RunLimits::$maxRunSeconds
+     * @param bool $runTimeReached Set when the run time limit stopped a tool or batch call; each
+     *                             call it stopped gets an error result
      * @param ToolResult[] $allToolResults Accumulated results (modified by reference)
+     * @param array<int, ToolResult> $resolvedCalls Results already decided for calls at these
+     *                                              positions (refused `done` calls); they skip the
+     *                                              caps, the policy and the executor
      */
     private function executeToolCalls(
         array $toolCalls,
-        array $executableToolIndex,
+        array &$executableToolIndex,
+        array $fullToolIndex,
+        int &$runToolCalls,
+        bool &$runLimitReached,
+        float $runStartedNs,
+        bool &$runTimeReached,
         Conversation $conversation,
         array &$allToolResults,
+        array $resolvedCalls = [],
     ): ?TerminationException {
         // === Phase 1: Pre-flight (serial) ===
         // Process each tool call: emit events, check policy, resolve tool.
@@ -683,8 +953,13 @@ abstract class AbstractAgent implements AgentInterface
         /** @var array<int, array{toolCall: ToolCall, tool: ToolInterface}> */
         $approved = [];
 
-        /** @var array<int, ToolResult> Pre-resolved results (denied, not found) keyed by position */
+        /** @var array<int, ToolResult> Pre-resolved results (capped, denied, not found) keyed by position */
         $preResolved = [];
+
+        $turnToolCalls = 0;
+        $turnLimitReached = false;
+        $perTurn = $this->runLimits->maxToolCallsPerTurn;
+        $perRun = $this->runLimits->maxToolCallsPerRun;
 
         foreach ($toolCalls as $position => $toolCall) {
             $this->tickCallback->tick();
@@ -695,27 +970,45 @@ abstract class AbstractAgent implements AgentInterface
 
             $this->notify('agent.tool_call', $toolCall);
 
-            // Check execution policy
-            if ($this->executionPolicy !== null) {
-                $policyResult = $this->executionPolicy->shouldExecute(
-                    $toolCall->name,
-                    $toolCall->arguments,
-                );
+            if (isset($resolvedCalls[$position])) {
+                $preResolved[$position] = $resolvedCalls[$position];
+                continue;
+            }
 
-                if ($policyResult !== true) {
-                    $preResolved[$position] = ToolResult::error(
-                        "Denied by policy: {$policyResult}",
-                    )->withCallId($toolCall->id);
-                    continue;
-                }
+            // Tool-call caps: a refused call is answered here and never
+            // reaches the policy or the executor.
+            if ($perTurn > 0 && $turnToolCalls >= $perTurn) {
+                $turnLimitReached = true;
+                $preResolved[$position] = ToolResult::error(
+                    sprintf('Tool call limit reached: at most %d calls per turn.', $perTurn),
+                )->withCallId($toolCall->id);
+                continue;
+            }
+
+            if ($perRun > 0 && $runToolCalls >= $perRun) {
+                $runLimitReached = true;
+                $preResolved[$position] = ToolResult::error(
+                    sprintf('Tool call limit reached: at most %d calls per run.', $perRun),
+                )->withCallId($toolCall->id);
+                continue;
+            }
+
+            $turnToolCalls++;
+            $runToolCalls++;
+
+            $denied = $this->policyDenial($toolCall);
+            if ($denied !== null) {
+                $preResolved[$position] = $denied;
+                continue;
             }
 
             // Resolve tool
             try {
                 $tool = $this->findTool($toolCall->name, $executableToolIndex);
             } catch (ToolNotFoundException $e) {
-                $this->notify('agent.tool_error', $e->getMessage());
-                $preResolved[$position] = ToolResult::error($e->getMessage())->withCallId($toolCall->id);
+                $message = UntrustedText::forDisplay($e->getMessage(), self::TOOL_ERROR_MAX_CHARS);
+                $this->notify('agent.tool_error', $message);
+                $preResolved[$position] = ToolResult::error($message)->withCallId($toolCall->id);
                 continue;
             }
 
@@ -730,7 +1023,13 @@ abstract class AbstractAgent implements AgentInterface
         $executedResults = [];
         $terminationException = null;
 
-        if ($useBatch) {
+        if ($useBatch && $this->runTimeExceeded($runStartedNs)) {
+            $runTimeReached = true;
+            foreach ($approved as $position => $entry) {
+                $executedResults[$position] = ToolResult::error(self::RUN_TIME_LIMIT_REACHED)
+                    ->withCallId($entry['toolCall']->id);
+            }
+        } elseif ($useBatch) {
             // Build ordered batch from approved tools
             $batchEntries = [];
             $positionMap = []; // batch index → original position
@@ -778,6 +1077,13 @@ abstract class AbstractAgent implements AgentInterface
                     break;
                 }
 
+                if ($runTimeReached || $this->runTimeExceeded($runStartedNs)) {
+                    $runTimeReached = true;
+                    $executedResults[$position] = ToolResult::error(self::RUN_TIME_LIMIT_REACHED)
+                        ->withCallId($entry['toolCall']->id);
+                    continue;
+                }
+
                 try {
                     $result = $this->toolExecutor->execute($entry['tool'], $entry['toolCall']->arguments);
                     $executedResults[$position] = $result->withCallId($entry['toolCall']->id);
@@ -787,8 +1093,9 @@ abstract class AbstractAgent implements AgentInterface
                     $terminationException = $e;
                     break;
                 } catch (\Throwable $e) {
-                    $this->notify('agent.tool_error', $e->getMessage());
-                    $executedResults[$position] = ToolResult::error($e->getMessage())
+                    $message = UntrustedText::forDisplay($e->getMessage(), self::TOOL_ERROR_MAX_CHARS);
+                    $this->notify('agent.tool_error', $message);
+                    $executedResults[$position] = ToolResult::error($message)
                         ->withCallId($entry['toolCall']->id);
                 }
             }
@@ -804,12 +1111,186 @@ abstract class AbstractAgent implements AgentInterface
                 continue;
             }
 
+            // The single exposure boundary for error and timeout text: Output.toolResults,
+            // the conversation and agent.tool_result all receive this result. Success
+            // content and metadata are the tool author's data and are not rewritten.
+            if ($result->status !== ToolResultStatus::Success) {
+                $result = $this->redactedErrorResult($result);
+            }
+
             $allToolResults[] = $result;
             $conversation->add(new ToolResultMessage($result));
             $this->notify('agent.tool_result', $result);
         }
 
+        if ($turnLimitReached) {
+            $this->notify('agent.warning', sprintf('Tool call limit reached: at most %d calls per turn.', $perTurn));
+        }
+
+        $this->applyToolGrants($approved, $executedResults, $executableToolIndex, $fullToolIndex);
+
         return $terminationException;
+    }
+
+    /**
+     * The execution policy's refusal of a call as an error result paired to it,
+     * or null when there is no policy or it allows the call.
+     */
+    private function policyDenial(ToolCall $toolCall): ?ToolResult
+    {
+        if ($this->executionPolicy === null) {
+            return null;
+        }
+
+        $decision = $this->executionPolicy->shouldExecute($toolCall->name, $toolCall->arguments);
+
+        return $decision === true
+            ? null
+            : ToolResult::error("Denied by policy: {$decision}")->withCallId($toolCall->id);
+    }
+
+    /**
+     * Decide the `done` calls in one response. Only the first is put to the policy and then
+     * validated; when both pass it is returned in $finishingCall and no results are returned.
+     * Otherwise every `done` call gets an error result keyed by its position: the refusal or
+     * argument error for the first, a one-per-response error for the rest.
+     *
+     * @param ToolCall[] $toolCalls
+     * @param ToolCall|null $finishingCall Set to the `done` call that finishes the run
+     * @return array<int, ToolResult>
+     */
+    private function resolveDoneCalls(array $toolCalls, ?ToolCall &$finishingCall): array
+    {
+        $finishingCall = null;
+        $results = [];
+        $first = true;
+
+        foreach ($toolCalls as $position => $toolCall) {
+            if ($toolCall->name !== DoneTool::NAME) {
+                continue;
+            }
+
+            if (!$first) {
+                $results[$position] = ToolResult::error('Only one done call is allowed per response.')
+                    ->withCallId($toolCall->id);
+                continue;
+            }
+
+            $first = false;
+            $error = $this->policyDenial($toolCall) ?? $this->doneArgumentsError($toolCall);
+            if ($error === null) {
+                $finishingCall = $toolCall;
+
+                return [];
+            }
+
+            $results[$position] = $error;
+        }
+
+        return $results;
+    }
+
+    /**
+     * Validate `done` arguments against its schema: unknown keys are refused the way
+     * Tool::execute refuses them, and `response` must be a string.
+     */
+    private function doneArgumentsError(ToolCall $toolCall): ?ToolResult
+    {
+        $unknownError = UnknownKeys::error(
+            $toolCall->arguments,
+            array_values(array_map(static fn(Parameter $param): string => $param->name, DoneTool::create()->parameters())),
+        );
+
+        if ($unknownError !== null) {
+            return ToolResult::error($unknownError)->withCallId($toolCall->id);
+        }
+
+        if (!is_string($toolCall->arguments['response'] ?? null)) {
+            return ToolResult::error('Parameter "response" must be a string.')->withCallId($toolCall->id);
+        }
+
+        return null;
+    }
+
+    /**
+     * A failed (error or timeout) result with its content, every string key and value in its
+     * metadata (recursively; an object is first turned into arrays through JSON, or null if that fails or throws) passed
+     * through UntrustedText::forDisplay(…, 500), and its error code through forDisplay(…, 64).
+     */
+    private function redactedErrorResult(ToolResult $result): ToolResult
+    {
+        $redact = static function (mixed $value) use (&$redact): mixed {
+            if (is_object($value)) {
+                $flags = \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR;
+                try {
+                    $value = json_decode(json_encode($value, $flags) ?: 'null', true);
+                } catch (\Throwable) { // @phpstan-ignore catch.neverThrown (json_encode() runs a tool's jsonSerialize())
+                    // A jsonSerialize() that throws is treated like a failed round trip.
+                    $value = null;
+                }
+            }
+            if (is_string($value)) {
+                return UntrustedText::forDisplay($value, self::TOOL_ERROR_MAX_CHARS);
+            }
+            if (!is_array($value)) {
+                return $value;
+            }
+
+            $redacted = [];
+            foreach ($value as $key => $item) {
+                $key = is_string($key) ? UntrustedText::forDisplay($key, self::TOOL_ERROR_MAX_CHARS) : $key;
+                $redacted[$key] = $redact($item);
+            }
+
+            return $redacted;
+        };
+
+        /** @var array<string, mixed> $metadata */
+        $metadata = $redact($result->metadata);
+
+        return new ToolResult(
+            $result->status,
+            UntrustedText::forDisplay($result->content, self::TOOL_ERROR_MAX_CHARS),
+            $result->callId,
+            $metadata,
+            $result->mimeType,
+            $result->displayHint,
+            $result->retryable,
+            $result->errorCode === null ? null : UntrustedText::forDisplay($result->errorCode, self::ERROR_CODE_MAX_CHARS),
+        );
+    }
+
+    /**
+     * Add the names granted by ToolGrantInterface tools to the executable index.
+     *
+     * Only a tool whose call executed this round and returned a success result
+     * is read, and only names present in the full index are added.
+     *
+     * @param array<int, array{toolCall: ToolCall, tool: ToolInterface}> $approved
+     * @param array<int, ToolResult> $executedResults
+     * @param array<string, ToolInterface> $executableToolIndex
+     * @param array<string, ToolInterface> $fullToolIndex
+     */
+    private function applyToolGrants(
+        array $approved,
+        array $executedResults,
+        array &$executableToolIndex,
+        array $fullToolIndex,
+    ): void {
+        foreach ($approved as $position => $entry) {
+            $tool = $entry['tool'];
+            $result = $executedResults[$position] ?? null;
+
+            if (!$tool instanceof ToolGrantInterface || $result?->status !== ToolResultStatus::Success) {
+                continue;
+            }
+
+            foreach ($tool->grantedToolNames() as $name) {
+                if (isset($fullToolIndex[$name])) {
+                    $executableToolIndex[$name] = $fullToolIndex[$name];
+                }
+            }
+        }
     }
 
     /**

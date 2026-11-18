@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Tool;
 
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
+use CarmeloSantana\PHPAgents\Security\UntrustedText;
 use CarmeloSantana\PHPAgents\Tool\Parameter\Parameter;
 use Closure;
 
@@ -37,6 +38,17 @@ final class Tool implements ToolInterface
 
     public function execute(array $input): ToolResult
     {
+        // Reject arguments the published schema does not declare
+        // (`additionalProperties: false`) before any validation or callback.
+        $unknownError = UnknownKeys::error(
+            $input,
+            array_values(array_map(static fn(Parameter $param): string => $param->name, $this->parameters)),
+        );
+
+        if ($unknownError !== null) {
+            return ToolResult::error($unknownError);
+        }
+
         // Validate required parameters before executing
         $missing = [];
         foreach ($this->parameters as $param) {
@@ -81,7 +93,7 @@ final class Tool implements ToolInterface
 
             return ToolResult::success(is_string($result) ? $result : (json_encode($result) ?: ''));
         } catch (\Throwable $e) {
-            return ToolResult::error($e->getMessage());
+            return ToolResult::error(UntrustedText::forDisplay($e->getMessage(), 500));
         }
     }
 

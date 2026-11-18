@@ -32,9 +32,9 @@ the same problem per request (ADR 0001).
   guard always holds.
   `maxDuration` 0.0 means no total limit; `maxResponseBytes` 0 means no cap.
 - Every HTTP request goes through `apply()`. `CliProvider` sends none. `LlamaCppProvider` sends
-  none itself, but `LlamaCppMultimodalNormalizer` fetches a remote `image_url` with
-  `file_get_contents()`, outside `RequestLimits` and with no private-network check: open finding
-  L2. `AbstractProvider` and both embedding providers expose `withRequestLimits()` (returns a copy) and `requestLimits()`.
+  none itself, and `LlamaCppMultimodalNormalizer` refuses a remote `image_url` unless the host
+  configures an `ImageResolverInterface` (`RemoteImageResolver` carries its own limits) or the
+  legacy `$remoteImageFetcher` (finding L2, closed). `AbstractProvider` and both embedding providers expose `withRequestLimits()` (returns a copy) and `requestLimits()`.
   Embedding providers default to `idleTimeout` 60.0. `isAvailable()` keeps a 5 s idle timeout;
   Anthropic and Gemini `models()` and Ollama `/api/show` keep 10 s.
 - Ollama `/api/pull` uses `maxDuration` 0.0 and `maxResponseBytes` 0, because a model download
@@ -88,9 +88,11 @@ Known limits:
 
 - An injected client that ignores `max_redirects`, `max_duration`, `on_progress` or `resolve`
   (Coqui's ReactPHP adapter) gets none of the limits those options carry.
-- `gethostbynamel()` and `dns_get_record()`, which the Gemini image check calls, block and are
+- `gethostbynamel()` and `dns_get_record()`, which the Gemini image check and `RemoteImageResolver` call, block and are
   not covered by the request limits.
-- `LlamaCppMultimodalNormalizer`'s remote image fetch is outside `RequestLimits` (finding L2).
+- A host-supplied `ImageResolverInterface` or legacy `$remoteImageFetcher` for llama.cpp images is
+  outside `RequestLimits`; its limits are its own. A normalizer takes one `ImageResolverInterface`;
+  a host that accepts local and remote images composes its own.
 
 Known limits of the Gemini image check:
 

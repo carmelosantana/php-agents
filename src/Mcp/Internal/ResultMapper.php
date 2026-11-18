@@ -42,8 +42,8 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  *   truncation note is appended after the cut, so a truncated content runs past
  *   $maxBytes by the length of that note. Truncated JSON loses its JSON type.
  *
- * The blocks stay as sent in `metadata['mcp']['content']` for the host; a `content` that
- * is not a list is recorded there as an empty list. Beside them sit `structuredContent`
+ * The blocks stay as sent (save for $redact, below) in `metadata['mcp']['content']` for
+ * the host; a `content` that is not a list is recorded there as an empty list. Beside them sit `structuredContent`
  * when the result carried that key, `isError`, `bytes` (the joined size before the cap)
  * and `truncated`. An `isError` of exactly true gives an error result with the error code
  * `mcp_tool_error`, and the message `The tool reported an error.` when the content is
@@ -54,8 +54,16 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  * `isError` included, and it goes into a ToolResult, never into an exception message. A server can echo a
  * configured header value or the session id back in that text, so spec §2 (amendment 3,
  * 2026-09-21) leaves the redaction and the McpRpcException to Task 12's McpClient, which
- * holds both; this class is handed neither and could not redact. Do not give it a throw
- * that carries server-supplied text.
+ * holds both; this class is handed neither and could not redact on its own. Do not give it
+ * a throw that carries server-supplied text.
+ *
+ * What redaction there is arrives as the optional $redact closure, which McpClient builds.
+ * It is applied to every part (text, placeholders and the structuredContent JSON) before
+ * the parts are joined and cut, so a secret straddling $maxBytes is redacted whole rather
+ * than half-shown, and `bytes` is the size of the redacted join. It is also applied to every
+ * string key and string value in the metadata, recursively, the blocks in
+ * `metadata['mcp']['content']` and `structuredContent` included. Without it, text stays as
+ * sent.
  *
  * The cap is the caller's: this class does no I/O and reads no configuration — it applies
  * the $maxBytes it is handed.
@@ -66,8 +74,11 @@ final class ResultMapper
 {
     private const JSON_FLAGS = JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_INVALID_UTF8_SUBSTITUTE;
 
-    /** @param array<array-key, mixed> $result */
-    public static function toToolResult(array $result, int $maxBytes): ToolResult
+    /**
+     * @param array<array-key, mixed> $result
+     * @param (\Closure(string): string)|null $redact applied to every part and every metadata string
+     */
+    public static function toToolResult(array $result, int $maxBytes, ?\Closure $redact = null): ToolResult
     {
         $blocks = is_array($result['content'] ?? null) && array_is_list($result['content']) ? $result['content'] : [];
         $isError = ($result['isError'] ?? false) === true;
@@ -95,6 +106,10 @@ final class ResultMapper
             $mimeType = count($parts) === 1 ? 'application/json' : null;
         }
 
+        if ($redact !== null) {
+            $parts = array_map($redact, $parts);
+        }
+
         $content = implode("\n\n", $parts);
         $bytes = strlen($content);
         $truncated = $bytes > $maxBytes;
@@ -108,6 +123,10 @@ final class ResultMapper
         if (array_key_exists('structuredContent', $result)) {
             $meta['structuredContent'] = $result['structuredContent'];
         }
+        if ($redact !== null) {
+            /** @var array{content: array<array-key, mixed>, isError: bool, bytes: int, truncated: bool, structuredContent?: mixed} $meta */
+            $meta = self::redactAll($meta, $redact);
+        }
 
         if ($isError) {
             return ToolResult::error($content !== '' ? $content : 'The tool reported an error.')
@@ -116,6 +135,27 @@ final class ResultMapper
         }
 
         return ToolResult::success($content)->withMimeType($mimeType)->withMetadata(['mcp' => $meta]);
+    }
+
+    /**
+     * Every string key and string value of $value, recursively, through $redact.
+     *
+     * @param \Closure(string): string $redact
+     */
+    private static function redactAll(mixed $value, \Closure $redact): mixed
+    {
+        if (is_string($value)) {
+            return $redact($value);
+        }
+        if (!is_array($value)) {
+            return $value;
+        }
+        $out = [];
+        foreach ($value as $key => $item) {
+            $out[is_string($key) ? $redact($key) : $key] = self::redactAll($item, $redact);
+        }
+
+        return $out;
     }
 
     /** @param array<array-key, mixed> $block */
