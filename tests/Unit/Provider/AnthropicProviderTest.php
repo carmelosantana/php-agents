@@ -513,6 +513,30 @@ test('tool result messages serialize as tool_result blocks and ignore tool resul
 
 // --- Reasoning / Extended Thinking ---
 
+test('a tool result with no call id gets the same fallback tool_use_id on every request', function () {
+    $bodies = [];
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$bodies): MockResponse {
+        $bodies[] = json_decode($options['body'], true);
+        return mockAnthropicResponse();
+    });
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $history = [
+        new UserMessage('hi'),
+        new AssistantMessage('Checking.'),
+        new ToolResultMessage(ToolResult::success('pong')),
+        new ToolResultMessage(ToolResult::success('pong')),
+    ];
+
+    $provider->chat($history);
+    $provider->chat($history);
+
+    $ids = fn(array $body): array => array_map(fn(array $block): string => $block['tool_use_id'], $body['messages'][2]['content']);
+
+    expect($ids($bodies[0]))->toBe($ids($bodies[1]))
+        ->and($ids($bodies[0])[0])->toMatch('/^toolu_[0-9a-f]{24}$/')
+        ->and($ids($bodies[0])[0])->not->toBe($ids($bodies[0])[1]);
+});
+
 test('parseResponse extracts thinking content blocks into reasoning', function () {
     $mockClient = new MockHttpClient([
         mockAnthropicResponse([

@@ -594,7 +594,7 @@ final class AnthropicProvider extends AbstractProvider
         $systemPrompt = '';
         $formatted = [];
 
-        foreach ($messages as $message) {
+        foreach (array_values($messages) as $position => $message) {
             if ($message->role() === Role::System) {
                 $content = $message->content();
                 $systemPrompt = (is_string($content) ? $content : (json_encode($content) ?: ''));
@@ -608,7 +608,7 @@ final class AnthropicProvider extends AbstractProvider
                 continue;
             }
 
-            $formatted[] = $this->formatAnthropicMessage($message);
+            $formatted[] = $this->formatAnthropicMessage($message, $position);
         }
 
         // Merge consecutive same-role messages (required by Anthropic).
@@ -640,9 +640,10 @@ final class AnthropicProvider extends AbstractProvider
     }
 
     /**
+     * @param int $position The message's position in the list, for a stable fallback tool_use_id
      * @return array<string, mixed>
      */
-    private function formatAnthropicMessage(MessageInterface $message): array
+    private function formatAnthropicMessage(MessageInterface $message, int $position): array
     {
         // Blocks from this run (thinking with its signature) go back unchanged.
         if ($message instanceof AssistantMessage && $message->contentBlocks() !== []) {
@@ -660,10 +661,11 @@ final class AnthropicProvider extends AbstractProvider
         if ($message->role() === Role::Tool) {
             $toolCallId = $message->toolCallId();
 
-            // Anthropic requires a non-null tool_use_id. Generate a fallback
-            // for replayed conversations where the ID was not persisted.
+            // Anthropic requires a non-null tool_use_id. Derive a fallback
+            // for replayed conversations where the ID was not persisted; it is
+            // the same on every request, so the request prefix stays stable.
             if ($toolCallId === null || $toolCallId === '') {
-                $toolCallId = 'toolu_' . bin2hex(random_bytes(12));
+                $toolCallId = 'toolu_' . substr(hash('sha256', $position . "\0" . json_encode($message->content())), 0, 24);
             }
 
             return [
