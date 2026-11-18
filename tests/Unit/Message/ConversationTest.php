@@ -77,3 +77,20 @@ test('estimateTokens returns positive for non-empty conversation', function () {
 
     expect($conversation->estimateTokens())->toBeGreaterThan(0);
 });
+
+test('estimateTokens counts a multimodal message with invalid UTF-8 text', function () {
+    $conversation = new Conversation();
+    $conversation->add(new UserMessage([
+        ['type' => 'text', 'text' => "bad\xff"],
+        ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . str_repeat('A', 4 * 1024 * 1024)]],
+    ]));
+
+    expect($conversation->estimateTokens())->toBeGreaterThan(1_000_000);
+});
+
+test('estimateTokens counts tool calls whose arguments carry invalid UTF-8', function () {
+    $conversation = new Conversation();
+    $conversation->add(new AssistantMessage('', [new \CarmeloSantana\PHPAgents\Tool\ToolCall('c', 'first', ['payload' => "bad\xff" . str_repeat('p', 4_000)])]));
+
+    expect($conversation->estimateTokens())->toBeGreaterThan(1_000);
+});

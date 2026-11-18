@@ -233,7 +233,7 @@ abstract class AbstractAgent implements AgentInterface
         // (usagePercent, isWarning, isCritical) is accurate from iteration 1.
         $this->contextWindow?->estimate($conversation->estimateTokens());
 
-        if ($this->runLimits->maxInputTokens > 0 && $this->messageTokens($input) > $this->runLimits->maxInputTokens) {
+        if ($this->inputTooLarge($input)) {
             return $this->runLimitOutput(self::INPUT_TOO_LARGE, $conversation, $allToolResults, $totalUsage, 0);
         }
 
@@ -295,8 +295,12 @@ abstract class AbstractAgent implements AgentInterface
             }
 
             // Inject any pending external input into the conversation
+            // Each pending input is new input too, measured against maxInputTokens.
             if ($this->pendingInputProvider !== null) {
                 foreach ($this->pendingInputProvider->consumePendingInputs() as $pendingInput) {
+                    if ($this->inputTooLarge($pendingInput)) {
+                        return $this->runLimitOutput(self::INPUT_TOO_LARGE, $conversation, $allToolResults, $totalUsage, $i + 1);
+                    }
                     $conversation->add($pendingInput);
                 }
             }
@@ -348,6 +352,11 @@ abstract class AbstractAgent implements AgentInterface
                     }
                     if ($this->runTimeExceeded($runStartedNs)) {
                         $streamLimit = self::RUN_TIME_LIMIT_REACHED;
+                        break;
+                    }
+                    // $spentTokens already includes this request's estimate.
+                    if ($maxTokens > 0 && $spentTokens + (int) ceil($callBytes / 4) > $maxTokens) {
+                        $streamLimit = self::TOKEN_LIMIT_REACHED;
                         break;
                     }
 
@@ -700,6 +709,15 @@ abstract class AbstractAgent implements AgentInterface
         }
 
         return $bytes;
+    }
+
+    /**
+     * Whether $message is over RunLimits::$maxInputTokens (never, when that limit is 0).
+     */
+    private function inputTooLarge(MessageInterface $message): bool
+    {
+        return $this->runLimits->maxInputTokens > 0
+            && $this->messageTokens($message) > $this->runLimits->maxInputTokens;
     }
 
     /**

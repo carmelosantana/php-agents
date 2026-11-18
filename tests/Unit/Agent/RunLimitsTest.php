@@ -423,3 +423,55 @@ test('a custom under-reporting context window still triggers agent.budget_warnin
     expect($warnings)->toHaveCount(1)
         ->and($warnings[0]['usagePercent'])->toBeGreaterThanOrEqual(50.0);
 });
+
+test('a multimodal input with invalid UTF-8 text is still measured by maxInputTokens', function () {
+    $provider = new RunLimitsScriptedProvider([runLimitsTextRound()]);
+    $agent = new RunLimitsTestAgent(provider: $provider, runLimits: new RunLimits(maxInputTokens: 1_000));
+
+    $output = $agent->run(new UserMessage([
+        ['type' => 'text', 'text' => "bad\xff"],
+        ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . str_repeat('A', 4 * 1024 * 1024)]],
+    ]));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::BudgetExhausted)
+        ->and($output->content)->toBe('Input is too large.')
+        ->and($provider->calls)->toBe(0);
+});
+
+test('maxEstimatedTokens is checked between stream chunks', function () {
+    $provider = new RunLimitsScriptedProvider([function (): Generator {
+        for ($i = 0; $i < 1_000; $i++) {
+            yield new Response(content: str_repeat('a', 1_000), finishReason: ProviderFinishReason::Stop, model: 'test-model');
+        }
+    }]);
+    $events = new RunLimitsEventRecorder();
+    $agent = new RunLimitsTestAgent(provider: $provider, runLimits: new RunLimits(maxEstimatedTokens: 1_000));
+    $agent->attach($events);
+
+    $output = $agent->run(new UserMessage('Talk a lot.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::BudgetExhausted)
+        ->and($output->content)->toBe('Token limit reached.')
+        ->and($events->dataFor('agent.error'))->toContain('Token limit reached.')
+        ->and($provider->chunksConsumed)->toBeLessThanOrEqual(5);
+});
+
+test('a pending input over maxInputTokens is refused before the provider is called', function () {
+    $pending = new class implements \CarmeloSantana\PHPAgents\Contract\PendingInputProviderInterface {
+        public function consumePendingInputs(): array
+        {
+            return [new UserMessage(str_repeat('x', 400))];
+        }
+    };
+    $provider = new RunLimitsScriptedProvider([runLimitsTextRound()]);
+    $events = new RunLimitsEventRecorder();
+    $agent = new RunLimitsTestAgent(provider: $provider, pendingInputProvider: $pending, runLimits: new RunLimits(maxInputTokens: 10));
+    $agent->attach($events);
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::BudgetExhausted)
+        ->and($output->content)->toBe('Input is too large.')
+        ->and($events->dataFor('agent.error'))->toContain('Input is too large.')
+        ->and($provider->calls)->toBe(0);
+});
