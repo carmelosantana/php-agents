@@ -335,10 +335,10 @@ final class GeminiProvider extends AbstractProvider
         }
 
         // The conversation's system message and the $tools argument are the
-        // provider's: options cannot replace them.
+        // provider's: options cannot replace them, in either JSON spelling.
         foreach ($messages as $message) {
             if ($message->role() === Role::System) {
-                unset($options['systemInstruction']);
+                unset($options['systemInstruction'], $options['system_instruction']);
             }
         }
 

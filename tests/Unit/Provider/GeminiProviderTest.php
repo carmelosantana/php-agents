@@ -1267,3 +1267,32 @@ test('options may supply systemInstruction and tools when there is no system mes
     expect($requestPayload['systemInstruction'])->toBe(['parts' => [['text' => 'Injected instructions.']]])
         ->and($requestPayload['tools'][0]['functionDeclarations'][0]['name'])->toBe('injected_tool');
 });
+
+test('options cannot replace the systemInstruction through its snake_case alias', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $m, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat(
+        [new SystemMessage('AGENT'), new UserMessage('hi')],
+        [],
+        ['system_instruction' => ['parts' => [['text' => 'EVIL']]]],
+    );
+
+    expect($requestPayload['systemInstruction'])->toBe(['parts' => [['text' => 'AGENT']]])
+        ->and($requestPayload)->not->toHaveKey('system_instruction');
+});
+
+test('options may supply system_instruction when there is no system message', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $m, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat([new UserMessage('hi')], [], ['system_instruction' => ['parts' => [['text' => 'Caller']]]]);
+
+    expect($requestPayload['system_instruction'])->toBe(['parts' => [['text' => 'Caller']]]);
+});

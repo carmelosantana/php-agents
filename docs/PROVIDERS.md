@@ -610,7 +610,7 @@ The `$options` array of `chat()`, `stream()` and `structured()` is merged into t
 | Provider | Always the provider's | Provider's with a `SystemMessage` | Provider's with a non-empty `$tools` |
 |----------|-----------------------|-----------------------------------|--------------------------------------|
 | `AnthropicProvider` | `messages`, `stream` | `system` | `tools` |
-| `GeminiProvider` | `contents` | `systemInstruction` | `tools` |
+| `GeminiProvider` | `contents` | `systemInstruction` and `system_instruction` | `tools` |
 | `OpenAICompatibleProvider` and its subclasses | `messages`, `stream` | (inside `messages`) | `tools` |
 | `OpenAIResponsesProvider` | `input`, `stream` | (inside `input`) | `tools` |
 

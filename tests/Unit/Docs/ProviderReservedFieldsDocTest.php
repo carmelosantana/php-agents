@@ -11,7 +11,7 @@ test('PROVIDERS.md lists the reserved request fields of each provider', function
 
     expect($doc)->toContain('## Caller Options')
         ->and($doc)->toContain('| `AnthropicProvider` | `messages`, `stream` | `system` | `tools` |')
-        ->and($doc)->toContain('| `GeminiProvider` | `contents` | `systemInstruction` | `tools` |')
+        ->and($doc)->toContain('| `GeminiProvider` | `contents` | `systemInstruction` and `system_instruction` | `tools` |')
         ->and($doc)->toContain('| `OpenAICompatibleProvider` and its subclasses | `messages`, `stream` | (inside `messages`) | `tools` |')
         ->and($doc)->toContain('| `OpenAIResponsesProvider` | `input`, `stream` | (inside `input`) | `tools` |');
 });
