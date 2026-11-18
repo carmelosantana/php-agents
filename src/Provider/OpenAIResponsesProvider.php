@@ -198,9 +198,11 @@ final class OpenAIResponsesProvider extends AbstractProvider
 
                 return;
             } elseif ($eventType === 'error') {
+                $errorMessage = $json['message'] ?? null;
+
                 throw ProviderException::streamError(
                     (string) ($json['code'] ?? 'error'),
-                    (string) ($json['message'] ?? 'unknown stream error'),
+                    is_string($errorMessage) && $errorMessage !== '' ? $errorMessage : 'unknown stream error',
                 );
             } elseif ($eventType === 'response.created') {
                 // Initial response metadata — extract model if present

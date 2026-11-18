@@ -705,6 +705,17 @@ test('stream error event throws ProviderException with its message', function ()
     ]);
 })->throws(ProviderException::class, 'Rate limit reached.');
 
+test('stream error event with a message that is not a string throws a generic ProviderException', function (mixed $message) {
+    responsesStreamChunks([
+        ['type' => 'response.output_text.delta', 'delta' => 'Partial'],
+        ['type' => 'error', 'code' => 'server_error', 'message' => $message],
+    ]);
+})->with([
+    'array' => [['detail' => 'nested']],
+    'integer' => [42],
+    'null' => [null],
+])->throws(ProviderException::class, 'server_error: unknown stream error');
+
 test('stream yields refusal delta text as content and ends with Refusal', function () {
     $chunks = responsesStreamChunks([
         ['type' => 'response.refusal.delta', 'delta' => 'I cannot '],
