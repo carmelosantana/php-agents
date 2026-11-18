@@ -596,3 +596,20 @@ test('responses deliberately drops strict mode for a native Tool declaring a fre
             'required' => [],
         ]);
 });
+
+test('stream keeps stream true and the conversation when options try to override them', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return new MockResponse(
+            'data: ' . json_encode(['type' => 'response.completed', 'response' => ['model' => 'gpt-4o', 'status' => 'completed']]) . "\n\n",
+            ['http_code' => 200],
+        );
+    });
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
+
+    iterator_to_array($provider->stream([new UserMessage('hi')], [], ['stream' => false, 'input' => []]));
+
+    expect($requestPayload['stream'])->toBeTrue()
+        ->and($requestPayload['input'])->toBe([['role' => 'user', 'content' => 'hi']]);
+});

@@ -763,3 +763,20 @@ test('structured output disables strict for a nested free-form object and forwar
     expect($jsonSchema['strict'])->toBeFalse()
         ->and($jsonSchema['schema'])->toBe(json_decode($bare, true));
 });
+
+test('stream keeps stream true and the conversation when options try to override them', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return new MockResponse(
+            'data: ' . json_encode(['choices' => [['delta' => [], 'finish_reason' => 'stop']]]) . "\n\ndata: [DONE]\n\n",
+            ['http_code' => 200],
+        );
+    });
+    $provider = new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient);
+
+    iterator_to_array($provider->stream([new UserMessage('hi')], [], ['stream' => false, 'messages' => []]));
+
+    expect($requestPayload['stream'])->toBeTrue()
+        ->and($requestPayload['messages'])->toBe([['role' => 'user', 'content' => 'hi']]);
+});

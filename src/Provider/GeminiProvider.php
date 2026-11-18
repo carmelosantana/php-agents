@@ -332,8 +332,8 @@ final class GeminiProvider extends AbstractProvider
             }
         }
 
-        // Merge any remaining options at top level
-        return array_merge($payload, $options);
+        // Merge any remaining options at top level; the conversation stays ours.
+        return [...$payload, ...$options, 'contents' => $contents];
     }
 
     /**

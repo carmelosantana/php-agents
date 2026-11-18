@@ -44,11 +44,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
     {
         $tools = $this->trimToolsToLimit($tools, self::OPENAI_MAX_TOOLS, 'openai-responses', '/responses');
 
-        $payload = [
-            'model' => $this->model,
-            'input' => $this->formatMessages($messages),
-            ...$options,
-        ];
+        $payload = $this->buildPayload($messages, $options);
 
         if (!empty($tools)) {
             $payload['tools'] = $this->formatTools($tools);
@@ -66,12 +62,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
     {
         $tools = $this->trimToolsToLimit($tools, self::OPENAI_MAX_TOOLS, 'openai-responses', '/responses');
 
-        $payload = [
-            'model' => $this->model,
-            'input' => $this->formatMessages($messages),
-            'stream' => true,
-            ...$options,
-        ];
+        $payload = [...$this->buildPayload($messages, $options), 'stream' => true];
 
         if (!empty($tools)) {
             $payload['tools'] = $this->formatTools($tools);
@@ -193,6 +184,26 @@ final class OpenAIResponsesProvider extends AbstractProvider
         }
     }
 
+    /**
+     * Caller options override every field except the conversation (`input`)
+     * and the transport flag (`stream`), which the provider owns; stream()
+     * sets `stream` itself.
+     *
+     * @param MessageInterface[] $messages
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function buildPayload(array $messages, array $options): array
+    {
+        unset($options['stream']);
+
+        return [
+            'model' => $this->model,
+            ...$options,
+            'input' => $this->formatMessages($messages),
+        ];
+    }
+
     public function structured(array $messages, string $schema, array $options = []): mixed
     {
         $schemaData = json_decode($schema, true);
@@ -208,9 +219,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
             $inputSchema['type'] = 'object';
         }
 
-        $payload = [
-            'model' => $this->model,
-            'input' => $this->formatMessages($messages),
+        $payload = $this->buildPayload($messages, [
             'tools' => [
                 [
                     'type' => 'function',
@@ -221,7 +230,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
             ],
             'tool_choice' => ['type' => 'function', 'name' => $toolName],
             ...$options,
-        ];
+        ]);
 
         $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $this->requestLimits->apply([
             'headers' => $this->headers(),

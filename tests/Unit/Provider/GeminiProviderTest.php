@@ -1059,3 +1059,22 @@ test('gemini tool formatting survives stdClass nodes inside parameters', functio
         ->and($params['properties']['arr'])->toBe(['type' => 'ARRAY', 'items' => []])
         ->and($params['properties']['pick']['anyOf'])->toBe([[], ['type' => 'STRING']]);
 });
+
+test('stream keeps stream true and the conversation when options try to override them', function () {
+    $requestPayload = null;
+    $requestUrl = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload, &$requestUrl): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        $requestUrl = $url;
+        return new MockResponse(
+            'data: ' . json_encode(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'ok']]], 'finishReason' => 'STOP']]]) . "\n\n",
+            ['http_code' => 200],
+        );
+    });
+    $provider = new GeminiProvider(model: 'gemini-2.5-flash', apiKey: 'test-key', httpClient: $mockClient);
+
+    iterator_to_array($provider->stream([new UserMessage('hi')], [], ['contents' => []]));
+
+    expect($requestUrl)->toContain(':streamGenerateContent?alt=sse')
+        ->and($requestPayload['contents'])->toBe([['role' => 'user', 'parts' => [['text' => 'hi']]]]);
+});

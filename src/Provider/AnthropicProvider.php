@@ -44,24 +44,7 @@ final class AnthropicProvider extends AbstractProvider
 
     public function chat(array $messages, array $tools = [], array $options = []): Response
     {
-        [$systemPrompt, $formattedMessages] = $this->extractSystemAndMessages($messages);
-
-        $payload = [
-            'model' => $this->model,
-            'messages' => $formattedMessages,
-            'max_tokens' => $options['max_tokens'] ?? 4096,
-        ];
-
-        if ($systemPrompt !== '') {
-            $payload['system'] = $systemPrompt;
-        }
-
-        if (!empty($tools)) {
-            $payload['tools'] = $this->formatTools($tools);
-        }
-
-        unset($options['max_tokens']);
-        $payload = [...$payload, ...$options];
+        $payload = $this->buildPayload($messages, $tools, $options);
 
         $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->requestLimits->apply([
             'headers' => $this->headers(),
@@ -73,22 +56,7 @@ final class AnthropicProvider extends AbstractProvider
 
     public function stream(array $messages, array $tools = [], array $options = []): iterable
     {
-        [$systemPrompt, $formattedMessages] = $this->extractSystemAndMessages($messages);
-
-        $payload = [
-            'model' => $this->model,
-            'messages' => $formattedMessages,
-            'max_tokens' => $options['max_tokens'] ?? 4096,
-            'stream' => true,
-        ];
-
-        if ($systemPrompt !== '') {
-            $payload['system'] = $systemPrompt;
-        }
-
-        if (!empty($tools)) {
-            $payload['tools'] = $this->formatTools($tools);
-        }
+        $payload = [...$this->buildPayload($messages, $tools, $options), 'stream' => true];
 
         $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->requestLimits->apply([
             'headers' => $this->headers(),
@@ -229,7 +197,7 @@ final class AnthropicProvider extends AbstractProvider
             $inputSchema['type'] = 'object';
         }
 
-        $payload = $this->buildBasePayload($messages, $options);
+        $payload = $this->buildPayload($messages, [], $options);
         $payload['tools'] = [
             [
                 'name' => $toolName,
@@ -258,19 +226,21 @@ final class AnthropicProvider extends AbstractProvider
     }
 
     /**
-     * Build the base payload for Anthropic API requests.
+     * Build the Messages API payload. Caller options override every field
+     * except the conversation (`messages`) and the transport flag (`stream`),
+     * which the provider owns; stream() sets `stream` itself.
      *
      * @param MessageInterface[] $messages
+     * @param ToolInterface[] $tools
      * @param array<string, mixed> $options
      * @return array<string, mixed>
      */
-    private function buildBasePayload(array $messages, array $options = []): array
+    private function buildPayload(array $messages, array $tools, array $options): array
     {
         [$systemPrompt, $formattedMessages] = $this->extractSystemAndMessages($messages);
 
         $payload = [
             'model' => $this->model,
-            'messages' => $formattedMessages,
             'max_tokens' => $options['max_tokens'] ?? 4096,
         ];
 
@@ -278,8 +248,12 @@ final class AnthropicProvider extends AbstractProvider
             $payload['system'] = $systemPrompt;
         }
 
-        unset($options['max_tokens']);
-        return [...$payload, ...$options];
+        if (!empty($tools)) {
+            $payload['tools'] = $this->formatTools($tools);
+        }
+
+        unset($options['stream']);
+        return [...$payload, ...$options, 'messages' => $formattedMessages];
     }
 
     public function models(): array

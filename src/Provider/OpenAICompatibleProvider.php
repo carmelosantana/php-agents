@@ -34,12 +34,7 @@ class OpenAICompatibleProvider extends AbstractProvider
         // to null to suppress it from the stream() path as well.
         unset($options['stream_options']);
 
-        $payload = [
-            'model' => $this->model,
-            'messages' => $this->formatMessages($messages),
-            'stream' => false,
-            ...$options,
-        ];
+        $payload = $this->buildPayload($messages, $options, false);
 
         if (!empty($tools)) {
             $payload['tools'] = $this->formatTools($tools);
@@ -64,12 +59,7 @@ class OpenAICompatibleProvider extends AbstractProvider
             : ['include_usage' => true];
         unset($options['stream_options']);
 
-        $payload = [
-            'model' => $this->model,
-            'messages' => $this->formatMessages($messages),
-            'stream' => true,
-            ...$options,
-        ];
+        $payload = $this->buildPayload($messages, $options, true);
 
         if ($streamOptions !== null) {
             $payload['stream_options'] = $streamOptions;
@@ -219,6 +209,24 @@ class OpenAICompatibleProvider extends AbstractProvider
                 );
             }
         }
+    }
+
+    /**
+     * Caller options override every field except the conversation (`messages`)
+     * and the transport flag (`stream`), which the provider owns.
+     *
+     * @param MessageInterface[] $messages
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function buildPayload(array $messages, array $options, bool $stream): array
+    {
+        return [
+            'model' => $this->model,
+            ...$options,
+            'messages' => $this->formatMessages($messages),
+            'stream' => $stream,
+        ];
     }
 
     public function structured(array $messages, string $schema, array $options = []): mixed

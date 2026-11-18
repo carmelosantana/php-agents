@@ -510,3 +510,59 @@ test('stream thinking_delta chunks have empty content', function () {
         expect($chunk->content)->toBe('');
     }
 });
+
+test('stream keeps stream true and the conversation when options try to override them', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return new MockResponse(
+            'data: ' . json_encode(['type' => 'message_delta', 'delta' => ['stop_reason' => 'end_turn']]) . "\n\n",
+            ['http_code' => 200],
+        );
+    });
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    iterator_to_array($provider->stream([new UserMessage('Hi')], [], ['stream' => false, 'messages' => []]));
+
+    expect($requestPayload['stream'])->toBeTrue()
+        ->and($requestPayload['messages'])->toBe([['role' => 'user', 'content' => 'Hi']]);
+});
+
+test('stream merges options into the payload', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return new MockResponse(
+            'data: ' . json_encode(['type' => 'message_delta', 'delta' => ['stop_reason' => 'end_turn']]) . "\n\n",
+            ['http_code' => 200],
+        );
+    });
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    iterator_to_array($provider->stream([new UserMessage('Hi')], [], [
+        'temperature' => 0.2,
+        'thinking' => ['type' => 'enabled', 'budget_tokens' => 2048],
+        'max_tokens' => 9000,
+        'tool_choice' => ['type' => 'auto'],
+    ]));
+
+    expect($requestPayload['temperature'])->toBe(0.2)
+        ->and($requestPayload['thinking'])->toBe(['type' => 'enabled', 'budget_tokens' => 2048])
+        ->and($requestPayload['max_tokens'])->toBe(9000)
+        ->and($requestPayload['tool_choice'])->toBe(['type' => 'auto'])
+        ->and($requestPayload['stream'])->toBeTrue();
+});
+
+test('chat keeps the conversation and stays non-streaming when options try to override them', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockAnthropicResponse();
+    });
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $provider->chat([new UserMessage('Hi')], [], ['stream' => true, 'messages' => []]);
+
+    expect($requestPayload)->not->toHaveKey('stream')
+        ->and($requestPayload['messages'])->toBe([['role' => 'user', 'content' => 'Hi']]);
+});
