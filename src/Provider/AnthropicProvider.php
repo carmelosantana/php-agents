@@ -553,7 +553,9 @@ final class AnthropicProvider extends AbstractProvider
     /**
      * Build the Messages API payload. Caller options override every field
      * except the conversation (`messages`) and the transport flag (`stream`),
-     * which the provider owns; stream() sets `stream` itself.
+     * which the provider owns; stream() sets `stream` itself. `system` is
+     * also the provider's when the conversation has a system message, and
+     * `tools` when the $tools argument is not empty.
      *
      * @param MessageInterface[] $messages
      * @param ToolInterface[] $tools
@@ -578,7 +580,26 @@ final class AnthropicProvider extends AbstractProvider
         }
 
         unset($options['stream']);
+        if ($this->hasSystemMessage($messages)) {
+            unset($options['system']);
+        }
+        if (!empty($tools)) {
+            unset($options['tools']);
+        }
+
         return [...$payload, ...$options, 'messages' => $formattedMessages];
+    }
+
+    /** @param MessageInterface[] $messages */
+    private function hasSystemMessage(array $messages): bool
+    {
+        foreach ($messages as $message) {
+            if ($message->role() === Role::System) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function models(): array

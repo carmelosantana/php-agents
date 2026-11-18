@@ -1222,3 +1222,48 @@ test('stream ignores parts and tool calls after a terminal candidate but still r
         ProviderFinishReason::Stop,
     ],
 ]);
+
+function geminiReservedTool(): Tool
+{
+    return new Tool('agent_tool', 'The agent tool.', [], fn(array $input): ToolResult => ToolResult::success('ok'));
+}
+
+function geminiReservedOptions(): array
+{
+    return [
+        'systemInstruction' => ['parts' => [['text' => 'Injected instructions.']]],
+        'tools' => [['functionDeclarations' => [['name' => 'injected_tool', 'description' => 'Injected.']]]],
+    ];
+}
+
+test('options cannot replace the systemInstruction or the tools argument', function (string $method) {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $m, string $url, array $options) use (&$requestPayload, $method): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return $method === 'chat'
+            ? mockGeminiResponse()
+            : new MockResponse('data: ' . json_encode(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'ok']]], 'finishReason' => 'STOP']]]) . "\n\n", ['http_code' => 200]);
+    });
+    $provider = new GeminiProvider(apiKey: 'k', httpClient: $mockClient);
+
+    $result = $provider->{$method}([new SystemMessage('Agent instructions.'), new UserMessage('hi')], [geminiReservedTool()], geminiReservedOptions());
+    if ($method === 'stream') {
+        iterator_to_array($result);
+    }
+
+    expect($requestPayload['systemInstruction'])->toBe(['parts' => [['text' => 'Agent instructions.']]])
+        ->and($requestPayload['tools'][0]['functionDeclarations'][0]['name'])->toBe('agent_tool');
+})->with(['chat', 'stream']);
+
+test('options may supply systemInstruction and tools when there is no system message and no tools argument', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $m, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat([new UserMessage('hi')], [], geminiReservedOptions());
+
+    expect($requestPayload['systemInstruction'])->toBe(['parts' => [['text' => 'Injected instructions.']]])
+        ->and($requestPayload['tools'][0]['functionDeclarations'][0]['name'])->toBe('injected_tool');
+});

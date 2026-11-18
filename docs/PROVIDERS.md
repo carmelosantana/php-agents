@@ -603,6 +603,17 @@ The Claude SDK JSON output reports `usage.input_tokens`, `output_tokens`,
 input + cache tokens into `Usage.promptTokens` so host-side budget tracking works the same as for
 HTTP providers.
 
+## Caller Options
+
+The `$options` array of `chat()`, `stream()` and `structured()` is merged into the request body, so it can set any field the provider's API takes. It cannot replace the fields the provider builds itself. The conversation and the transport flag are always the provider's. The system prompt is the provider's when the conversation has a `SystemMessage`, and the tool list is the provider's when the `$tools` argument is not empty; without them, `$options` may still supply those fields.
+
+| Provider | Always the provider's | Provider's with a `SystemMessage` | Provider's with a non-empty `$tools` |
+|----------|-----------------------|-----------------------------------|--------------------------------------|
+| `AnthropicProvider` | `messages`, `stream` | `system` | `tools` |
+| `GeminiProvider` | `contents` | `systemInstruction` | `tools` |
+| `OpenAICompatibleProvider` and its subclasses | `messages`, `stream` | (inside `messages`) | `tools` |
+| `OpenAIResponsesProvider` | `input`, `stream` | (inside `input`) | `tools` |
+
 ## Request Limits
 
 Every HTTP request a provider or embedding provider sends through its HTTP client carries a `RequestLimits` value object. `RequestLimits::apply()` turns it into per-request symfony/http-client options (`timeout`, `max_duration`, `max_redirects` and an `on_progress` byte and redirect check). The per-request `timeout` replaces an injected Symfony client's own default, and so does `max_duration` when `maxDuration` is above 0.0; with `maxDuration: 0.0` no `max_duration` is sent and the client's own `max_duration` default applies (none for `HttpClient::create()`). Use `withRequestLimits()` to change them.

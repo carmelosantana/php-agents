@@ -334,8 +334,17 @@ final class GeminiProvider extends AbstractProvider
             $payload['systemInstruction'] = $systemInstruction;
         }
 
+        // The conversation's system message and the $tools argument are the
+        // provider's: options cannot replace them.
+        foreach ($messages as $message) {
+            if ($message->role() === Role::System) {
+                unset($options['systemInstruction']);
+            }
+        }
+
         if (!empty($tools)) {
             $payload['tools'] = $this->formatTools($tools);
+            unset($options['tools']);
         }
 
         // Merge generationConfig from options

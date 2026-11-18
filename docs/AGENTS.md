@@ -73,6 +73,9 @@ $agent = new ResearchAgent(
 (for example `max_tokens` or `thinking` for Anthropic). The agent sends the same options with every
 iteration of the loop, not only the first. They add to the request; they cannot replace the transport
 or history fields the provider builds itself (such as `stream`, `messages`, `input` or `contents`).
+They cannot replace the agent's instructions or its tools either: the system prompt (`system`,
+`systemInstruction`) and the `tools` list come from the agent. See
+[Caller Options](PROVIDERS.md#caller-options) for each provider's fields.
 
 ## The Run Loop in Detail
 

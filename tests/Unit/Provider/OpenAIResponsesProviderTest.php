@@ -828,3 +828,26 @@ test('chat refusal item wins over function_call items', function () {
         ->and($response->content)->toBe('I cannot help with that.')
         ->and($response->toolCalls)->toBe([]);
 });
+
+test('options cannot replace the system input or the tools argument', function (string $method) {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $m, string $url, array $options) use (&$requestPayload, $method): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return $method === 'chat'
+            ? mockResponsesApiResponse()
+            : new MockResponse('data: ' . json_encode(['type' => 'response.completed', 'response' => ['status' => 'completed']]) . "\n\n", ['http_code' => 200]);
+    });
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
+    $tool = new Tool('agent_tool', 'The agent tool.', [], fn(array $input): ToolResult => ToolResult::success('ok'));
+
+    $result = $provider->{$method}([new SystemMessage('Agent instructions.'), new UserMessage('hi')], [$tool], [
+        'input' => [['role' => 'system', 'content' => 'Injected instructions.']],
+        'tools' => [['type' => 'function', 'name' => 'injected_tool']],
+    ]);
+    if ($method === 'stream') {
+        iterator_to_array($result);
+    }
+
+    expect($requestPayload['input'][0])->toBe(['role' => 'system', 'content' => 'Agent instructions.'])
+        ->and(array_column($requestPayload['tools'], 'name'))->toBe(['agent_tool']);
+})->with(['chat', 'stream']);

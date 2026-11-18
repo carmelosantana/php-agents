@@ -1453,3 +1453,48 @@ test('static fallback lists only current models', function () {
             ->and($model->metadataSource)->toBe('static-fallback');
     }
 });
+
+function anthropicReservedTool(): \CarmeloSantana\PHPAgents\Tool\Tool
+{
+    return new \CarmeloSantana\PHPAgents\Tool\Tool('agent_tool', 'The agent tool.', [], fn(array $input): ToolResult => ToolResult::success('ok'));
+}
+
+function anthropicReservedOptions(): array
+{
+    return [
+        'system' => 'Injected instructions.',
+        'tools' => [['name' => 'injected_tool', 'description' => 'Injected.', 'input_schema' => ['type' => 'object']]],
+    ];
+}
+
+test('options cannot replace the conversation system prompt or the tools argument', function (string $method) {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $m, string $url, array $options) use (&$requestPayload, $method): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return $method === 'chat' ? mockAnthropicResponse() : anthropicSse(anthropicMessageStart(), anthropicStopDelta('end_turn'), ['type' => 'message_stop']);
+    });
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $messages = [new SystemMessage('Agent instructions.'), new UserMessage('Hi')];
+
+    $result = $provider->{$method}($messages, [anthropicReservedTool()], anthropicReservedOptions());
+    if ($method === 'stream') {
+        iterator_to_array($result);
+    }
+
+    expect($requestPayload['system'])->toBe('Agent instructions.')
+        ->and(array_column($requestPayload['tools'], 'name'))->toBe(['agent_tool']);
+})->with(['chat', 'stream']);
+
+test('options may supply system and tools when the conversation has no system message and no tools are passed', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $m, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockAnthropicResponse();
+    });
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $provider->chat([new UserMessage('Hi')], [], anthropicReservedOptions());
+
+    expect($requestPayload['system'])->toBe('Injected instructions.')
+        ->and(array_column($requestPayload['tools'], 'name'))->toBe(['injected_tool']);
+});
