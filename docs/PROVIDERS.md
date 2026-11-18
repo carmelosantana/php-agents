@@ -583,7 +583,7 @@ HTTP providers.
 
 ## Request Limits
 
-Every provider and embedding request carries a `RequestLimits` value object. `RequestLimits::apply()` turns it into per-request symfony/http-client options (`timeout`, `max_duration`, `max_redirects` and an `on_progress` byte check), so the limits hold even when the host injects its own HTTP client.
+Every HTTP request of a provider or embedding provider carries a `RequestLimits` value object (`CliProvider` and `LlamaCppProvider` send no HTTP request). `RequestLimits::apply()` turns it into per-request symfony/http-client options (`timeout`, `max_duration`, `max_redirects` and an `on_progress` byte check), so the limits hold even when the host injects its own HTTP client.
 
 | Limit | Default | Meaning |
 |-------|---------|---------|
@@ -608,7 +608,7 @@ A response over the byte cap is aborted with a `ProviderException` whose message
 
 ### No Redirects
 
-Providers follow no redirect. A base URL that answers 3xx, including a same-host `http://` to `https://` redirect, fails with `ProviderException` and the message `Provider request refused: redirect not followed (...)`, instead of re-sending the API key header and the conversation to the host the `Location` names. A streamed request refuses a 3xx before reading any data, and lets a 4xx or 5xx propagate unchanged so the API error body still reaches the agent. Embedding providers do not follow a 3xx either: `embedText()` reports it as `ProviderException::embeddingFailed()`, and `embedDocuments()` lets symfony/http-client's `RedirectionExceptionInterface` through. Point the base URL at the final address.
+Providers follow no redirect. A base URL that answers 3xx, including a same-host `http://` to `https://` redirect, fails with `ProviderException` and the message `Provider request refused: redirect not followed (...)`, instead of re-sending the API key header and the conversation to the host the `Location` names. A streamed request refuses a 3xx before reading any data, and lets a 4xx or 5xx propagate unchanged so the API error body still reaches the agent. Embedding providers do not follow a 3xx either: `embedText()` and `OllamaEmbeddingProvider::embedDocuments()` report it as `ProviderException::embeddingFailed()`, and `OpenAIEmbeddingProvider::embedDocuments()` lets symfony/http-client's `RedirectionExceptionInterface` through. Point the base URL at the final address.
 
 ### Gemini Image URLs
 
