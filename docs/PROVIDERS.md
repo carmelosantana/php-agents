@@ -65,6 +65,8 @@ $provider = new LlamaCppProvider(
 - The older `$remoteImageFetcher` callable still works for `http(s)://` when no resolver is set; it is trusted host code, and its bytes are policy checked.
 - Vision support and the image count are checked before any image is read.
 
+A normalizer takes one `ImageResolverInterface`. To accept both local paths and remote URLs, compose your own resolver that sends each reference to a `LocalImageResolver` or a `RemoteImageResolver`.
+
 ```php
 use CarmeloSantana\PHPAgents\Image\LocalImageResolver;
 use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppMultimodalNormalizer;
@@ -650,7 +652,7 @@ Two requests are outside `RequestLimits`:
 - `CliProvider` runs a local command and sends no HTTP request.
 - `LlamaCppProvider` runs the model in-process. `LlamaCppMultimodalNormalizer` refuses a remote `image_url` unless the host configures an `ImageResolverInterface` (such as `RemoteImageResolver`, which applies its own limits) or the legacy `$remoteImageFetcher`; see [Image Inputs](#image-inputs).
 
-`gethostbynamel()` and `dns_get_record()`, which the Gemini image check calls, block and are not covered by any of these limits.
+`gethostbynamel()` and `dns_get_record()`, which the Gemini image check and `RemoteImageResolver` call, block and are not covered by any of these limits.
 
 | Limit | Default | Meaning |
 |-------|---------|---------|

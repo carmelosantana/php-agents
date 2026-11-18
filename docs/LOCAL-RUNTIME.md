@@ -359,6 +359,7 @@ use CarmeloSantana\PHPAgents\Image\LocalImageResolver;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppMultimodalNormalizer;
 use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppProjectorResolver;
+use CarmeloSantana\PHPAgents\Provider\LlamaCppProvider;
 
 $images = new LocalImageResolver([__DIR__ . '/images']);
 

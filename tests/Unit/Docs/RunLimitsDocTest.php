@@ -54,3 +54,23 @@ test('the run limits section documents the cumulative limits and that they are c
         ->and($doc)->toContain('`RequestLimits::$maxResponseBytes`')
         ->and($doc)->toContain('`ContextWindow::report()` keeps the higher of the reported total and that estimate.');
 });
+
+test('the run limits docs say what the per-turn cap counts and where the token and input caps apply', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../docs/AGENTS.md');
+    $runLimits = (string) file_get_contents(__DIR__ . '/../../../src/Agent/RunLimits.php');
+
+    expect($doc)->toContain('| `maxToolCallsPerTurn` | `0` | Tool calls from one provider response sent to the policy (denied and unknown calls included); `0` means no cap |')
+        ->and($runLimits)->toContain('caps the tool calls from one provider response that are sent to the')
+        ->and($doc)->toContain('| `maxEstimatedTokens` | Before each provider call, between stream chunks and after each response | `Token limit reached.` |')
+        ->and($doc)->toContain('| `maxInputTokens` | Before the first provider call, and on each pending input before it is added | `Input is too large.` |')
+        ->and($doc)->toContain('An endless stream of empty chunks is bounded only by `maxRunSeconds`')
+        ->and($doc)->toContain('ends `BudgetExhausted` even when it carried a final answer');
+});
+
+test('the granted tools docs say a successful result and the most recent call', function (string $path) {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../' . $path);
+
+    expect($doc)->not->toContain('non-error')
+        ->and($doc)->toContain('successful result')
+        ->and($doc)->toContain('most recent call');
+})->with(['docs/AGENTS.md', 'src/Contract/ToolGrantInterface.php']);

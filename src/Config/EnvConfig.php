@@ -8,9 +8,14 @@ namespace CarmeloSantana\PHPAgents\Config;
  * Read-only view over captured environment values with a getenv() fallback.
  *
  * Captured values never leave the object through serialize(), var_dump() or
- * print_r(): serialization drops them (an unserialized copy reads getenv()
- * only) and debug dumps show the key names with '[redacted]' values.
- * var_export() bypasses these hooks; do not export an EnvConfig.
+ * print_r(): serialization drops them and debug dumps show the key names with
+ * '[redacted]' values. var_export(), (array) casts and Reflection bypass these
+ * hooks; do not export, cast or reflect on an EnvConfig.
+ *
+ * An unserialized copy carries no captured values, including any a crafted
+ * payload supplies, and reads getenv() only: its authority changes to the
+ * ambient environment of the process that unserializes it. Rehydrate
+ * deliberately with new EnvConfig(...) instead.
  */
 final class EnvConfig
 {

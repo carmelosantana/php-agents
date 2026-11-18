@@ -88,10 +88,11 @@ Known limits:
 
 - An injected client that ignores `max_redirects`, `max_duration`, `on_progress` or `resolve`
   (Coqui's ReactPHP adapter) gets none of the limits those options carry.
-- `gethostbynamel()` and `dns_get_record()`, which the Gemini image check calls, block and are
+- `gethostbynamel()` and `dns_get_record()`, which the Gemini image check and `RemoteImageResolver` call, block and are
   not covered by the request limits.
 - A host-supplied `ImageResolverInterface` or legacy `$remoteImageFetcher` for llama.cpp images is
-  outside `RequestLimits`; its limits are its own.
+  outside `RequestLimits`; its limits are its own. A normalizer takes one `ImageResolverInterface`;
+  a host that accepts local and remote images composes its own.
 
 Known limits of the Gemini image check:
 

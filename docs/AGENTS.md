@@ -89,7 +89,7 @@ time, response data and tokens it may use whatever the provider reports:
 
 | Field | Default | Effect |
 |-------|---------|--------|
-| `maxToolCallsPerTurn` | `0` | Tool calls run from one provider response; `0` means no cap |
+| `maxToolCallsPerTurn` | `0` | Tool calls from one provider response sent to the policy (denied and unknown calls included); `0` means no cap |
 | `maxToolCallsPerRun` | `0` | Tool calls sent to the policy and executor across the run; `0` means no cap |
 | `executeUnadvertisedTools` | `false` | `true` lets the model execute any registered tool, even one `maxTools` left out |
 | `maxRunSeconds` | `0.0` | Wall time of the run in seconds, from the start of `run()`; `0.0` means no limit |
@@ -105,9 +105,9 @@ A negative value throws `\InvalidArgumentException`. The `done` tool counts towa
   policy has seen it. `executeUnadvertisedTools: true` restores the older behaviour, where every
   registered tool can run.
 - **Granted tools.** A host tool that discovers tools (a tool search, for example) implements
-  `ToolGrantInterface`. After a call to it runs and returns a non-error result, the agent adds every
+  `ToolGrantInterface`. After a call to it runs and returns a successful result, the agent adds every
   name from `grantedToolNames()` that is a registered tool to the executable set for the rest of
-  that run. Unknown names are ignored, a call the policy denied or a cap refused grants nothing, and
+  that run. `grantedToolNames()` should return the names granted by the tool's most recent call. Unknown names are ignored, a call the policy denied or a cap refused grants nothing, and
   the next `run()` starts without the grants. Implement it only on trusted host code.
 - **Per turn.** Calls beyond `maxToolCallsPerTurn` in one response are not shown to the policy and
   not run. Each gets the error result `Tool call limit reached: at most N calls per turn.` with its
@@ -137,17 +137,21 @@ returns that fixed content:
 |-------|---------|---------|
 | `maxRunSeconds` | At the top of each iteration, between stream chunks, before each serial tool call and before a batch call | `Run time limit reached.` |
 | `maxResponseBytes` | After each stream chunk; the stream is abandoned | `Response size limit reached.` |
-| `maxEstimatedTokens` | Before each provider call and after each response | `Token limit reached.` |
-| `maxInputTokens` | Once, before the first provider call | `Input is too large.` |
+| `maxEstimatedTokens` | Before each provider call, between stream chunks and after each response | `Token limit reached.` |
+| `maxInputTokens` | Before the first provider call, and on each pending input before it is added | `Input is too large.` |
 
 - **Response bytes** count each chunk's `content` and `reasoning` plus the JSON of its tool calls and
   content blocks. The total runs across every provider call of the run.
 - **Estimated tokens.** Before each provider call the request estimate is
   `Conversation::estimateTokens()` plus one token per 4 bytes of the tool schemas' JSON. If the
   tokens spent so far plus that estimate exceed the limit, the run ends before the request is sent.
-  After the response, the run adds `max(reported completion tokens, response bytes / 4)`, so a
-  provider that reports zero or no usage still counts.
-- **Input size.** Only the new `$input` message is measured, with the same 4-characters-per-token
+  While the response streams, the bytes received so far count one token per 4 bytes, and the
+  stream is abandoned once the total passes the limit. After the response, the run adds
+  `max(reported completion tokens, response bytes / 4)`, so a provider that reports zero or no
+  usage still counts. A response that crosses the limit
+  ends `BudgetExhausted` even when it carried a final answer.
+- **Input size.** Only new input is measured: the `$input` message and each message a
+  `PendingInputProviderInterface` hands in between iterations, with the same 4-characters-per-token
   heuristic; history is covered by `maxEstimatedTokens`. A larger input never reaches the provider.
 - **Tools stopped by time.** A tool call that `maxRunSeconds` stops gets the error result
   `Run time limit reached.` with its call id, so every tool call still has a result.
@@ -156,7 +160,8 @@ The limits are cooperative: the agent checks them between chunks, before each to
 calls. A provider that blocks before yielding its first chunk is bounded only by the provider's
 `RequestLimits` (see [PROVIDERS.md](PROVIDERS.md)), and a single slow tool only by the tool itself.
 One oversized chunk is a transport concern too: `RequestLimits::$maxResponseBytes` caps the
-downloaded body.
+downloaded body. An endless stream of empty chunks is bounded only by `maxRunSeconds`: it adds no
+response bytes and no tokens.
 
 ```php
 $agent = new ResearchAgent(

@@ -7,8 +7,9 @@ namespace CarmeloSantana\PHPAgents\Agent;
 /**
  * Limits on one AbstractAgent::run().
  *
- * - $maxToolCallsPerTurn caps the tool calls executed from one provider response. Calls beyond it
- *   are not shown to the execution policy or run; each gets an error result.
+ * - $maxToolCallsPerTurn caps the tool calls from one provider response that are sent to the
+ *   execution policy (denied and unknown calls count). Calls beyond it are not shown to the
+ *   policy or run; each gets an error result.
  * - $maxToolCallsPerRun caps the tool calls sent to the policy and executor across the run. Calls
  *   beyond it get an error result, and the run then ends as AgentFinishReason::BudgetExhausted.
  * - $executeUnadvertisedTools lets the model execute any registered tool, including the ones
@@ -18,10 +19,10 @@ namespace CarmeloSantana\PHPAgents\Agent;
  * - $maxResponseBytes caps the bytes received from the provider across the run (content,
  *   reasoning and the JSON of each chunk's tool calls and content blocks).
  * - $maxEstimatedTokens caps the run's local token estimate: each request's estimate (conversation
- *   plus tool schemas) plus each response's max(reported completion tokens, bytes / 4). It does
- *   not trust the usage the provider reports.
- * - $maxInputTokens caps the estimated size of the new input message; a larger one never reaches
- *   the provider.
+ *   plus tool schemas) plus each response's max(reported completion tokens, bytes / 4). It is
+ *   also checked between stream chunks, and does not trust the usage the provider reports.
+ * - $maxInputTokens caps the estimated size of the new input message and of each pending input;
+ *   a larger one never reaches the provider.
  *
  * Each of the four ends the run as AgentFinishReason::BudgetExhausted. They are cooperative: the
  * agent checks them between stream chunks, at each iteration and before each tool or batch call.

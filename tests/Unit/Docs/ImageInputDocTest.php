@@ -25,3 +25,33 @@ test('the local runtime doc shows LocalImageResolver for image input', function 
     expect($doc)->toContain('LocalImageResolver')
         ->and($doc)->toContain('UserMessage::withImages(');
 });
+
+test('the local runtime image example imports LlamaCppProvider', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../docs/LOCAL-RUNTIME.md');
+    $section = substr($doc, (int) strpos($doc, '## Image Input from PHP'));
+
+    expect($section)->toContain('use CarmeloSantana\PHPAgents\Provider\LlamaCppProvider;');
+});
+
+test('the docs say RemoteImageResolver also blocks on DNS and a normalizer takes one resolver', function (string $path) {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../' . $path);
+
+    expect($doc)->toContain('which the Gemini image check and `RemoteImageResolver` call, block')
+        ->and($doc)->toContain('one `ImageResolverInterface`');
+})->with(['docs/PROVIDERS.md', 'docs/adr/0003-provider-request-limits.md']);
+
+test('the LocalImageResolver docblock names the FIFO swap in its residual race', function () {
+    $source = (string) file_get_contents(__DIR__ . '/../../../src/Image/LocalImageResolver.php');
+
+    expect($source)->toContain('a FIFO swapped in')
+        ->and($source)->toContain('can block');
+});
+
+test('the EnvConfig docblock names the other bypasses and what an unserialized copy reads', function () {
+    $source = (string) file_get_contents(__DIR__ . '/../../../src/Config/EnvConfig.php');
+
+    expect($source)->toContain('(array) casts')
+        ->and($source)->toContain('Reflection')
+        ->and($source)->toContain('carries no captured values')
+        ->and($source)->toContain('new EnvConfig(');
+});

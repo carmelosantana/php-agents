@@ -14,17 +14,19 @@ use CarmeloSantana\PHPAgents\Contract\ImageResolverInterface;
  * A root that does not exist is ignored, and no roots refuses everything.
  *
  * The file is opened then verified: stat() must show a regular file no larger than the
- * policy's maxBytes (so a FIFO or device is never opened), fstat() on the open handle
- * must show a regular file with the same device and inode, and the reference must still
- * realpath() to the same contained path. At most maxBytes + 1 bytes are read, and more
+ * policy's maxBytes (so, barring the race below, a FIFO or device is never opened),
+ * fstat() on the open handle must show a regular file with the same device and inode,
+ * and the reference must still realpath() to the same contained path. At most maxBytes + 1 bytes are read, and more
  * than maxBytes refuses, which covers a file that grows after the size check. The bytes
  * then pass ImagePolicy::check().
  *
  * Residual race: an ancestor directory swapped for a symlink between the first
  * realpath() and fopen() is caught by the inode and second realpath() checks only when
  * the swap is still in place after the open; a swap that is undone in that window is not
- * detected. PHP has no openat()/O_NOFOLLOW to close it, so roots should not be writable
- * by whoever supplies the reference.
+ * detected. Likewise, a FIFO swapped in for the file between stat() and fopen() is
+ * opened, and fopen() on a FIFO with no writer can block, hanging the call before fstat()
+ * refuses it. PHP has no openat()/O_NOFOLLOW to close these, so roots should not be
+ * writable by whoever supplies the reference.
  */
 final class LocalImageResolver implements ImageResolverInterface
 {
