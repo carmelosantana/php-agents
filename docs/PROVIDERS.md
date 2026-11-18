@@ -134,14 +134,14 @@ Uses OpenAI's JSON mode with response format:
 ```php
 $result = $provider->structured(
     messages: [new UserMessage('Extract the name and age from: "John is 30 years old"')],
-    schema: [
+    schema: json_encode([
         'type' => 'object',
         'properties' => [
             'name' => ['type' => 'string'],
             'age' => ['type' => 'integer'],
         ],
         'required' => ['name', 'age'],
-    ],
+    ]),
 );
 // ['name' => 'John', 'age' => 30]
 ```
@@ -314,7 +314,7 @@ Uses Anthropic's native structured outputs: the request sends `output_config: {f
 ```php
 $result = $provider->structured(
     messages: [new UserMessage('Extract: "Jane, age 25, from NYC"')],
-    schema: [
+    schema: json_encode([
         'type' => 'object',
         'properties' => [
             'name' => ['type' => 'string'],
@@ -322,7 +322,7 @@ $result = $provider->structured(
             'city' => ['type' => 'string'],
         ],
         'required' => ['name', 'age', 'city'],
-    ],
+    ]),
 );
 // ['name' => 'Jane', 'age' => 25, 'city' => 'NYC']
 ```
