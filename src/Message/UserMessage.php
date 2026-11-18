@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Message;
 
+use CarmeloSantana\PHPAgents\Contract\ImageResolverInterface;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Enum\Role;
+use CarmeloSantana\PHPAgents\Image\ImageInputException;
 
 final readonly class UserMessage implements MessageInterface
 {
@@ -47,28 +49,29 @@ final readonly class UserMessage implements MessageInterface
     /**
      * Create a multimodal message with text and images.
      *
+     * Each path is read through $resolver (for example `new LocalImageResolver([$uploadsDir])`),
+     * which decides what may be read and returns checked bytes; the data URI carries the
+     * sniffed MIME type. Paths without a resolver are refused.
+     *
      * @param string[] $imagePaths
+     * @throws ImageInputException when paths are given without a resolver, or the resolver refuses one.
      */
-    public static function withImages(string $text, array $imagePaths): self
+    public static function withImages(string $text, array $imagePaths, ?ImageResolverInterface $resolver = null): self
     {
         $content = [['type' => 'text', 'text' => $text]];
 
+        if ($imagePaths !== [] && $resolver === null) {
+            throw new ImageInputException(
+                'Image paths need an ImageResolverInterface; pass new LocalImageResolver([...allowed roots]).',
+            );
+        }
+
         foreach ($imagePaths as $path) {
-            if (!file_exists($path)) {
-                continue;
-            }
-
-            $fileContent = file_get_contents($path);
-            if ($fileContent === false) {
-                continue;
-            }
-
-            $base64 = base64_encode($fileContent);
-            $mime = mime_content_type($path) ?: 'image/png';
+            $image = $resolver->resolve($path);
 
             $content[] = [
                 'type' => 'image_url',
-                'image_url' => ['url' => "data:{$mime};base64,{$base64}"],
+                'image_url' => ['url' => "data:{$image->mimeType};base64," . base64_encode($image->bytes)],
             ];
         }
 

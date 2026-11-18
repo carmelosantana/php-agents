@@ -55,6 +55,30 @@ $provider = new LlamaCppProvider(
 - Image input is supported when the model has a matching projector GGUF and `libmtmd` is available.
 - The provider still owns history formatting, tool prompt injection, and tool-call parsing so the high-level provider contract remains consistent with remote backends.
 
+### Image Inputs
+
+`LlamaCppMultimodalNormalizer` reads `image_url` blocks as follows:
+
+- A `data:` URI (base64 only) is decoded and checked by an `ImagePolicy` (20 MiB and PNG, JPEG, GIF or WebP by default). An over-size URI is refused before it is decoded, and the MIME type sniffed from the bytes replaces the declared one.
+- A local path, `file://` URL or `http(s)://` URL is refused unless the host passes an `ImageResolverInterface`: `LocalImageResolver` reads only files under the roots it is given, and `RemoteImageResolver` downloads only from public addresses with time, size and redirect limits.
+- The older `$remoteImageFetcher` callable still works for `http(s)://` when no resolver is set; it is trusted host code, and its bytes are policy checked.
+- Vision support and the image count are checked before any image is read.
+
+```php
+use CarmeloSantana\PHPAgents\Image\LocalImageResolver;
+use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppMultimodalNormalizer;
+use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppProjectorResolver;
+
+$provider = new LlamaCppProvider(
+    model: getenv('LLAMA_CPP_MODEL_PATH'),
+    runtime: $runtime,
+    multimodalNormalizer: new LlamaCppMultimodalNormalizer(
+        new LlamaCppProjectorResolver(),
+        imageResolver: new LocalImageResolver(['/srv/app/uploads']),
+    ),
+);
+```
+
 ## OpenAICompatibleProvider
 
 The base provider for any API that follows the OpenAI chat completions format. Works with OpenAI, OpenRouter, Together, Groq, vLLM, LM Studio, and many others.
@@ -623,7 +647,7 @@ The limits hold for an injected client that honours symfony/http-client's `max_r
 Two requests are outside `RequestLimits`:
 
 - `CliProvider` runs a local command and sends no HTTP request.
-- `LlamaCppProvider` runs the model in-process, but `LlamaCppMultimodalNormalizer` fetches a remote `image_url` with `file_get_contents()`, with no time, size, redirect or private-network limit. This is a known open finding (L2); pass images to llama.cpp as `data:` URIs.
+- `LlamaCppProvider` runs the model in-process. `LlamaCppMultimodalNormalizer` refuses a remote `image_url` unless the host configures an `ImageResolverInterface` (such as `RemoteImageResolver`, which applies its own limits) or the legacy `$remoteImageFetcher`; see [Image Inputs](#image-inputs).
 
 `gethostbynamel()` and `dns_get_record()`, which the Gemini image check calls, block and are not covered by any of these limits.
 

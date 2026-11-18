@@ -349,3 +349,28 @@ $result = $handle->generate(new RuntimeCompletionRequest(
 
 echo $result->content;
 ```
+
+## Image Input from PHP
+
+`LlamaCppProvider` accepts images as `data:` URIs. Local paths and URLs are refused unless you pass an `ImageResolverInterface`, which decides what may be read. `LocalImageResolver` reads only regular image files under the roots you give it (symlinks and `..` are judged by where they lead):
+
+```php
+use CarmeloSantana\PHPAgents\Image\LocalImageResolver;
+use CarmeloSantana\PHPAgents\Message\UserMessage;
+use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppMultimodalNormalizer;
+use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppProjectorResolver;
+
+$images = new LocalImageResolver([__DIR__ . '/images']);
+
+// Builds data: URIs from the files; a path outside the roots, or a file that is not an image, throws.
+$message = UserMessage::withImages('Describe this image.', [__DIR__ . '/images/sample.png'], $images);
+
+// Or let the provider read path image_url blocks through the same resolver.
+$provider = new LlamaCppProvider(
+    model: 'local-llama',
+    runtime: $runtime,
+    multimodalNormalizer: new LlamaCppMultimodalNormalizer(new LlamaCppProjectorResolver(), imageResolver: $images),
+);
+```
+
+`UserMessage::withImages()` with paths and no resolver throws an `ImageInputException`.
