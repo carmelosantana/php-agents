@@ -120,11 +120,13 @@ final class GeminiProvider extends AbstractProvider
 
         $parser = new SseStreamParser($this->httpClient, $response);
         $toolCallCounter = 0;
+        $finished = false;
 
         foreach ($parser->events() as $json) {
             $candidate = $json['candidates'][0] ?? [];
             $parts = $candidate['content']['parts'] ?? [];
             $finishReason = $this->finishReasonOf($json);
+            $finished = $finished || isset($candidate['finishReason']) || isset($json['promptFeedback']['blockReason']);
 
             $text = '';
             $reasoning = '';
@@ -189,6 +191,11 @@ final class GeminiProvider extends AbstractProvider
                     usage: $this->parseUsageMetadata($json),
                 );
             }
+        }
+
+        // EOF without a finishReason or a blocked prompt: the answer is incomplete.
+        if (!$finished) {
+            yield new Response(content: '', finishReason: ProviderFinishReason::Error, toolCalls: [], model: $this->model);
         }
     }
 

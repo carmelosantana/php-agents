@@ -1146,3 +1146,29 @@ test('stream keeps stream true and the conversation when options try to override
     expect($requestUrl)->toContain(':streamGenerateContent?alt=sse')
         ->and($requestPayload['contents'])->toBe([['role' => 'user', 'parts' => [['text' => 'hi']]]]);
 });
+
+test('stream ending without a finishReason yields one trailing Error chunk with no tool calls', function () {
+    $sseData = 'data: ' . json_encode(['candidates' => [[
+        'content' => ['role' => 'model', 'parts' => [['text' => 'Half an ans']]],
+    ]]]) . "\n\n";
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $chunks = iterator_to_array((new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->stream([new UserMessage('hi')]), false);
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[0]->content)->toBe('Half an ans')
+        ->and($chunks[1]->content)->toBe('')
+        ->and($chunks[1]->toolCalls)->toBe([])
+        ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::Error);
+});
+
+test('stream that ends with STOP yields no extra Error chunk', function () {
+    $sseData = 'data: ' . json_encode(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'Hel']]]]]]) . "\n\n"
+        . 'data: ' . json_encode(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'lo']]], 'finishReason' => 'STOP']]]) . "\n\n";
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $chunks = iterator_to_array((new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->stream([new UserMessage('hi')]), false);
+
+    expect($chunks)->toHaveCount(2)
+        ->and(array_map(fn($r) => $r->finishReason, $chunks))->toBe([ProviderFinishReason::Stop, ProviderFinishReason::Stop]);
+});
