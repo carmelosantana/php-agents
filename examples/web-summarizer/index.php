@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * Web Summarizer — an agent with one tool summarizes the project README.
  *
@@ -19,8 +21,6 @@
  *   - index.html loads the Tailwind JIT script from a CDN, which cannot carry SRI.
  *   - The agent's only tool reads README.md from a fixed path; it takes no arguments.
  */
-
-declare(strict_types=1);
 
 require dirname(__DIR__, 2) . '/vendor/autoload.php';
 require dirname(__DIR__) . '/helpers.php';

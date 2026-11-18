@@ -156,10 +156,15 @@ sequenceDiagram
 
 ### Structured Output
 
-Uses OpenAI's JSON mode with response format:
+Uses OpenAI's `response_format: json_schema` (strict when the schema allows it).
+`ProviderInterface::structured()` takes the schema as a JSON string and returns either a decoded
+array or a `Response` holding the JSON text, depending on the provider.
+`StructuredOutput::extract()` (`CarmeloSantana\PHPAgents\Provider\StructuredOutput`) takes an
+array schema and always returns an array (`[]` when the model gave no JSON):
 
 ```php
-$result = $provider->structured(
+$result = StructuredOutput::extract(
+    $provider,
     messages: [new UserMessage('Extract the name and age from: "John is 30 years old"')],
     schema: json_encode([
         'type' => 'object',
@@ -343,7 +348,8 @@ A schema native structured outputs cannot take is an open object (`{"type": "obj
 Other `output_config` keys you pass in `$options`, such as `effort`, are kept on both paths. No tools are forced: a forced tool choice returns a 400 on current models, so one passed in `$options` is dropped. If the finish reason is not `Stop` (for example a refusal or `max_tokens`), or the first text block is not JSON that decodes to an array, `structured()` returns the `Response` instead:
 
 ```php
-$result = $provider->structured(
+$result = StructuredOutput::extract(
+    $provider,
     messages: [new UserMessage('Extract: "Jane, age 25, from NYC"')],
     schema: json_encode([
         'type' => 'object',
@@ -784,7 +790,7 @@ final class MyProvider implements ProviderInterface
         yield new Response(content: ' world');
     }
 
-    public function structured(array $messages, array $schema, array $options = []): mixed
+    public function structured(array $messages, string $schema, array $options = []): mixed
     {
         // Return structured data matching the schema
         return ['result' => 'value'];

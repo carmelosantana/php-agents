@@ -1,9 +1,8 @@
 # Export-ignore: files excluded from `git archive` and production release builds.
 # These do not appear in ZIP/tar.gz artifacts or GitHub-generated source downloads.
 #
-# NOTE: docs/ and examples/ are intentionally INCLUDED — unlike application
-# packages, library consumers benefit from having documentation and runnable
-# examples in the downloaded archive.
+# NOTE: docs/ is intentionally INCLUDED. examples/ is not: consumers that vendor
+# this package (e.g. Kanboard AiConnector) shipped it in their release zips.
 
 # CI / Dev tooling
 /.github/             export-ignore
@@ -23,6 +22,11 @@
 # Tests and build scripts
 /tests/               export-ignore
 /scripts/             export-ignore
+/AGENTS.md            export-ignore
+/CLAUDE.md            export-ignore
+
+# Runnable examples (repo only)
+/examples/           export-ignore
 
 # README-only screenshots
 /screenshots/         export-ignore

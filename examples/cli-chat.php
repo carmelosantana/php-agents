@@ -1,6 +1,8 @@
 #!/usr/bin/env php
 <?php
 
+declare(strict_types=1);
+
 /**
  * CLI Chat — Simple conversational agent using php-agents.
  *
@@ -22,8 +24,6 @@
  *   - Model text is untrusted: control characters (ANSI/OSC escapes) are stripped before
  *     printing, so a hostile model cannot drive the terminal.
  */
-
-declare(strict_types=1);
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 require __DIR__ . '/helpers.php';

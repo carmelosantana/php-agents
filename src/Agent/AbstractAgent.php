@@ -76,6 +76,9 @@ abstract class AbstractAgent implements AgentInterface
     /** @var ToolkitInterface[] */
     private array $toolkits = [];
 
+    /** @var ToolInterface[] */
+    private array $addedTools = [];
+
     /**
      * Maximum number of tools exposed to the provider per iteration.
      * 0 = unlimited (default). When set, DoneTool always counts toward the cap.
@@ -162,6 +165,16 @@ abstract class AbstractAgent implements AgentInterface
     public function addToolkit(ToolkitInterface $toolkit): static
     {
         $this->toolkits[] = $toolkit;
+
+        return $this;
+    }
+
+    /**
+     * Add a single tool without writing a toolkit. Offered alongside tools().
+     */
+    public function addTool(ToolInterface $tool): static
+    {
+        $this->addedTools[] = $tool;
 
         return $this;
     }
@@ -1335,7 +1348,7 @@ abstract class AbstractAgent implements AgentInterface
     {
         $indexed = [];
 
-        foreach ($this->tools() as $tool) {
+        foreach ([...$this->tools(), ...$this->addedTools] as $tool) {
             $indexed[$tool->name()] = $tool;
         }
 

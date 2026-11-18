@@ -1,10 +1,10 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * Small helpers shared by the examples. Kept in one file so tests/Unit/Examples can pin them.
  */
-
-declare(strict_types=1);
 
 namespace PHPAgentsExamples;
 
