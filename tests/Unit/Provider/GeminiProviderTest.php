@@ -183,11 +183,9 @@ test('image content blocks convert to inlineData parts', function () {
 
 test('URL image falls back to text description', function () {
     $requestPayload = null;
+    // 192.0.2.1 (TEST-NET-1) is not a global address, so the image fetch is refused
+    // before any DNS lookup or request and the part falls back to text.
     $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
-        if ($method === 'GET') {
-            // Image download attempt — return 404 to trigger the text fallback
-            return new MockResponse('', ['http_code' => 404]);
-        }
         $requestPayload = json_decode($options['body'], true);
         return mockGeminiResponse();
     });
@@ -200,13 +198,13 @@ test('URL image falls back to text description', function () {
 
     $provider->chat([
         new UserMessage([
-            ['type' => 'image_url', 'image_url' => ['url' => 'https://example.com/photo.jpg']],
+            ['type' => 'image_url', 'image_url' => ['url' => 'http://192.0.2.1/photo.jpg']],
         ]),
     ]);
 
     $parts = $requestPayload['contents'][0]['parts'];
     expect($parts[0])->toHaveKey('text')
-        ->and($parts[0]['text'])->toContain('https://example.com/photo.jpg');
+        ->and($parts[0]['text'])->toContain('http://192.0.2.1/photo.jpg');
 });
 
 test('formatTools produces functionDeclarations format', function () {

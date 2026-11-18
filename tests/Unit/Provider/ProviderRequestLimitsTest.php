@@ -294,6 +294,11 @@ function limitsTestWithLocalServer(callable $fn): void
         [1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
         $pipes,
     );
+    if ($process === false) {
+        array_map('unlink', glob($dir . '/*') ?: []);
+        rmdir($dir);
+        test()->markTestSkipped('proc_open() could not start php -S.');
+    }
 
     try {
         // Wait for php -S to accept connections; a refused probe is expected meanwhile.

@@ -55,18 +55,18 @@ function geminiImageDownload(string $imageUrl, array $images = []): array
     return ['gets' => $gets, 'options' => $getOptions, 'part' => $payload['contents'][0]['parts'][0]];
 }
 
-function pngResponse(): MockResponse
+function geminiImagePngResponse(): MockResponse
 {
     return new MockResponse("\x89PNG", ['http_code' => 200, 'response_headers' => ['content-type' => 'image/png']]);
 }
 
-function redirectTo(string $location): MockResponse
+function geminiImageRedirectTo(string $location): MockResponse
 {
     return new MockResponse('', ['http_code' => 302, 'response_headers' => ['location' => $location]]);
 }
 
 test('a private address is never requested', function (string $url) {
-    $result = geminiImageDownload($url, [$url => pngResponse()]);
+    $result = geminiImageDownload($url, [$url => geminiImagePngResponse()]);
 
     expect($result['gets'])->toBe([])
         ->and($result['part'])->not->toHaveKey('inlineData')
@@ -80,7 +80,7 @@ test('a private address is never requested', function (string $url) {
 
 test('an IPv6 address PHP calls global but that reaches a private network is refused', function (string $ip) {
     $url = "http://[{$ip}]/a.png";
-    $result = geminiImageDownload($url, [$url => pngResponse()]);
+    $result = geminiImageDownload($url, [$url => geminiImagePngResponse()]);
 
     expect($result['gets'])->toBe([])
         ->and($result['part']['text'])->toContain('[Image: could not download');
@@ -94,14 +94,14 @@ test('an IPv6 address PHP calls global but that reaches a private network is ref
 
 test('a public IPv6 address is still accepted by the deny-list', function () {
     $url = 'http://[2606:4700::1111]/a.png';
-    $result = geminiImageDownload($url, [$url => pngResponse()]);
+    $result = geminiImageDownload($url, [$url => geminiImagePngResponse()]);
 
     expect($result['gets'])->toBe([$url]);
 });
 
 test('a public IPv6-literal image sends no resolve pin and is inlined', function () {
     $url = 'http://[2606:4700::1111]/a.png';
-    $result = geminiImageDownload($url, [$url => pngResponse()]);
+    $result = geminiImageDownload($url, [$url => geminiImagePngResponse()]);
 
     expect($result['options'][0]['resolve'] ?? [])->toBe([])
         ->and($result['part'])->toBe([
@@ -110,14 +110,14 @@ test('a public IPv6-literal image sends no resolve pin and is inlined', function
 });
 
 test('localhost resolves to a refused address', function () {
-    $result = geminiImageDownload('http://localhost/a.png', ['http://localhost/a.png' => pngResponse()]);
+    $result = geminiImageDownload('http://localhost/a.png', ['http://localhost/a.png' => geminiImagePngResponse()]);
 
     expect($result['gets'])->toBe([])
         ->and($result['part']['text'])->toContain('[Image: could not download');
 });
 
 test('a public image is inlined', function () {
-    $result = geminiImageDownload('http://93.184.216.34/a.png', ['http://93.184.216.34/a.png' => pngResponse()]);
+    $result = geminiImageDownload('http://93.184.216.34/a.png', ['http://93.184.216.34/a.png' => geminiImagePngResponse()]);
 
     expect($result['part'])->toBe([
         'inlineData' => ['mimeType' => 'image/png', 'data' => base64_encode("\x89PNG")],
@@ -125,7 +125,7 @@ test('a public image is inlined', function () {
 });
 
 test('an IPv4-literal host sends no resolve pin and no redirect budget', function () {
-    $result = geminiImageDownload('http://93.184.216.34/a.png', ['http://93.184.216.34/a.png' => pngResponse()]);
+    $result = geminiImageDownload('http://93.184.216.34/a.png', ['http://93.184.216.34/a.png' => geminiImagePngResponse()]);
 
     expect($result['options'][0]['resolve'] ?? [])->toBe([])
         ->and($result['options'][0]['max_redirects'])->toBe(0);
@@ -149,8 +149,8 @@ test('an image over 20 MiB is refused', function () {
 
 test('a redirect to a private address is not followed', function () {
     $result = geminiImageDownload('http://93.184.216.34/a.png', [
-        'http://93.184.216.34/a.png' => redirectTo('http://169.254.169.254/latest/meta-data/'),
-        'http://169.254.169.254/latest/meta-data/' => pngResponse(),
+        'http://93.184.216.34/a.png' => geminiImageRedirectTo('http://169.254.169.254/latest/meta-data/'),
+        'http://169.254.169.254/latest/meta-data/' => geminiImagePngResponse(),
     ]);
 
     expect($result['gets'])->toBe(['http://93.184.216.34/a.png'])
@@ -159,8 +159,8 @@ test('a redirect to a private address is not followed', function () {
 
 test('a redirect to a public image is followed', function () {
     $result = geminiImageDownload('http://93.184.216.34/a.png', [
-        'http://93.184.216.34/a.png' => redirectTo('http://93.184.216.35/b.png'),
-        'http://93.184.216.35/b.png' => pngResponse(),
+        'http://93.184.216.34/a.png' => geminiImageRedirectTo('http://93.184.216.35/b.png'),
+        'http://93.184.216.35/b.png' => geminiImagePngResponse(),
     ]);
 
     expect($result['gets'])->toBe(['http://93.184.216.34/a.png', 'http://93.184.216.35/b.png'])
@@ -172,8 +172,8 @@ test('a redirect to a public image is followed', function () {
 
 test('a relative redirect is resolved against the current URL', function () {
     $result = geminiImageDownload('http://93.184.216.34/dir/a.png', [
-        'http://93.184.216.34/dir/a.png' => redirectTo('b.png'),
-        'http://93.184.216.34/dir/b.png' => pngResponse(),
+        'http://93.184.216.34/dir/a.png' => geminiImageRedirectTo('b.png'),
+        'http://93.184.216.34/dir/b.png' => geminiImagePngResponse(),
     ]);
 
     expect($result['gets'])->toBe(['http://93.184.216.34/dir/a.png', 'http://93.184.216.34/dir/b.png'])
@@ -182,10 +182,10 @@ test('a relative redirect is resolved against the current URL', function () {
 
 test('three redirects are followed', function () {
     $result = geminiImageDownload('http://93.184.216.34/0.png', [
-        'http://93.184.216.34/0.png' => redirectTo('/1.png'),
-        'http://93.184.216.34/1.png' => redirectTo('/2.png'),
-        'http://93.184.216.34/2.png' => redirectTo('/3.png'),
-        'http://93.184.216.34/3.png' => pngResponse(),
+        'http://93.184.216.34/0.png' => geminiImageRedirectTo('/1.png'),
+        'http://93.184.216.34/1.png' => geminiImageRedirectTo('/2.png'),
+        'http://93.184.216.34/2.png' => geminiImageRedirectTo('/3.png'),
+        'http://93.184.216.34/3.png' => geminiImagePngResponse(),
     ]);
 
     expect($result['part'])->toHaveKey('inlineData');
@@ -193,11 +193,11 @@ test('three redirects are followed', function () {
 
 test('a fourth redirect is refused', function () {
     $result = geminiImageDownload('http://93.184.216.34/0.png', [
-        'http://93.184.216.34/0.png' => redirectTo('/1.png'),
-        'http://93.184.216.34/1.png' => redirectTo('/2.png'),
-        'http://93.184.216.34/2.png' => redirectTo('/3.png'),
-        'http://93.184.216.34/3.png' => redirectTo('/4.png'),
-        'http://93.184.216.34/4.png' => pngResponse(),
+        'http://93.184.216.34/0.png' => geminiImageRedirectTo('/1.png'),
+        'http://93.184.216.34/1.png' => geminiImageRedirectTo('/2.png'),
+        'http://93.184.216.34/2.png' => geminiImageRedirectTo('/3.png'),
+        'http://93.184.216.34/3.png' => geminiImageRedirectTo('/4.png'),
+        'http://93.184.216.34/4.png' => geminiImagePngResponse(),
     ]);
 
     expect($result['gets'])->toHaveCount(4)
@@ -207,7 +207,7 @@ test('a fourth redirect is refused', function () {
 
 test('a redirect to a non-http scheme is refused', function () {
     $result = geminiImageDownload('http://93.184.216.34/a.png', [
-        'http://93.184.216.34/a.png' => redirectTo('file:///etc/passwd'),
+        'http://93.184.216.34/a.png' => geminiImageRedirectTo('file:///etc/passwd'),
     ]);
 
     expect($result['gets'])->toBe(['http://93.184.216.34/a.png'])
@@ -215,7 +215,7 @@ test('a redirect to a non-http scheme is refused', function () {
 });
 
 test('the provider API client is never used for an image fetch', function () {
-    $imageClient = new MockHttpClient(fn() => pngResponse());
+    $imageClient = new MockHttpClient(fn() => geminiImagePngResponse());
     $sawImageUrl = false;
     // The image fetch catches every Throwable, so the flag below also catches a swallowed fail().
     $apiClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$sawImageUrl): MockResponse {
