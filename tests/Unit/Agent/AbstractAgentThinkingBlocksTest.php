@@ -8,15 +8,19 @@ use CarmeloSantana\PHPAgents\Context\ContextWindow;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Enum\AgentFinishReason;
+use CarmeloSantana\PHPAgents\Enum\EmptyResponseHandling;
 use CarmeloSantana\PHPAgents\Enum\ModelCapability;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\Conversation;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
+use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 use CarmeloSantana\PHPAgents\Provider\Response;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
+use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Response\MockResponse;
 
 /**
  * Scripted provider: each stream() call yields the next list of chunks.
@@ -136,7 +140,8 @@ test('in a tool round the second stream() call receives the content blocks', fun
         ->and($replayed)->toHaveCount(1)
         ->and($replayed[0]->contentBlocks())->toEqual(thinkingBlocksFor('sig-round-1'))
         ->and($replayed[0]->toolCalls()[0]->name)->toBe('ping')
-        ->and(end($final)->contentBlocks())->toBe([['type' => 'text', 'text' => 'All done.']]);
+        ->and(end($final)->content())->toBe('All done.')
+        ->and(end($final)->contentBlocks())->toBe([]);
 });
 
 test('the request after pruning has no content blocks on any AssistantMessage', function () {
@@ -175,4 +180,87 @@ test('history passed into run() arrives without content blocks', function () {
     expect($sent)->toHaveCount(1)
         ->and($sent[0]->content())->toBe('Earlier answer')
         ->and($sent[0]->contentBlocks())->toBe([]);
+});
+
+/**
+ * An Anthropic SSE body built from event payloads.
+ *
+ * @param array<string, mixed> ...$events
+ */
+function thinkingBlocksSse(array ...$events): MockResponse
+{
+    $body = '';
+    foreach ($events as $event) {
+        $body .= 'event: ' . $event['type'] . "\n" . 'data: ' . json_encode($event) . "\n\n";
+    }
+
+    return new MockResponse($body, ['http_code' => 200]);
+}
+
+/** A streamed turn that ends on end_turn with only a signed thinking block and no text. */
+function thinkingOnlyStopSse(): MockResponse
+{
+    return thinkingBlocksSse(
+        ['type' => 'message_start', 'message' => ['model' => 'claude-test', 'usage' => ['input_tokens' => 5, 'output_tokens' => 1]]],
+        ['type' => 'content_block_start', 'index' => 0, 'content_block' => ['type' => 'thinking', 'thinking' => '', 'signature' => '']],
+        ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'thinking_delta', 'thinking' => 'Hmm.']],
+        ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'signature_delta', 'signature' => 'sig-empty']],
+        ['type' => 'content_block_stop', 'index' => 0],
+        ['type' => 'message_delta', 'delta' => ['stop_reason' => 'end_turn'], 'usage' => ['output_tokens' => 3]],
+        ['type' => 'message_stop'],
+    );
+}
+
+function textAnswerSse(string $text): MockResponse
+{
+    return thinkingBlocksSse(
+        ['type' => 'message_start', 'message' => ['model' => 'claude-test', 'usage' => ['input_tokens' => 5, 'output_tokens' => 1]]],
+        ['type' => 'content_block_start', 'index' => 0, 'content_block' => ['type' => 'text', 'text' => '']],
+        ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'text_delta', 'text' => $text]],
+        ['type' => 'content_block_stop', 'index' => 0],
+        ['type' => 'message_delta', 'delta' => ['stop_reason' => 'end_turn'], 'usage' => ['output_tokens' => 3]],
+        ['type' => 'message_stop'],
+    );
+}
+
+test('a thinking-only Stop turn is not sent back as an assistant turn', function (EmptyResponseHandling $handling) {
+    $bodies = [];
+    $responses = [thinkingOnlyStopSse(), textAnswerSse('Answer.')];
+    $client = new MockHttpClient(function (string $method, string $url, array $options) use (&$bodies, &$responses): MockResponse {
+        $bodies[] = $options['body'];
+
+        return array_shift($responses);
+    });
+    $agent = new ThinkingBlocksTestAgent(
+        provider: new AnthropicProvider(apiKey: 'test-key', httpClient: $client),
+        emptyResponseHandling: $handling,
+    );
+
+    $output = $agent->run(new UserMessage('Hi'));
+    $messages = json_decode($bodies[1], true)['messages'];
+
+    expect($output->content)->toBe('Answer.')
+        ->and($bodies)->toHaveCount(2)
+        ->and(end($messages)['role'])->toBe('user')
+        ->and(array_column($messages, 'role'))->not->toContain('assistant')
+        ->and($bodies[1])->not->toContain('"type":"thinking"')
+        ->and($bodies[1])->not->toContain('sig-empty');
+})->with([
+    'ignore' => [EmptyResponseHandling::Ignore],
+    'nudge' => [EmptyResponseHandling::Nudge],
+]);
+
+test('fallbackToReasoning adds its answer without content blocks', function () {
+    $provider = new ThinkingBlocksScriptedProvider([[
+        new Response(content: '', finishReason: ProviderFinishReason::Stop, reasoning: 'The answer is 42.'),
+        new Response(content: '', finishReason: ProviderFinishReason::Stop, contentBlocks: [['type' => 'thinking', 'thinking' => 'The answer is 42.', 'signature' => 'sig-fallback']]),
+    ]]);
+    $agent = new ThinkingBlocksTestAgent(provider: $provider, emptyResponseHandling: EmptyResponseHandling::Fallback);
+
+    $output = $agent->run(new UserMessage('Hi'));
+    $final = thinkingBlocksAssistantMessages($output->conversation->messages());
+
+    expect($output->content)->toBe('The answer is 42.')
+        ->and($final)->toHaveCount(1)
+        ->and($final[0]->contentBlocks())->toBe([]);
 });

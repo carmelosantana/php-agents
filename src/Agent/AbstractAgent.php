@@ -427,6 +427,10 @@ abstract class AbstractAgent implements AgentInterface
 
             if (!empty($response->toolCalls)) {
                 $consecutiveEmptyResponses = 0;
+                // Only a tool round carries the provider's content blocks: the
+                // thinking must go back with its tool_use. Text, empty and
+                // failed turns are re-formatted, so an empty thinking-only
+                // turn is never replayed.
                 $conversation->add(new AssistantMessage($response->content, $response->toolCalls, $response->contentBlocks));
 
                 $executionResult = $this->executeToolCalls(
@@ -454,7 +458,7 @@ abstract class AbstractAgent implements AgentInterface
             // Text-only response (no tool calls) — this IS the response.
             // The done tool is only needed after tool use to present results.
             if ($response->content !== '') {
-                $conversation->add(new AssistantMessage($response->content, [], $response->contentBlocks));
+                $conversation->add(new AssistantMessage($response->content));
                 $this->notify('agent.done', ['response' => $response->content]);
 
                 return new Output(
@@ -488,14 +492,14 @@ abstract class AbstractAgent implements AgentInterface
             }
 
             if ($this->emptyResponseHandling === EmptyResponseHandling::Ignore) {
-                $conversation->add(new AssistantMessage($response->content, [], $response->contentBlocks));
+                $conversation->add(new AssistantMessage($response->content));
                 continue;
             }
 
             // Nudge / NudgeThenFallback: keep the empty assistant turn so role
             // alternation stays valid, then ask for a plain-text answer.
             if ($consecutiveEmptyResponses <= $this->maxEmptyResponseRetries) {
-                $conversation->add(new AssistantMessage($response->content, [], $response->contentBlocks));
+                $conversation->add(new AssistantMessage($response->content));
                 $conversation->add(new UserMessage(
                     'Your previous reply contained no final answer text'
                     . ($response->reasoning !== '' ? ' (only internal reasoning)' : '')
@@ -572,7 +576,7 @@ abstract class AbstractAgent implements AgentInterface
 
         $this->notify('agent.warning', 'Model returned reasoning only; using reasoning as the answer');
 
-        $conversation->add(new AssistantMessage($answer, [], $response->contentBlocks));
+        $conversation->add(new AssistantMessage($answer));
         $this->notify('agent.done', ['response' => $answer]);
 
         return new Output(
@@ -619,7 +623,7 @@ abstract class AbstractAgent implements AgentInterface
         }
 
         if ($finishReason === AgentFinishReason::Refusal || $finishReason === AgentFinishReason::ContentFilter) {
-            $conversation->add(new AssistantMessage($content, [], $response->contentBlocks));
+            $conversation->add(new AssistantMessage($content));
         }
 
         if ($finishReason === AgentFinishReason::Error) {
