@@ -154,14 +154,16 @@ abstract class AbstractAgent implements AgentInterface
         // Inject prior conversation history (skip system messages — we use our own).
         // Repair tool pairing before injection so broken history from interrupted
         // sessions (orphaned assistant tool_calls with no matching tool results)
-        // is cleaned up before reaching any provider.
+        // is cleaned up before reaching any provider. Provider-native content
+        // blocks live only within one run: the system prompt or tools may have
+        // changed since, and the provider would reject the replayed thinking.
         if ($history !== null) {
             $history = $history->repairToolPairing();
             foreach ($history->messages() as $msg) {
                 if ($msg->role() === \CarmeloSantana\PHPAgents\Enum\Role::System) {
                     continue;
                 }
-                $conversation->add($msg);
+                $conversation->add($msg instanceof AssistantMessage ? $msg->withoutContentBlocks() : $msg);
             }
         }
 
@@ -198,7 +200,14 @@ abstract class AbstractAgent implements AgentInterface
             if ($this->contextWindow !== null) {
                 $budget = $this->contextWindow->maxTokens() - $this->contextWindow->reservedTokens();
                 if ($budget > 0) {
+                    $beforePruning = $conversation->messages();
                     $conversation = $conversation->fitWithinBudget($budget, $this->safetyMarginPercent, $this->pruningStrategy);
+
+                    // Edited history invalidates replayed thinking blocks, so
+                    // every assistant turn falls back to plain formatting.
+                    if ($conversation->messages() !== $beforePruning) {
+                        $conversation = $this->withoutContentBlocks($conversation);
+                    }
                 }
             }
 
@@ -250,6 +259,7 @@ abstract class AbstractAgent implements AgentInterface
                 $toolCalls = [];
                 $streamUsage = null;
                 $streamModel = '';
+                $contentBlocks = [];
                 // The last reason that is not Stop wins (a later failing chunk
                 // overrides an earlier ToolUse).
                 $streamFinishReason = null;
@@ -302,6 +312,10 @@ abstract class AbstractAgent implements AgentInterface
                         $streamModel = $chunk->model;
                     }
 
+                    if ($chunk->contentBlocks !== []) {
+                        $contentBlocks = $chunk->contentBlocks;
+                    }
+
                     if ($chunk->finishReason !== ProviderFinishReason::Stop) {
                         $streamFinishReason = $chunk->finishReason;
                     }
@@ -322,6 +336,7 @@ abstract class AbstractAgent implements AgentInterface
                     model: $streamModel,
                     usage: $streamUsage,
                     reasoning: implode('', $reasoningParts),
+                    contentBlocks: $contentBlocks,
                 );
             } catch (\Throwable $e) {
                 $errorMessage = $e->getMessage();
@@ -412,7 +427,7 @@ abstract class AbstractAgent implements AgentInterface
 
             if (!empty($response->toolCalls)) {
                 $consecutiveEmptyResponses = 0;
-                $conversation->add(new AssistantMessage($response->content, $response->toolCalls));
+                $conversation->add(new AssistantMessage($response->content, $response->toolCalls, $response->contentBlocks));
 
                 $executionResult = $this->executeToolCalls(
                     $response->toolCalls,
@@ -439,7 +454,7 @@ abstract class AbstractAgent implements AgentInterface
             // Text-only response (no tool calls) — this IS the response.
             // The done tool is only needed after tool use to present results.
             if ($response->content !== '') {
-                $conversation->add(new AssistantMessage($response->content));
+                $conversation->add(new AssistantMessage($response->content, [], $response->contentBlocks));
                 $this->notify('agent.done', ['response' => $response->content]);
 
                 return new Output(
@@ -473,14 +488,14 @@ abstract class AbstractAgent implements AgentInterface
             }
 
             if ($this->emptyResponseHandling === EmptyResponseHandling::Ignore) {
-                $conversation->add(new AssistantMessage($response->content));
+                $conversation->add(new AssistantMessage($response->content, [], $response->contentBlocks));
                 continue;
             }
 
             // Nudge / NudgeThenFallback: keep the empty assistant turn so role
             // alternation stays valid, then ask for a plain-text answer.
             if ($consecutiveEmptyResponses <= $this->maxEmptyResponseRetries) {
-                $conversation->add(new AssistantMessage($response->content));
+                $conversation->add(new AssistantMessage($response->content, [], $response->contentBlocks));
                 $conversation->add(new UserMessage(
                     'Your previous reply contained no final answer text'
                     . ($response->reasoning !== '' ? ' (only internal reasoning)' : '')
@@ -524,6 +539,20 @@ abstract class AbstractAgent implements AgentInterface
     }
 
     /**
+     * A copy of the conversation with every AssistantMessage stripped of its
+     * provider-native content blocks.
+     */
+    private function withoutContentBlocks(Conversation $conversation): Conversation
+    {
+        $stripped = new Conversation();
+        foreach ($conversation->messages() as $message) {
+            $stripped->add($message instanceof AssistantMessage ? $message->withoutContentBlocks() : $message);
+        }
+
+        return $stripped;
+    }
+
+    /**
      * Return accumulated reasoning as the answer for an empty-content turn.
      *
      * Used when the provider routed the entire completion into the
@@ -543,7 +572,7 @@ abstract class AbstractAgent implements AgentInterface
 
         $this->notify('agent.warning', 'Model returned reasoning only; using reasoning as the answer');
 
-        $conversation->add(new AssistantMessage($answer));
+        $conversation->add(new AssistantMessage($answer, [], $response->contentBlocks));
         $this->notify('agent.done', ['response' => $answer]);
 
         return new Output(
@@ -590,7 +619,7 @@ abstract class AbstractAgent implements AgentInterface
         }
 
         if ($finishReason === AgentFinishReason::Refusal || $finishReason === AgentFinishReason::ContentFilter) {
-            $conversation->add(new AssistantMessage($content));
+            $conversation->add(new AssistantMessage($content, [], $response->contentBlocks));
         }
 
         if ($finishReason === AgentFinishReason::Error) {
