@@ -60,6 +60,8 @@ abstract class AbstractAgent implements AgentInterface
     /** Characters of error tool-result text that reach the conversation, Output and events. */
     private const int TOOL_ERROR_MAX_CHARS = 500;
 
+    private const int ERROR_CODE_MAX_CHARS = 64;
+
     private const string RUN_TIME_LIMIT_REACHED = 'Run time limit reached.';
 
     private const string RESPONSE_SIZE_LIMIT_REACHED = 'Response size limit reached.';
@@ -1109,10 +1111,10 @@ abstract class AbstractAgent implements AgentInterface
                 continue;
             }
 
-            // The single exposure boundary for error text: Output.toolResults, the
-            // conversation and agent.tool_result all receive this result. Success
+            // The single exposure boundary for error and timeout text: Output.toolResults,
+            // the conversation and agent.tool_result all receive this result. Success
             // content and metadata are the tool author's data and are not rewritten.
-            if ($result->status === ToolResultStatus::Error) {
+            if ($result->status !== ToolResultStatus::Success) {
                 $result = $this->redactedErrorResult($result);
             }
 
@@ -1211,17 +1213,31 @@ abstract class AbstractAgent implements AgentInterface
     }
 
     /**
-     * An error result with its content and every string value in its metadata
-     * (recursively) passed through UntrustedText::forDisplay(…, 500).
+     * A failed (error or timeout) result with its content, every string key and value in its
+     * metadata (recursively; an object is first turned into arrays through JSON) passed
+     * through UntrustedText::forDisplay(…, 500), and its error code through forDisplay(…, 64).
      */
     private function redactedErrorResult(ToolResult $result): ToolResult
     {
         $redact = static function (mixed $value) use (&$redact): mixed {
+            if (is_object($value)) {
+                $flags = \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR;
+                $value = json_decode(json_encode($value, $flags) ?: 'null', true);
+            }
             if (is_string($value)) {
                 return UntrustedText::forDisplay($value, self::TOOL_ERROR_MAX_CHARS);
             }
+            if (!is_array($value)) {
+                return $value;
+            }
 
-            return is_array($value) ? array_map($redact, $value) : $value;
+            $redacted = [];
+            foreach ($value as $key => $item) {
+                $key = is_string($key) ? UntrustedText::forDisplay($key, self::TOOL_ERROR_MAX_CHARS) : $key;
+                $redacted[$key] = $redact($item);
+            }
+
+            return $redacted;
         };
 
         /** @var array<string, mixed> $metadata */
@@ -1235,7 +1251,7 @@ abstract class AbstractAgent implements AgentInterface
             $result->mimeType,
             $result->displayHint,
             $result->retryable,
-            $result->errorCode,
+            $result->errorCode === null ? null : UntrustedText::forDisplay($result->errorCode, self::ERROR_CODE_MAX_CHARS),
         );
     }
 

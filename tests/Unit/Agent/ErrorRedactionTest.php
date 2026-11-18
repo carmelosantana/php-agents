@@ -387,3 +387,102 @@ test('string metadata on an error result is redacted and bounded', function () {
         expect(json_encode($r->metadata))->not->toContain('meta-secret-5')->not->toContain('deep-secret-6');
     }
 });
+
+final class RedactionTimeoutBatchExecutor implements BatchToolExecutorInterface
+{
+    public function execute(ToolInterface $tool, array $arguments): ToolResult
+    {
+        return $tool->execute($arguments);
+    }
+
+    public function executeBatch(array $batch): array
+    {
+        return array_map(
+            fn(array $entry): ToolResult => new ToolResult(
+                ToolResultStatus::Timeout,
+                "timed out calling https://x.test/?api_key=timeout-secret-8 \x1b[0m",
+                metadata: ['url' => 'token=timeout-meta-9'],
+                errorCode: 'token=timeout-code-10',
+            ),
+            $batch,
+        );
+    }
+}
+
+final class RedactionLeakyJson implements JsonSerializable
+{
+    public function jsonSerialize(): array
+    {
+        return ['inner' => 'password=json-secret-12'];
+    }
+}
+
+final class RedactionLeakyObject
+{
+    public string $note = 'token=plain-object-secret-13';
+}
+
+test('a timeout result is redacted like an error result', function () {
+    $a = new Tool('a', 'A.', [], fn(array $i): ToolResult => ToolResult::success('a'));
+    $b = new Tool('b', 'B.', [], fn(array $i): ToolResult => ToolResult::success('b'));
+    $provider = new RedactionScriptedProvider([redactionToolRound([new ToolCall('c1', 'a', []), new ToolCall('c2', 'b', [])]), redactionTextRound()]);
+    $agent = new RedactionTestAgent(provider: $provider, toolExecutor: new RedactionTimeoutBatchExecutor());
+    $agent->extraTools = [$a, $b];
+    $events = new RedactionEventRecorder();
+    $agent->attach($events);
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->toolResults)->toHaveCount(2)
+        ->and($output->toolResults[0]->status)->toBe(ToolResultStatus::Timeout)
+        ->and($output->toolResults[0]->content)->toBe('timed out calling https://x.test/?api_key=[redacted] [0m')
+        ->and($output->toolResults[0]->metadata)->toBe(['url' => 'token=[redacted]'])
+        ->and($output->toolResults[0]->errorCode)->toBe('token=[redacted]')
+        ->and($output->toolResults[1]->callId)->toBe('c2');
+    foreach (redactionExposedErrors($output, $events) as $text) {
+        expect($text)->not->toContain('timeout-secret-8')->and($text)->not->toContain("\x1b");
+    }
+    foreach (array_merge($output->toolResults, $events->dataFor('agent.tool_result')) as $r) {
+        expect(json_encode($r->metadata) . $r->errorCode)->not->toContain('timeout-meta-9')->not->toContain('timeout-code-10');
+    }
+});
+
+test('error metadata keys, object values and the error code are redacted', function () {
+    $std = new stdClass();
+    $std->detail = 'token=std-secret-11';
+    $tool = new Tool('leaky', 'Leaks.', [], fn(array $i): ToolResult => new ToolResult(
+        ToolResultStatus::Error,
+        'nope',
+        metadata: [
+            'password=key-secret-10' => 'value',
+            'std' => $std,
+            'json' => new RedactionLeakyJson(),
+            'plain' => new RedactionLeakyObject(),
+            'count' => 3,
+        ],
+        errorCode: 'E_AUTH api_key=code-secret-14 ' . str_repeat('x', 200),
+    ));
+    $provider = new RedactionScriptedProvider([redactionToolRound([new ToolCall('c1', 'leaky', [])]), redactionTextRound()]);
+    $agent = new RedactionTestAgent(provider: $provider);
+    $agent->extraTools = [$tool];
+    $events = new RedactionEventRecorder();
+    $agent->attach($events);
+
+    $output = $agent->run(new UserMessage('Hi'));
+    $result = $output->toolResults[0];
+
+    expect($result->metadata)->toBe([
+        'password=[redacted]' => 'value',
+        'std' => ['detail' => 'token=[redacted]'],
+        'json' => ['inner' => 'password=[redacted]'],
+        'plain' => ['note' => 'token=[redacted]'],
+        'count' => 3,
+    ])
+        ->and($result->errorCode)->toStartWith('E_AUTH api_key=[redacted]')
+        ->and(mb_strlen((string) $result->errorCode))->toBe(65);
+    foreach (array_merge($output->toolResults, $events->dataFor('agent.tool_result')) as $r) {
+        expect(serialize($r->metadata) . $r->errorCode)
+            ->not->toContain('key-secret-10')->not->toContain('std-secret-11')->not->toContain('json-secret-12')
+            ->not->toContain('plain-object-secret-13')->not->toContain('code-secret-14');
+    }
+});

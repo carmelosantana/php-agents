@@ -70,6 +70,9 @@ dataset('whitespace_runs', [
     'bearer then spaces' => ['Bearer' . str_repeat(' ', 1024 * 1024) . '!'],
     'basic then spaces' => ['Basic' . str_repeat(' ', 1024 * 1024) . '!'],
     'unclosed quoted value' => ['password: "' . str_repeat('a', 1024 * 1024)],
+    'unclosed quoted escapes' => ['password: "' . str_repeat('\\"', 512 * 1024)],
+    'unclosed single-quoted escapes' => ["secret: '" . str_repeat("\\'", 512 * 1024)],
+    'lowercase bearer then spaces' => ['bearer' . str_repeat(' ', 1024 * 1024) . '!'],
 ]);
 
 test('redactSecrets stays linear on a 1 MiB whitespace run', function (string $text) {
@@ -91,5 +94,25 @@ test('a quoted credential value is redacted whole', function () {
     expect(UntrustedText::redactSecrets('{"password": "correct horse battery", "user": "a"}'))
         ->toBe('{"password": "[redacted]", "user": "a"}')
         ->and(UntrustedText::redactSecrets("secret='two words'"))->toBe("secret='[redacted]'")
-        ->and(UntrustedText::redactSecrets('password: "cut off here'))->toBe('password: "[redacted] off here');
+        ->and(UntrustedText::redactSecrets('password: "cut off here'))->toBe('password: "[redacted]');
+});
+
+test('the Bearer and Basic schemes match in any case', function () {
+    expect(UntrustedText::redactSecrets('Authorization: bearer opaque-CREDENTIAL-123456'))->not->toContain('CREDENTIAL')
+        ->and(UntrustedText::redactSecrets('sent bearer opaque-CREDENTIAL-123456 done'))->toBe('sent bearer [redacted] done')
+        ->and(UntrustedText::redactSecrets('sent BEARER opaque-CREDENTIAL-123456 done'))->toBe('sent BEARER [redacted] done')
+        ->and(UntrustedText::redactSecrets('sent basic dXNlcjpwYXNzd29yZA== done'))->toBe('sent basic [redacted] done')
+        ->and(UntrustedText::redactSecrets('Basic configuration is missing'))->toBe('Basic configuration is missing');
+});
+
+test('a quoted value with an escaped quote is redacted whole', function () {
+    expect(UntrustedText::redactSecrets('{"password": "pa\\"ss word", "user": "a"}'))
+        ->toBe('{"password": "[redacted]", "user": "a"}')
+        ->and(UntrustedText::redactSecrets("secret='it\\'s mine' ok"))->toBe("secret='[redacted]' ok")
+        ->and(UntrustedText::redactSecrets('token: "a\\\\" tail'))->toBe('token: "[redacted]" tail');
+});
+
+test('an unclosed quoted value is redacted to the end of the text', function () {
+    expect(UntrustedText::redactSecrets('{"password": "pa\\"ss word leaks'))->toBe('{"password": "[redacted]')
+        ->and(UntrustedText::redactSecrets("secret='never closed"))->toBe("secret='[redacted]");
 });

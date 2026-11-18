@@ -12,9 +12,10 @@ namespace CarmeloSantana\PHPAgents\Security;
  * Basic credential (the scheme is kept), OpenAI/Anthropic `sk-` keys, Google `AIza` keys,
  * xAI keys, GitHub tokens, AWS access key ids, and the value after a credential-named key
  * such as `api_key=`, `Authorization:` or `"password": "…"` (the key is kept; a quoted
- * value is redacted whole, up to its closing quote). It is a pattern match: an opaque
- * credential that matches none of these shapes is not removed. If PCRE fails, the whole
- * text becomes `[redacted]`.
+ * value is redacted whole, up to its closing quote past any backslash escapes, or to the
+ * end of the text when it is never closed). The Bearer and Basic scheme words match in
+ * any case. It is a pattern match: an opaque credential that matches none of these shapes
+ * is not removed. If PCRE fails, the whole text becomes `[redacted]`.
  *
  * scrub() turns control and format characters (ESC, bidi overrides, zero-width spaces)
  * into spaces, collapses whitespace, trims, and cuts to $maxChars with `…`.
@@ -35,13 +36,20 @@ final class UntrustedText
         '/\bAKIA[0-9A-Z]{16}+/',
     ];
 
-    private const BEARER = '/(Bearer\s++)[A-Za-z0-9._~+\/=-]{8,}+/';
+    /** The scheme matches in any case (`bearer`, `BEARER`) and is kept. */
+    private const BEARER = '/((?i:Bearer)\s++)[A-Za-z0-9._~+\/=-]{8,}+/';
 
-    /** A Basic credential: base64 of at least 8 characters that is not a lowercase word. */
-    private const BASIC = '/(\bBasic\s++)(?=[a-z]*+[A-Z0-9+\/=])[A-Za-z0-9+\/]{8,}+=*+/';
+    /**
+     * A Basic credential: base64 of at least 8 characters that is not a lowercase word. Only
+     * the scheme is case-insensitive; the credential test stays case-sensitive.
+     */
+    private const BASIC = '/(\b(?i:Basic)\s++)(?=[a-z]*+[A-Z0-9+\/=])[A-Za-z0-9+\/]{8,}+=*+/';
 
-    /** A credential-named key, its separator, then a quoted value (whole) or a bare one. */
-    private const KEY_VALUE = '/((?:api[_-]?key|x-api-key|x-goog-api-key|authorization|token|secret|password)\s*+["\']?+\s*+[:=]\s*+)("[^"]*+"|\'[^\']*+\'|["\']?+[^\s"\'&,}]++)/i';
+    /**
+     * A credential-named key, its separator, then a quoted value (whole, backslash escapes
+     * included; an unclosed one runs to the end of the text) or a bare one.
+     */
+    private const KEY_VALUE = '/((?:api[_-]?key|x-api-key|x-goog-api-key|authorization|token|secret|password)\s*+["\']?+\s*+[:=]\s*+)("(?:[^"\\\\]++|\\\\[\s\S]?+)*+"?+|\'(?:[^\'\\\\]++|\\\\[\s\S]?+)*+\'?+|["\']?+[^\s"\'&,}]++)/i';
 
     public static function scrub(string $text, int $maxChars): string
     {
