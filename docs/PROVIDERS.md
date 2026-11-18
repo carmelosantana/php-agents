@@ -367,6 +367,8 @@ $provider = new GeminiProvider(
 | `apiKey` | `string` | `''` | Google AI API key |
 | `baseUrl` | `string` | `'https://generativelanguage.googleapis.com/v1beta'` | API base URL |
 | `httpClient` | `?HttpClientInterface` | `null` | Custom HTTP client |
+| `logger` | `?LoggerInterface` | `null` | PSR-3 logger |
+| `imageHttpClient` | `?HttpClientInterface` | `null` | Client for `image_url` downloads only; `null` uses a library-owned `HttpClient::create()`, never `httpClient` |
 
 ### Tool Calling
 
@@ -583,7 +585,16 @@ HTTP providers.
 
 ## Request Limits
 
-Every HTTP request of a provider or embedding provider carries a `RequestLimits` value object (`CliProvider` and `LlamaCppProvider` send no HTTP request). `RequestLimits::apply()` turns it into per-request symfony/http-client options (`timeout`, `max_duration`, `max_redirects` and an `on_progress` byte check), so the limits hold even when the host injects its own HTTP client.
+Every HTTP request a provider or embedding provider sends through its HTTP client carries a `RequestLimits` value object. `RequestLimits::apply()` turns it into per-request symfony/http-client options (`timeout`, `max_duration`, `max_redirects` and an `on_progress` byte and redirect check). These per-request options replace an injected Symfony client's own `timeout` and `max_duration` defaults; use `withRequestLimits()` to change them.
+
+The limits hold for an injected client that honours symfony/http-client's `max_redirects`, `max_duration`, `on_progress` and `resolve` options. A client that ignores them does not get them; Coqui's ReactPHP adapter is the known case. The Gemini image download uses its own client (see [Gemini Image URLs](#gemini-image-urls)), so its checks always hold.
+
+Two requests are outside `RequestLimits`:
+
+- `CliProvider` runs a local command and sends no HTTP request.
+- `LlamaCppProvider` runs the model in-process, but `LlamaCppMultimodalNormalizer` fetches a remote `image_url` with `file_get_contents()`, with no time, size, redirect or private-network limit. This is a known open finding (L2); pass images to llama.cpp as `data:` URIs.
+
+`gethostbynamel()` and `dns_get_record()`, which the Gemini image check calls, block and are not covered by any of these limits.
 
 | Limit | Default | Meaning |
 |-------|---------|---------|
@@ -608,18 +619,19 @@ A response over the byte cap is aborted with a `ProviderException` whose message
 
 ### No Redirects
 
-Providers follow no redirect. A base URL that answers 3xx, including a same-host `http://` to `https://` redirect, fails with `ProviderException` and the message `Provider request refused: redirect not followed (...)`, instead of re-sending the API key header and the conversation to the host the `Location` names. A streamed request refuses a 3xx before reading any data, and lets a 4xx or 5xx propagate unchanged so the API error body still reaches the agent. Embedding providers do not follow a 3xx either: `embedText()` and `OllamaEmbeddingProvider::embedDocuments()` report it as `ProviderException::embeddingFailed()`, and `OpenAIEmbeddingProvider::embedDocuments()` lets symfony/http-client's `RedirectionExceptionInterface` through. Point the base URL at the final address.
+Providers follow no redirect. A base URL that answers 3xx to `chat()`, `stream()` or `structured()`, including a same-host `http://` to `https://` redirect, fails with `ProviderException` and the message `Provider request refused: redirect not followed (...)`, instead of re-sending the API key header and the conversation to the host the `Location` names. A streamed request refuses a 3xx before reading any data, and lets a 4xx or 5xx propagate unchanged so the API error body still reaches the agent. Embedding providers do not follow a 3xx either: `embedText()` and `OllamaEmbeddingProvider::embedDocuments()` report it as `ProviderException::embeddingFailed()`, and `OpenAIEmbeddingProvider::embedDocuments()` lets symfony/http-client's `RedirectionExceptionInterface` through. `isAvailable()` and `models()` treat a 3xx like any failed request: `isAvailable()` returns `false`, and `models()` returns its fallback (an empty list, or Anthropic's built-in list). Point the base URL at the final address.
 
 ### Gemini Image URLs
 
-`GeminiProvider` downloads `image_url` URLs on the server to send them as `inlineData`. The download:
+`GeminiProvider` downloads `image_url` URLs on the server to send them as `inlineData`. The download goes through the `imageHttpClient` constructor argument, or a library-owned `HttpClient::create()` when it is `null`; it never uses the provider's `httpClient`, so a host client that ignores `resolve`, `max_redirects` or `on_progress` cannot weaken it, and the host client's proxy settings do not apply to it (the library-owned client still reads `HTTP_PROXY` and `HTTPS_PROXY`). The download:
 
 - accepts only `http` and `https` URLs;
 - resolves the host and refuses it unless every resolved address passes `FILTER_FLAG_GLOBAL_RANGE`, so loopback, private, link-local and reserved addresses (such as `127.0.0.1`, `10.0.0.5`, `169.254.169.254` and `::1`) are never fetched;
-- pins the checked address through the `resolve` option, so the connection goes to the address that was checked;
+- also refuses IPv6 addresses PHP's filter accepts but that can reach a private or non-unicast address: `64:ff9b::/96` and `64:ff9b:1::/48` (NAT64), `fec0::/10` (site-local), `ff00::/8` (multicast), `::ffff:0:0/96` (IPv4-mapped) and `::ffff:0:0:0/96` (IPv4-translated);
+- pins the checked address of a host name through the `resolve` option, so the connection goes to the address that was checked; an IP-literal host needs no DNS lookup and gets no pin;
 - follows up to 3 redirects by hand, checking and pinning each hop again;
 - limits each hop to 10 s idle, 30 s total and 20 MiB (20_971_520 bytes), independent of `withRequestLimits()`;
-- keeps the image only when the answer is 2xx with an `image/*` content type.
+- keeps the image only when the answer is 2xx with an `image/*` content type; a missing or other content type is refused, with no guess from the file extension.
 
 Any refusal or failure sends the existing `[Image: could not download …]` text part instead of the image.
 
