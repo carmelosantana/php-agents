@@ -529,47 +529,79 @@ final class GeminiProvider extends AbstractProvider
         ];
     }
 
+    /** Most redirects followed while downloading an image for inlineData. */
+    private const int IMAGE_MAX_REDIRECTS = 3;
+
     /**
      * Download an image URL and return a Gemini inlineData part.
+     *
+     * Each hop must be http(s) and its host must resolve only to global addresses
+     * (FILTER_FLAG_GLOBAL_RANGE), so loopback, private, link-local, CGNAT and other
+     * reserved ranges are never requested. The checked address is pinned with the
+     * `resolve` option so the connection goes to that address. The client follows no
+     * redirects; this method follows up to IMAGE_MAX_REDIRECTS 3xx hops itself and checks
+     * each Location the same way. Every hop is limited to 10s idle, 30s total and 20 MiB.
+     *
+     * A refused hop, a 3xx without Location, a fourth redirect, a non-2xx status, a
+     * content type that is not image/*, an empty body or any exception returns null.
      *
      * @return array{inlineData: array{mimeType: string, data: string}}|null
      */
     private function downloadImageForInlineData(string $url): ?array
     {
+        $limits = new RequestLimits(idleTimeout: 10.0, maxDuration: 30.0, maxResponseBytes: 20_971_520);
+
         try {
-            $response = $this->httpClient->request('GET', $url, [
-                'timeout' => 30,
-                'max_redirects' => 5,
-                'headers' => [
-                    'Accept' => 'image/*',
-                ],
-            ]);
+            for ($hop = 0; $hop <= self::IMAGE_MAX_REDIRECTS; $hop++) {
+                $pin = $this->publicHostPin($url);
+                if ($pin === null) {
+                    $this->logger?->debug('Refused image URL: {url}', ['url' => $url]);
 
-            $statusCode = $response->getStatusCode();
-            if ($statusCode < 200 || $statusCode >= 300) {
-                return null;
+                    return null;
+                }
+
+                $response = $this->httpClient->request('GET', $url, $limits->apply([
+                    'headers' => ['Accept' => 'image/*'],
+                    'resolve' => $pin,
+                ]));
+
+                $statusCode = $response->getStatusCode();
+                if ($statusCode >= 300 && $statusCode < 400) {
+                    $location = $response->getHeaders(false)['location'][0] ?? '';
+                    $response->cancel();
+                    if ($location === '') {
+                        return null;
+                    }
+                    $url = $this->resolveRedirectUrl($url, $location);
+                    continue;
+                }
+
+                if ($statusCode < 200 || $statusCode >= 300) {
+                    return null;
+                }
+
+                $contentType = $response->getHeaders()['content-type'][0] ?? '';
+                $mime = strtolower(trim(explode(';', $contentType)[0]));
+                if (!str_starts_with($mime, 'image/')) {
+                    return null;
+                }
+
+                $body = $response->getContent();
+                if ($body === '') {
+                    return null;
+                }
+
+                return [
+                    'inlineData' => [
+                        'mimeType' => $mime,
+                        'data' => base64_encode($body),
+                    ],
+                ];
             }
 
-            $headers = $response->getHeaders();
-            $contentType = $headers['content-type'][0] ?? 'image/jpeg';
-            $mime = trim(explode(';', $contentType)[0]);
+            $this->logger?->debug('Refused image URL after {max} redirects', ['max' => self::IMAGE_MAX_REDIRECTS]);
 
-            // Validate it looks like an image
-            if (!str_starts_with($mime, 'image/')) {
-                $mime = $this->guessMimeFromUrl($url) ?? 'image/jpeg';
-            }
-
-            $body = $response->getContent();
-            if ($body === '') {
-                return null;
-            }
-
-            return [
-                'inlineData' => [
-                    'mimeType' => $mime,
-                    'data' => base64_encode($body),
-                ],
-            ];
+            return null;
         } catch (\Throwable $e) {
             $this->logger?->debug('Failed to download image from URL: {error}', ['error' => $e->getMessage()]);
 
@@ -577,24 +609,90 @@ final class GeminiProvider extends AbstractProvider
         }
     }
 
-    private function guessMimeFromUrl(string $url): ?string
+    /**
+     * Returns the `resolve` option `[host => ip]` for an http(s) URL whose host resolves
+     * only to global addresses, or null when the scheme is not http(s), the host does not
+     * resolve, or any resolved address is not global.
+     *
+     * @return array<string, string>|null
+     */
+    private function publicHostPin(string $url): ?array
     {
-        $path = parse_url($url, PHP_URL_PATH);
-        if (!is_string($path)) {
+        $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+        $host = parse_url($url, PHP_URL_HOST);
+        if (($scheme !== 'http' && $scheme !== 'https') || !is_string($host) || $host === '') {
             return null;
         }
 
-        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        $addresses = $this->resolveHostAddresses(trim($host, '[]'));
+        if ($addresses === []) {
+            return null;
+        }
 
-        return match ($ext) {
-            'jpg', 'jpeg' => 'image/jpeg',
-            'png' => 'image/png',
-            'gif' => 'image/gif',
-            'webp' => 'image/webp',
-            'bmp' => 'image/bmp',
-            'svg' => 'image/svg+xml',
-            default => null,
-        };
+        foreach ($addresses as $ip) {
+            if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_GLOBAL_RANGE) === false) {
+                return null;
+            }
+        }
+
+        return [$host => $addresses[0]];
+    }
+
+    /**
+     * Returns the host itself when it is an IP literal, otherwise its A records
+     * (gethostbynamel) followed by its AAAA records (dns_get_record). Empty when nothing
+     * resolves.
+     *
+     * @return list<string>
+     */
+    private function resolveHostAddresses(string $host): array
+    {
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            return [$host];
+        }
+
+        $addresses = gethostbynamel($host) ?: [];
+
+        $aaaa = @dns_get_record($host, DNS_AAAA);
+        foreach (is_array($aaaa) ? $aaaa : [] as $record) {
+            if (isset($record['ipv6']) && is_string($record['ipv6'])) {
+                $addresses[] = $record['ipv6'];
+            }
+        }
+
+        return $addresses;
+    }
+
+    /**
+     * Resolves a Location header against the URL that answered with it: an absolute URL
+     * is returned as is, `//host/...` takes the current scheme, `/path` takes the
+     * current origin, `?query` replaces the current query, and any other value replaces
+     * the last segment of the current path.
+     */
+    private function resolveRedirectUrl(string $current, string $location): string
+    {
+        if (preg_match('#^[a-z][a-z0-9+.-]*:#i', $location) === 1) {
+            return $location;
+        }
+
+        if (preg_match('#^([a-z][a-z0-9+.-]*:)(//[^/?\#]*)([^?\#]*)#i', $current, $m) !== 1) {
+            return $location;
+        }
+        [, $scheme, $authority, $path] = $m;
+
+        if (str_starts_with($location, '//')) {
+            return $scheme . $location;
+        }
+        if (str_starts_with($location, '/')) {
+            return $scheme . $authority . $location;
+        }
+        if (str_starts_with($location, '?')) {
+            return $scheme . $authority . $path . $location;
+        }
+
+        $directory = substr($path, 0, (int) strrpos($path, '/'));
+
+        return $scheme . $authority . $directory . '/' . $location;
     }
 
     /**
