@@ -818,3 +818,208 @@ test('stream that stops on max_tokens mid tool JSON yields MaxTokens and no tool
         ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::MaxTokens)
         ->and($chunks[1]->toolCalls)->toBe([]);
 });
+
+// --- Thinking block round trip ---
+
+const ANTHROPIC_ROUND_TRIP_TOOL_INPUT = '{"a":{},"b":[],"c":{"0":"x"},"d":[{"e":{}}]}';
+
+/**
+ * A logger that keeps every record, for asserting on debug lines.
+ */
+function anthropicRecordingLogger(): Psr\Log\AbstractLogger
+{
+    return new class extends Psr\Log\AbstractLogger {
+        /** @var array<int, array{0: mixed, 1: string, 2: array<mixed>}> */
+        public array $records = [];
+
+        public function log($level, string|\Stringable $message, array $context = []): void
+        {
+            $this->records[] = [$level, (string) $message, $context];
+        }
+    };
+}
+
+test('chat keeps thinking, redacted_thinking, text and tool_use blocks in order and byte-faithful', function () {
+    $contentJson = '[{"type":"thinking","thinking":"","signature":"sig1"},'
+        . '{"type":"redacted_thinking","data":"opaque=="},'
+        . '{"type":"text","text":"Let me look."},'
+        . '{"type":"tool_use","id":"toolu_1","name":"lookup","input":' . ANTHROPIC_ROUND_TRIP_TOOL_INPUT . '}]';
+    $firstBody = '{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":' . $contentJson
+        . ',"stop_reason":"tool_use","usage":{"input_tokens":5,"output_tokens":7}}';
+
+    $bodies = [];
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$bodies, $firstBody): MockResponse {
+        $bodies[] = $options['body'];
+
+        return count($bodies) === 1 ? new MockResponse($firstBody, ['http_code' => 200]) : mockAnthropicResponse();
+    });
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $response = $provider->chat([new UserMessage('hi')]);
+
+    expect(array_column($response->contentBlocks, 'type'))->toBe(['thinking', 'redacted_thinking', 'text', 'tool_use'])
+        ->and(json_encode($response->contentBlocks))->toBe($contentJson)
+        ->and($response->content)->toBe('Let me look.')
+        ->and($response->toolCalls[0]->name)->toBe('lookup');
+
+    $provider->chat([
+        new UserMessage('hi'),
+        new AssistantMessage($response->content, $response->toolCalls, $response->contentBlocks),
+        new ToolResultMessage(ToolResult::success('found')->withCallId('toolu_1')),
+    ]);
+
+    expect($bodies[1])->toContain('{"role":"assistant","content":' . $contentJson . '}')
+        ->and($bodies[1])->toContain('"input":' . ANTHROPIC_ROUND_TRIP_TOOL_INPUT)
+        ->and($bodies[1])->toContain('"thinking":""')
+        ->and($bodies[1])->toContain('"signature":"sig1"');
+});
+
+test('chat still refuses a redirect and throws on an HTTP error', function (int $status, string $exception) {
+    $mockClient = new MockHttpClient([new MockResponse('{"type":"error"}', ['http_code' => $status, 'response_headers' => ['Location' => 'https://elsewhere.test/']])]);
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    expect(fn() => $provider->chat([new UserMessage('hi')]))->toThrow($exception);
+})->with(fn() => [
+    'redirect' => [302, CarmeloSantana\PHPAgents\Exception\ProviderException::class],
+    'client error' => [400, Symfony\Component\HttpClient\Exception\ClientException::class],
+    'server error' => [500, Symfony\Component\HttpClient\Exception\ServerException::class],
+]);
+
+test('chat sends an assistant message without content blocks through the legacy path', function () {
+    $bodies = [];
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$bodies): MockResponse {
+        $bodies[] = $options['body'];
+
+        return mockAnthropicResponse();
+    });
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $provider->chat([new UserMessage('hi'), new AssistantMessage('Hello there.'), new UserMessage('again')]);
+
+    expect($bodies[0])->toContain('{"role":"assistant","content":"Hello there."}');
+});
+
+test('chat drops an empty assistant turn and merges the user turns around it', function () {
+    $bodies = [];
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$bodies): MockResponse {
+        $bodies[] = $options['body'];
+
+        return mockAnthropicResponse();
+    });
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $provider->chat([new UserMessage('first'), new AssistantMessage(''), new UserMessage('second')]);
+
+    expect($bodies[0])->toContain('"messages":[{"role":"user","content":[{"type":"text","text":"first"},{"type":"text","text":"second"}]}]');
+});
+
+test('stream rebuilds thinking with signature_delta and redacted_thinking', function () {
+    $chunks = streamAnthropic(
+        anthropicMessageStart(),
+        ['type' => 'content_block_start', 'index' => 0, 'content_block' => ['type' => 'thinking', 'thinking' => '', 'signature' => '']],
+        ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'thinking_delta', 'thinking' => 'Let me ']],
+        ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'thinking_delta', 'thinking' => 'check.']],
+        ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'signature_delta', 'signature' => 'sig']],
+        ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'signature_delta', 'signature' => 'part2']],
+        ['type' => 'content_block_stop', 'index' => 0],
+        ['type' => 'content_block_start', 'index' => 1, 'content_block' => ['type' => 'redacted_thinking', 'data' => 'opaque==']],
+        ['type' => 'content_block_stop', 'index' => 1],
+        ['type' => 'content_block_start', 'index' => 2, 'content_block' => ['type' => 'text', 'text' => '']],
+        anthropicText('On ', 2),
+        anthropicText('it.', 2),
+        ['type' => 'content_block_stop', 'index' => 2],
+        anthropicToolStart(3, 'toolu_1', 'lookup'),
+        anthropicToolJson(3, '{"a":{},"b":[],'),
+        anthropicToolJson(3, '"c":{"0":"x"},"d":[{"e":{}}]}'),
+        ['type' => 'content_block_stop', 'index' => 3],
+        anthropicToolStart(4, 'toolu_2', 'now'),
+        ['type' => 'content_block_stop', 'index' => 4],
+        anthropicStopDelta('tool_use', 9),
+        ANTHROPIC_MESSAGE_STOP,
+    );
+    $terminal = end($chunks);
+
+    expect($terminal->finishReason)->toBe(ProviderFinishReason::ToolUse)
+        ->and($terminal->contentBlocks)->toEqual([
+            ['type' => 'thinking', 'thinking' => 'Let me check.', 'signature' => 'sigpart2'],
+            ['type' => 'redacted_thinking', 'data' => 'opaque=='],
+            ['type' => 'text', 'text' => 'On it.'],
+            ['type' => 'tool_use', 'id' => 'toolu_1', 'name' => 'lookup', 'input' => json_decode(ANTHROPIC_ROUND_TRIP_TOOL_INPUT)],
+            ['type' => 'tool_use', 'id' => 'toolu_2', 'name' => 'now', 'input' => new stdClass()],
+        ])
+        ->and(json_encode($terminal->contentBlocks[3]['input']))->toBe(ANTHROPIC_ROUND_TRIP_TOOL_INPUT)
+        ->and(json_encode($terminal->contentBlocks[4]['input']))->toBe('{}')
+        ->and(array_filter(array_slice($chunks, 0, -1), fn($c) => $c->contentBlocks !== []))->toBe([]);
+});
+
+test('stream sets content blocks on a Stop terminal chunk', function () {
+    $chunks = streamAnthropic(
+        anthropicMessageStart(),
+        ['type' => 'content_block_start', 'index' => 0, 'content_block' => ['type' => 'thinking', 'thinking' => '', 'signature' => '']],
+        ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'signature_delta', 'signature' => 'sig1']],
+        ['type' => 'content_block_stop', 'index' => 0],
+        ['type' => 'content_block_start', 'index' => 1, 'content_block' => ['type' => 'text', 'text' => '']],
+        anthropicText('Done.', 1),
+        ['type' => 'content_block_stop', 'index' => 1],
+        anthropicStopDelta('end_turn', 3),
+        ANTHROPIC_MESSAGE_STOP,
+    );
+
+    expect(json_encode(end($chunks)->contentBlocks))
+        ->toBe('[{"type":"thinking","thinking":"","signature":"sig1"},{"type":"text","text":"Done."}]');
+});
+
+test('stream drops contentBlocks on an unknown block type, on max_tokens, and on truncated tool JSON', function (array $events, ProviderFinishReason $reason) {
+    $chunks = streamAnthropic(anthropicMessageStart(), ...$events);
+    $terminal = end($chunks);
+
+    expect($terminal->finishReason)->toBe($reason)
+        ->and($terminal->contentBlocks)->toBe([]);
+})->with(fn() => [
+    'unknown block type' => [[
+        ['type' => 'content_block_start', 'index' => 0, 'content_block' => ['type' => 'server_tool_use', 'id' => 'srvtoolu_1', 'name' => 'web_search', 'input' => []]],
+        ['type' => 'content_block_stop', 'index' => 0],
+        ['type' => 'content_block_start', 'index' => 1, 'content_block' => ['type' => 'text', 'text' => '']],
+        anthropicText('Answer.', 1),
+        anthropicStopDelta('end_turn', 3),
+        ANTHROPIC_MESSAGE_STOP,
+    ], ProviderFinishReason::Stop],
+    'max_tokens' => [[
+        ['type' => 'content_block_start', 'index' => 0, 'content_block' => ['type' => 'thinking', 'thinking' => '', 'signature' => '']],
+        ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'signature_delta', 'signature' => 'sig1']],
+        ['type' => 'content_block_start', 'index' => 1, 'content_block' => ['type' => 'text', 'text' => '']],
+        anthropicText('Partial', 1),
+        anthropicStopDelta('max_tokens', 3),
+        ANTHROPIC_MESSAGE_STOP,
+    ], ProviderFinishReason::MaxTokens],
+    'truncated tool JSON' => [[
+        ['type' => 'content_block_start', 'index' => 0, 'content_block' => ['type' => 'thinking', 'thinking' => '', 'signature' => '']],
+        ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'signature_delta', 'signature' => 'sig1']],
+        anthropicToolStart(1),
+        anthropicToolJson(1, '{"q": "ph'),
+        anthropicStopDelta('tool_use', 3),
+        ANTHROPIC_MESSAGE_STOP,
+    ], ProviderFinishReason::Error],
+    'EOF' => [[
+        ['type' => 'content_block_start', 'index' => 0, 'content_block' => ['type' => 'text', 'text' => '']],
+        anthropicText('Partial'),
+    ], ProviderFinishReason::Error],
+]);
+
+test('stream logs the tool name and argument length when tool JSON does not decode', function () {
+    $logger = anthropicRecordingLogger();
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: new MockHttpClient([anthropicSse(
+        anthropicMessageStart(),
+        anthropicToolStart(0, 'toolu_1', 'lookup'),
+        anthropicToolJson(0, '{"q": "secret'),
+        anthropicStopDelta('tool_use', 4),
+        ANTHROPIC_MESSAGE_STOP,
+    )]), logger: $logger);
+
+    iterator_to_array($provider->stream([new UserMessage('hi')]), false);
+
+    expect($logger->records)->toHaveCount(1)
+        ->and($logger->records[0][0])->toBe(Psr\Log\LogLevel::DEBUG)
+        ->and($logger->records[0][2])->toBe(['tool' => 'lookup', 'length' => 13])
+        ->and($logger->records[0][1])->not->toContain('secret');
+});

@@ -10,9 +10,11 @@ use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
+use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Symfony\Contracts\HttpClient\ResponseInterface;
 
 final class AnthropicProvider extends AbstractProvider
 {
@@ -52,7 +54,45 @@ final class AnthropicProvider extends AbstractProvider
             'json' => $payload,
         ]));
 
-        return $this->parseResponse($this->decodeResponse($response));
+        $parsed = $this->parseResponse($this->decodeResponse($response));
+
+        return new Response(
+            content: $parsed->content,
+            finishReason: $parsed->finishReason,
+            toolCalls: $parsed->toolCalls,
+            model: $parsed->model,
+            usage: $parsed->usage,
+            reasoning: $parsed->reasoning,
+            contentBlocks: $this->rawContentBlocks($response),
+        );
+    }
+
+    /**
+     * The response's `content` blocks decoded from the raw body with objects
+     * kept as stdClass, so `{}` and `[]` (and numeric-key objects) encode back
+     * exactly. Only each top-level block becomes an array. decodeResponse()
+     * has already read the body, refused a redirect and thrown on 4xx/5xx.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function rawContentBlocks(ResponseInterface $response): array
+    {
+        $raw = json_decode($response->getContent());
+        $content = $raw instanceof \stdClass ? ($raw->content ?? null) : null;
+        if (!is_array($content)) {
+            return [];
+        }
+
+        $blocks = [];
+        foreach ($content as $block) {
+            if ($block instanceof \stdClass) {
+                /** @var array<string, mixed> $fields */
+                $fields = get_object_vars($block);
+                $blocks[] = $fields;
+            }
+        }
+
+        return $blocks;
     }
 
     public function stream(array $messages, array $tools = [], array $options = []): iterable
@@ -66,15 +106,19 @@ final class AnthropicProvider extends AbstractProvider
 
         // Anthropic's stream, by the `type` field of each data payload:
         //   message_start        → model and input (prompt) token usage
-        //   content_block_start  → opens the block at `index` (text, thinking, tool_use)
-        //   content_block_delta  → text_delta / thinking_delta are yielded as they arrive;
-        //                          input_json_delta accumulates the tool's arguments
+        //   content_block_start  → opens the block at `index` (text, thinking, tool_use);
+        //                          redacted_thinking arrives complete here, with `data`
+        //   content_block_delta  → text_delta / thinking_delta are yielded as they arrive and
+        //                          kept on the block; signature_delta is kept on the thinking
+        //                          block; input_json_delta accumulates the tool's arguments
         //   content_block_stop   → block finalized
         //   message_delta        → may repeat; carries stop_reason and cumulative output_tokens
         //   message_stop         → end of message: exactly one terminal chunk is yielded
         //   error                → thrown as a ProviderException
         // A stream that ends before message_stop yields a terminal Error chunk.
-        /** @var array<int, array{type: string, id: string, name: string, json: string}> $blocks */
+        // The terminal chunk carries the rebuilt blocks (contentBlocks) so the
+        // agent can send thinking and its signature back unchanged.
+        /** @var array<int, array{type: string, id: string, name: string, json: string, text: string, thinking: string, signature: string, data: string}> $blocks */
         $blocks = [];
         $currentBlockIndex = -1;
         $model = $this->model;
@@ -95,6 +139,10 @@ final class AnthropicProvider extends AbstractProvider
                     'id' => $block['id'] ?? '',
                     'name' => $block['name'] ?? '',
                     'json' => '',
+                    'text' => '',
+                    'thinking' => '',
+                    'signature' => '',
+                    'data' => $block['data'] ?? '',
                 ];
             } elseif ($eventType === 'content_block_delta') {
                 $delta = $json['delta'] ?? [];
@@ -103,7 +151,12 @@ final class AnthropicProvider extends AbstractProvider
 
                 if ($deltaType === 'input_json_delta' && isset($blocks[$index])) {
                     $blocks[$index]['json'] .= $delta['partial_json'] ?? '';
+                } elseif ($deltaType === 'signature_delta' && isset($blocks[$index])) {
+                    $blocks[$index]['signature'] .= $delta['signature'] ?? '';
                 } elseif ($deltaType === 'thinking_delta' && isset($delta['thinking'])) {
+                    if (isset($blocks[$index])) {
+                        $blocks[$index]['thinking'] .= $delta['thinking'];
+                    }
                     yield new Response(
                         content: '',
                         finishReason: ProviderFinishReason::Stop,
@@ -112,6 +165,9 @@ final class AnthropicProvider extends AbstractProvider
                         reasoning: $delta['thinking'],
                     );
                 } elseif ($deltaType === 'text_delta' && isset($delta['text'])) {
+                    if (isset($blocks[$index])) {
+                        $blocks[$index]['text'] .= $delta['text'];
+                    }
                     yield new Response(
                         content: $delta['text'],
                         finishReason: ProviderFinishReason::Stop,
@@ -145,8 +201,9 @@ final class AnthropicProvider extends AbstractProvider
      * The single chunk that ends a stream. No stop reason means the message
      * did not finish (Error). Tool calls are emitted only for ToolUse, and only
      * when every tool's arguments decode to a JSON object; otherwise Error.
+     * Content blocks are kept only on a Stop or ToolUse end.
      *
-     * @param array<int, array{type: string, id: string, name: string, json: string}> $blocks
+     * @param array<int, array{type: string, id: string, name: string, json: string, text: string, thinking: string, signature: string, data: string}> $blocks
      */
     private function streamTerminal(?string $stopReason, array $blocks, string $model, ?int $promptTokens, ?int $completionTokens): Response
     {
@@ -161,6 +218,10 @@ final class AnthropicProvider extends AbstractProvider
 
                 $arguments = $this->decodeToolArguments($block['json']);
                 if ($arguments === null) {
+                    $this->logger?->debug('Anthropic tool {tool} arguments ({length} bytes) are not a JSON object; ending the stream with Error', [
+                        'tool' => $block['name'],
+                        'length' => strlen($block['json']),
+                    ]);
                     $finishReason = ProviderFinishReason::Error;
                     $toolCalls = [];
                     break;
@@ -185,7 +246,56 @@ final class AnthropicProvider extends AbstractProvider
             toolCalls: $toolCalls,
             model: $model,
             usage: $usage,
+            contentBlocks: $finishReason === ProviderFinishReason::Stop || $finishReason === ProviderFinishReason::ToolUse
+                ? $this->rebuildContentBlocks($blocks)
+                : [],
         );
+    }
+
+    /**
+     * Rebuild the streamed blocks in index order, in the shape the Messages API
+     * returns them. Any block type other than thinking, redacted_thinking, text
+     * and tool_use, or tool JSON that is not an object, gives [] so that replay
+     * falls back to re-formatting the message without thinking.
+     *
+     * @param array<int, array{type: string, id: string, name: string, json: string, text: string, thinking: string, signature: string, data: string}> $blocks
+     * @return list<array<string, mixed>>
+     */
+    private function rebuildContentBlocks(array $blocks): array
+    {
+        ksort($blocks);
+        $rebuilt = [];
+
+        foreach ($blocks as $block) {
+            $rebuiltBlock = match ($block['type']) {
+                'thinking' => ['type' => 'thinking', 'thinking' => $block['thinking'], 'signature' => $block['signature']],
+                'redacted_thinking' => ['type' => 'redacted_thinking', 'data' => $block['data']],
+                'text' => ['type' => 'text', 'text' => $block['text']],
+                'tool_use' => $this->rebuildToolUse($block),
+                default => null,
+            };
+
+            if ($rebuiltBlock === null) {
+                return [];
+            }
+
+            $rebuilt[] = $rebuiltBlock;
+        }
+
+        return $rebuilt;
+    }
+
+    /**
+     * @param array{id: string, name: string, json: string} $block
+     * @return array<string, mixed>|null null when the arguments are not a JSON object
+     */
+    private function rebuildToolUse(array $block): ?array
+    {
+        $input = $block['json'] === '' ? new \stdClass() : json_decode($block['json']);
+
+        return $input instanceof \stdClass
+            ? ['type' => 'tool_use', 'id' => $block['id'], 'name' => $block['name'], 'input' => $input]
+            : null;
     }
 
     /**
@@ -407,6 +517,13 @@ final class AnthropicProvider extends AbstractProvider
                 continue;
             }
 
+            // An empty assistant turn (the agent's nudge and refusal paths add
+            // them) is rejected by Anthropic; dropping it lets the user turns
+            // around it merge below.
+            if ($this->isEmptyAssistantTurn($message)) {
+                continue;
+            }
+
             $formatted[] = $this->formatAnthropicMessage($message);
         }
 
@@ -430,11 +547,24 @@ final class AnthropicProvider extends AbstractProvider
         return [$systemPrompt, $merged];
     }
 
+    private function isEmptyAssistantTurn(MessageInterface $message): bool
+    {
+        return $message->role() === Role::Assistant
+            && in_array($message->content(), ['', []], true)
+            && $message->toolCalls() === []
+            && (!$message instanceof AssistantMessage || $message->contentBlocks() === []);
+    }
+
     /**
      * @return array<string, mixed>
      */
     private function formatAnthropicMessage(MessageInterface $message): array
     {
+        // Blocks from this run (thinking with its signature) go back unchanged.
+        if ($message instanceof AssistantMessage && $message->contentBlocks() !== []) {
+            return ['role' => 'assistant', 'content' => $message->contentBlocks()];
+        }
+
         $role = match ($message->role()) {
             Role::User => 'user',
             Role::Assistant => 'assistant',
