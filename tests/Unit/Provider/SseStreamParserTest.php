@@ -6,6 +6,8 @@ use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Provider\SseStreamParser;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
+use Symfony\Contracts\HttpClient\Exception\ClientExceptionInterface;
+use Symfony\Contracts\HttpClient\Exception\ServerExceptionInterface;
 
 /**
  * Build an SseStreamParser from a list of raw HTTP chunk strings.
@@ -182,11 +184,17 @@ test('a 307 stream answer is refused as a redirect not followed', function () {
         ->and($thrown?->getMessage())->toContain('redirect not followed');
 });
 
-test('a 4xx stream answer throws a ProviderException naming the status', function () {
+test('a 4xx stream answer propagates the Symfony client exception naming the status', function () {
     $parser = makeParser(['{"error":"bad key"}'], responseInfo: ['http_code' => 401]);
 
     $thrown = sseParserCatch($parser);
 
-    expect($thrown)->toBeInstanceOf(ProviderException::class)
+    expect($thrown)->toBeInstanceOf(ClientExceptionInterface::class)
         ->and($thrown?->getMessage())->toContain('401');
+});
+
+test('a 5xx stream answer propagates the Symfony server exception', function () {
+    $parser = makeParser(['oops'], responseInfo: ['http_code' => 503]);
+
+    expect(sseParserCatch($parser))->toBeInstanceOf(ServerExceptionInterface::class);
 });

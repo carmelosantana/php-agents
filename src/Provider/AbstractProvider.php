@@ -83,7 +83,7 @@ abstract class AbstractProvider implements ProviderInterface
         try {
             return $response->toArray();
         } catch (RedirectionExceptionInterface $e) {
-            throw ProviderException::requestRefused(sprintf('redirect not followed (%s)', $e->getMessage()), $e);
+            throw ProviderException::redirectRefused($e);
         }
     }
 

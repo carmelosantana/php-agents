@@ -87,3 +87,18 @@ test('requestRefused() formats its message', function () {
     expect(ProviderException::requestRefused('why')->getMessage())
         ->toBe('Provider request refused: why');
 });
+
+test('redirectRefused() wraps the redirection exception as a refusal', function () {
+    $client = new Symfony\Component\HttpClient\MockHttpClient([
+        new Symfony\Component\HttpClient\Response\MockResponse('', ['http_code' => 307]),
+    ]);
+    $response = $client->request('GET', 'https://example.test/');
+    $response->getStatusCode(); // Marks the status as checked so the destructor does not throw.
+    $redirect = new Symfony\Component\HttpClient\Exception\RedirectionException($response);
+
+    $refused = ProviderException::redirectRefused($redirect);
+
+    expect($refused->getMessage())
+        ->toBe(sprintf('Provider request refused: redirect not followed (%s)', $redirect->getMessage()))
+        ->and($refused->getPrevious())->toBe($redirect);
+});

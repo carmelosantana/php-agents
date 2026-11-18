@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Provider;
 
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
-use Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface;
 use Symfony\Contracts\HttpClient\Exception\RedirectionExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
@@ -45,10 +44,11 @@ final class SseStreamParser
      * - Skipping the `[DONE]` sentinel
      * - JSON decode errors (silently skipped)
      *
-     * Throws a ProviderException before reading any chunk when the answer
-     * is not 2xx: a 3xx is refused as a redirect not followed, any other
-     * status fails with Symfony's message, which names the status. Also
-     * throws when an incomplete line grows past the line cap.
+     * Checks the status before reading any chunk: a 3xx throws a
+     * ProviderException refusing the redirect, and a 4xx or 5xx throws
+     * Symfony's ClientException or ServerException unchanged, so callers
+     * can still read the API error body from it. Also throws a
+     * ProviderException when an incomplete line grows past the line cap.
      *
      * @return \Generator<int, array<string, mixed>>
      */
@@ -96,16 +96,15 @@ final class SseStreamParser
     /**
      * Wait for the status line and throw unless it is 2xx.
      *
-     * The 3xx wording matches AbstractProvider::decodeResponse().
+     * A 3xx becomes ProviderException::redirectRefused(); a 4xx or 5xx
+     * propagates as the Symfony exception getHeaders() raised.
      */
     private function assertSuccessfulStatus(): void
     {
         try {
             $this->response->getHeaders(true);
         } catch (RedirectionExceptionInterface $e) {
-            throw ProviderException::requestRefused(sprintf('redirect not followed (%s)', $e->getMessage()), $e);
-        } catch (HttpExceptionInterface $e) {
-            throw ProviderException::chatFailed($e->getMessage(), $e);
+            throw ProviderException::redirectRefused($e);
         }
     }
 }
