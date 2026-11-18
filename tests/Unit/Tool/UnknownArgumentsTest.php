@@ -59,10 +59,76 @@ test('the callback receives only declared keys', function () {
         return 'ok';
     });
 
+    $refused = $tool->execute(['x' => '1', 'extra' => 'smuggled']);
+
+    expect($refused->status)->toBe(ToolResultStatus::Error)
+        ->and($seen)->toBeNull();
+
     $result = $tool->execute(['x' => '1']);
 
     expect($result->status)->toBe(ToolResultStatus::Success)
         ->and($seen)->toBe(['x' => '1']);
+});
+
+test('a numeric top-level key is rejected', function () {
+    $ran = false;
+    $tool = new Tool('echo', 'Echo.', [new StringParameter('x', 'X', required: false)], function (array $input) use (&$ran): string {
+        $ran = true;
+
+        return 'ok';
+    });
+
+    $result = $tool->execute(json_decode('{"0":"DROP"}', true));
+
+    expect($result->status)->toBe(ToolResultStatus::Error)
+        ->and($result->content)->toBe('Unknown parameters: 0. Allowed: x.')
+        ->and($ran)->toBeFalse();
+});
+
+test('a list is not accepted as an object with declared properties', function (string $json) {
+    $ran = false;
+    $obj = new ObjectParameter('obj', 'Object', properties: [new StringParameter('path', 'Path', required: false)]);
+    $tool = new Tool('t', 'T.', [$obj], function (array $input) use (&$ran): string {
+        $ran = true;
+
+        return 'ran';
+    });
+
+    $result = $obj->validate(json_decode($json, true));
+
+    expect($result->valid)->toBeFalse()
+        ->and($result->error)->toBe('Parameter "obj" must be an object.')
+        ->and($tool->execute(['obj' => json_decode($json, true)])->status)->toBe(ToolResultStatus::Error)
+        ->and($tool->execute(['obj' => $json])->status)->toBe(ToolResultStatus::Error)
+        ->and($ran)->toBeFalse();
+})->with([
+    'numeric key object' => ['{"0":"DROP"}'],
+    'list' => ['["DROP","x"]'],
+]);
+
+test('an empty object is still accepted when every property is optional', function () {
+    $obj = new ObjectParameter('obj', 'Object', properties: [new StringParameter('path', 'Path', required: false)]);
+
+    expect($obj->validate(json_decode('{}', true))->valid)->toBeTrue()
+        ->and($obj->validate('{}')->valid)->toBeTrue();
+});
+
+test('a JSON-string object with an unknown nested key is rejected', function () {
+    $ran = false;
+    $obj = new ObjectParameter('obj', 'Object', properties: [
+        new ObjectParameter('inner', 'Inner', required: false, properties: [new StringParameter('path', 'Path', required: false)]),
+    ]);
+    $tool = new Tool('t', 'T.', [$obj], function (array $input) use (&$ran): string {
+        $ran = true;
+
+        return 'ran';
+    });
+
+    $result = $tool->execute(['obj' => '{"inner":{"path":"src","k":"smuggled"}}']);
+
+    expect($result->status)->toBe(ToolResultStatus::Error)
+        ->and($result->content)->toContain('has unknown properties: k.')
+        ->and($ran)->toBeFalse();
 });
 
 test('an undeclared nested property is rejected', function () {

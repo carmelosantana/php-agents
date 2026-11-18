@@ -65,7 +65,13 @@ final readonly class ObjectParameter extends Parameter
             return ValidationResult::failure(sprintf('Parameter "%s" must be an object.', $this->name));
         }
 
-        if ($this->properties !== [] && !array_is_list($value)) {
+        // A JSON array (or `{"0":…}`, which decodes the same) is not an object. `{}`
+        // decodes to [], so the empty list stays accepted.
+        if ($this->properties !== [] && $value !== [] && array_is_list($value)) {
+            return ValidationResult::failure(sprintf('Parameter "%s" must be an object.', $this->name));
+        }
+
+        if ($this->properties !== []) {
             $declared = array_map(static fn(Parameter $param): string => $param->name, $this->properties);
             $unknown = array_diff(array_map('strval', array_keys($value)), $declared);
 
