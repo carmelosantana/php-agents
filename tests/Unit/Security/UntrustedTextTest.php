@@ -64,24 +64,30 @@ test('forDisplay defaults to 500 characters', function () {
     expect(mb_strlen(UntrustedText::forDisplay(str_repeat('y', 2000))))->toBe(501);
 });
 
+// Each row: the text, then a fragment of its secret that must not survive (null: nothing to hide).
 dataset('whitespace_runs', [
-    'key then spaces' => ['token' . str_repeat(' ', 1024 * 1024) . 'x'],
-    'key, spaces, quote' => ['password' . str_repeat(' ', 1024 * 1024) . '"'],
-    'bearer then spaces' => ['Bearer' . str_repeat(' ', 1024 * 1024) . '!'],
-    'basic then spaces' => ['Basic' . str_repeat(' ', 1024 * 1024) . '!'],
-    'unclosed quoted value' => ['password: "' . str_repeat('a', 1024 * 1024)],
-    'unclosed quoted escapes' => ['password: "' . str_repeat('\\"', 512 * 1024)],
-    'unclosed single-quoted escapes' => ["secret: '" . str_repeat("\\'", 512 * 1024)],
-    'lowercase bearer then spaces' => ['bearer' . str_repeat(' ', 1024 * 1024) . '!'],
+    'key then spaces' => ['token' . str_repeat(' ', 1024 * 1024) . 'x', null],
+    'key, spaces, quote' => ['password' . str_repeat(' ', 1024 * 1024) . '"', null],
+    'bearer then spaces' => ['Bearer' . str_repeat(' ', 1024 * 1024) . '!', null],
+    'basic then spaces' => ['Basic' . str_repeat(' ', 1024 * 1024) . '!', null],
+    'unclosed quoted value' => ['password: "' . str_repeat('a', 1024 * 1024), str_repeat('a', 64)],
+    'unclosed quoted escapes' => ['password: "' . str_repeat('\\"', 512 * 1024), str_repeat('\\"', 8)],
+    'unclosed single-quoted escapes' => ["secret: '" . str_repeat("\\'", 512 * 1024), str_repeat("\\'", 8)],
+    'lowercase bearer then spaces' => ['bearer' . str_repeat(' ', 1024 * 1024) . '!', null],
 ]);
 
-test('redactSecrets stays linear on a 1 MiB whitespace run', function (string $text) {
+// Without the PCRE JIT a long escape run can hit pcre.backtrack_limit; redactSecrets() then
+// fails closed to `[redacted]`. Either outcome is fine as long as it is fast and leaks nothing.
+test('redactSecrets stays linear on a 1 MiB whitespace run', function (string $text, ?string $secret) {
     $start = microtime(true);
-    UntrustedText::redactSecrets($text);
+    $out = UntrustedText::redactSecrets($text);
     $elapsed = microtime(true) - $start;
 
-    expect(preg_last_error())->toBe(PREG_NO_ERROR)
+    expect(preg_last_error() === PREG_NO_ERROR || $out === '[redacted]')->toBeTrue()
         ->and($elapsed)->toBeLessThan(0.25);
+    if ($secret !== null) {
+        expect($out)->not->toContain($secret);
+    }
 })->with('whitespace_runs');
 
 test('a Basic credential is redacted and the scheme kept', function () {

@@ -1214,7 +1214,7 @@ abstract class AbstractAgent implements AgentInterface
 
     /**
      * A failed (error or timeout) result with its content, every string key and value in its
-     * metadata (recursively; an object is first turned into arrays through JSON) passed
+     * metadata (recursively; an object is first turned into arrays through JSON, or null if that fails or throws) passed
      * through UntrustedText::forDisplay(…, 500), and its error code through forDisplay(…, 64).
      */
     private function redactedErrorResult(ToolResult $result): ToolResult
@@ -1222,7 +1222,12 @@ abstract class AbstractAgent implements AgentInterface
         $redact = static function (mixed $value) use (&$redact): mixed {
             if (is_object($value)) {
                 $flags = \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR;
-                $value = json_decode(json_encode($value, $flags) ?: 'null', true);
+                try {
+                    $value = json_decode(json_encode($value, $flags) ?: 'null', true);
+                } catch (\Throwable) { // @phpstan-ignore catch.neverThrown (json_encode() runs a tool's jsonSerialize())
+                    // A jsonSerialize() that throws is treated like a failed round trip.
+                    $value = null;
+                }
             }
             if (is_string($value)) {
                 return UntrustedText::forDisplay($value, self::TOOL_ERROR_MAX_CHARS);

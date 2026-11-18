@@ -417,6 +417,14 @@ final class RedactionLeakyJson implements JsonSerializable
     }
 }
 
+final class RedactionThrowingJson implements JsonSerializable
+{
+    public function jsonSerialize(): never
+    {
+        throw new RuntimeException('token=throwing-json-secret-15');
+    }
+}
+
 final class RedactionLeakyObject
 {
     public string $note = 'token=plain-object-secret-13';
@@ -485,4 +493,20 @@ test('error metadata keys, object values and the error code are redacted', funct
             ->not->toContain('key-secret-10')->not->toContain('std-secret-11')->not->toContain('json-secret-12')
             ->not->toContain('plain-object-secret-13')->not->toContain('code-secret-14');
     }
+});
+
+test('error metadata whose jsonSerialize throws becomes null and the run completes', function () {
+    $tool = new Tool('leaky', 'Leaks.', [], fn(array $i): ToolResult => new ToolResult(
+        ToolResultStatus::Error,
+        'nope',
+        metadata: ['bad' => new RedactionThrowingJson(), 'count' => 3],
+    ));
+    $provider = new RedactionScriptedProvider([redactionToolRound([new ToolCall('c1', 'leaky', [])]), redactionTextRound()]);
+    $agent = new RedactionTestAgent(provider: $provider);
+    $agent->extraTools = [$tool];
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->toolResults[0]->metadata)->toBe(['bad' => null, 'count' => 3])
+        ->and(serialize($output->toolResults[0]->metadata))->not->toContain('throwing-json-secret-15');
 });
