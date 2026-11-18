@@ -28,8 +28,8 @@ final class AnthropicProvider extends AbstractProvider
     /** Keywords whose value is a schema, a map of schemas or a list of schemas. */
     private const SCHEMA_KEYWORDS = ['properties', '$defs', 'definitions', 'items', 'prefixItems', 'anyOf', 'allOf', 'oneOf'];
 
-    /** Keywords whose value is a schema the preparer does not walk; a schema using one is not representable. */
-    private const UNWALKED_SCHEMA_KEYWORDS = ['not', 'if', 'then', 'else', 'dependentSchemas', 'patternProperties', 'contains', 'propertyNames', 'unevaluatedProperties'];
+    /** Keywords the preparer does not walk or Anthropic cannot take; a schema using one is not representable. */
+    private const UNWALKED_SCHEMA_KEYWORDS = ['not', 'if', 'then', 'else', 'dependentSchemas', 'patternProperties', 'contains', 'propertyNames', 'unevaluatedProperties', '$dynamicRef', '$recursiveRef', 'dependencies', 'unevaluatedItems', 'additionalItems', 'contentSchema'];
 
     private string $apiVersion = '2023-06-01';
 

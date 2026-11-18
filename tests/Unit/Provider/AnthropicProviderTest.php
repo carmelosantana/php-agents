@@ -540,6 +540,10 @@ dataset('anthropic schemas native structured outputs cannot represent', [
         '{"type":"object","properties":{"a":{"$ref":5}}}',
         '{"type":"object","properties":{"a":{"$ref":5}}}',
     ],
+    'unwalked keyword dependencies' => [
+        '{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false,"dependencies":{"a":{"required":["a"]}}}',
+        '{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false,"dependencies":{"a":{"required":["a"]}}}',
+    ],
     'unwalked keyword not' => [
         '{"type":"object","properties":{"a":{"type":"string","not":{"const":"x"}}}}',
         '{"type":"object","properties":{"a":{"type":"string","not":{"const":"x"}}}}',
@@ -557,7 +561,7 @@ test('structured treats every unwalked keyword as not representable', function (
 
     expect($payload)->not->toHaveKey('output_config')
         ->and(anthropicLastUserText($payload))->toStartWith(ANTHROPIC_STRUCTURED_INSTRUCTION);
-})->with(['not', 'if', 'then', 'else', 'dependentSchemas', 'patternProperties', 'contains', 'propertyNames', 'unevaluatedProperties']);
+})->with(['not', 'if', 'then', 'else', 'dependentSchemas', 'patternProperties', 'contains', 'propertyNames', 'unevaluatedProperties', '$dynamicRef', '$recursiveRef', 'dependencies', 'unevaluatedItems', 'additionalItems', 'contentSchema']);
 
 test('structured keeps the native path for non-recursive refs between definitions', function () {
     $payload = null;
