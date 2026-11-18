@@ -125,8 +125,16 @@ test('a FIFO is refused without blocking', function () {
     (new LocalImageResolver([$this->root]))->resolve("{$this->root}/pipe.png");
 })->throws(ImageInputException::class);
 
-test('a symlink in the root to a device is refused', function () {
-    symlink('/dev/zero', "{$this->root}/zero.png");
+test('a device inside an allowed root is refused as not a regular file', function () {
+    if (!file_exists('/dev/zero')) {
+        $this->markTestSkipped('needs /dev/zero');
+    }
 
-    (new LocalImageResolver([$this->root]))->resolve("{$this->root}/zero.png");
+    (new LocalImageResolver(['/dev']))->resolve('/dev/zero');
+})->throws(ImageInputException::class, 'not a regular file');
+
+test('a reference with a NUL byte is refused', function () {
+    file_put_contents("{$this->root}/a.png", ImageFixtures::png());
+
+    (new LocalImageResolver([$this->root]))->resolve("{$this->root}/a.png\0.txt");
 })->throws(ImageInputException::class);

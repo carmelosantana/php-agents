@@ -42,6 +42,9 @@ final class LocalImageResolver implements ImageResolverInterface
     public function resolve(string $reference): ResolvedImage
     {
         $path = str_starts_with(strtolower($reference), 'file://') ? substr($reference, 7) : $reference;
+        if (str_contains($path, "\0")) {
+            throw new ImageInputException('Image path contains a NUL byte.');
+        }
 
         $real = $this->containedRealPath($path);
 
