@@ -620,7 +620,7 @@ final class GeminiProvider extends AbstractProvider
 
     /**
      * Returns the `resolve` option `[host => ip]` for an http(s) URL whose host resolves
-     * only to global addresses, or null when the scheme is not http(s), the host does not
+     * only to global addresses (an empty array when the host is an IP literal), or null when the scheme is not http(s), the host does not
      * resolve, or any resolved address is not global.
      *
      * @return array<string, string>|null
@@ -642,6 +642,11 @@ final class GeminiProvider extends AbstractProvider
             if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_GLOBAL_RANGE) === false || self::inDeniedIpv6Range($ip)) {
                 return null;
             }
+        }
+
+        // An IP literal has no DNS to rebind, and curl rejects a bracketed IPv6 resolve key.
+        if (filter_var(trim($host, '[]'), FILTER_VALIDATE_IP) !== false) {
+            return [];
         }
 
         return [$host => $addresses[0]];

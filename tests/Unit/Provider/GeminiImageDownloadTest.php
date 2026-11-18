@@ -99,6 +99,16 @@ test('a public IPv6 address is still accepted by the deny-list', function () {
     expect($result['gets'])->toBe([$url]);
 });
 
+test('a public IPv6-literal image sends no resolve pin and is inlined', function () {
+    $url = 'http://[2606:4700::1111]/a.png';
+    $result = geminiImageDownload($url, [$url => pngResponse()]);
+
+    expect($result['options'][0]['resolve'] ?? [])->toBe([])
+        ->and($result['part'])->toBe([
+            'inlineData' => ['mimeType' => 'image/png', 'data' => base64_encode("\x89PNG")],
+        ]);
+});
+
 test('localhost resolves to a refused address', function () {
     $result = geminiImageDownload('http://localhost/a.png', ['http://localhost/a.png' => pngResponse()]);
 
@@ -114,10 +124,10 @@ test('a public image is inlined', function () {
     ]);
 });
 
-test('the checked IP is pinned via resolve', function () {
+test('an IPv4-literal host sends no resolve pin and no redirect budget', function () {
     $result = geminiImageDownload('http://93.184.216.34/a.png', ['http://93.184.216.34/a.png' => pngResponse()]);
 
-    expect($result['options'][0]['resolve'])->toBe(['93.184.216.34' => '93.184.216.34'])
+    expect($result['options'][0]['resolve'] ?? [])->toBe([])
         ->and($result['options'][0]['max_redirects'])->toBe(0);
 });
 
@@ -154,7 +164,7 @@ test('a redirect to a public image is followed', function () {
     ]);
 
     expect($result['gets'])->toBe(['http://93.184.216.34/a.png', 'http://93.184.216.35/b.png'])
-        ->and($result['options'][1]['resolve'])->toBe(['93.184.216.35' => '93.184.216.35'])
+        ->and($result['options'][1]['max_redirects'])->toBe(0)
         ->and($result['part'])->toBe([
             'inlineData' => ['mimeType' => 'image/png', 'data' => base64_encode("\x89PNG")],
         ]);
