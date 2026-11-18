@@ -80,6 +80,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
 
         // Terminal events, each yielding exactly one terminal chunk:
         //   response.completed  → Stop, ToolUse (with the tool calls) or Refusal
+        //                         (a refusal discards every pending tool call)
         //   response.incomplete → ContentFilter or MaxTokens, no tool calls
         //   response.failed     → Error; thrown when it carries an error message
         // An `error` event is thrown as a ProviderException. A stream that
@@ -149,6 +150,11 @@ final class OpenAIResponsesProvider extends AbstractProvider
             } elseif ($eventType === 'response.completed') {
                 $responseData = $json['response'] ?? [];
                 $usage = $this->parseUsage($responseData);
+
+                // A refusal wins: its pending tool calls are discarded.
+                if ($refused) {
+                    $pendingToolCalls = [];
+                }
 
                 if (!empty($pendingToolCalls)) {
                     $toolCalls = [];
@@ -428,9 +434,10 @@ final class OpenAIResponsesProvider extends AbstractProvider
 
         $finishReason = $this->mapStatus($data, !empty($toolCalls), $refused);
 
-        // Tool calls run only from a completed response; an incomplete or
-        // failed one may carry truncated arguments (as in the stream path).
-        if (($data['status'] ?? 'completed') !== 'completed') {
+        // Tool calls run only from a completed response that is not a
+        // refusal; an incomplete or failed one may carry truncated arguments
+        // (as in the stream path).
+        if ($refused || ($data['status'] ?? 'completed') !== 'completed') {
             $toolCalls = [];
         }
 

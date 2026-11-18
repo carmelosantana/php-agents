@@ -799,3 +799,32 @@ test('stream that completes yields no extra Error chunk', function () {
     expect($chunks)->toHaveCount(2)
         ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::Stop);
 });
+
+test('stream refusal wins over pending tool calls on response.completed', function () {
+    $chunks = responsesStreamChunks([
+        ['type' => 'response.refusal.delta', 'delta' => 'I cannot help.'],
+        ['type' => 'response.output_item.added', 'output_index' => 1, 'item' => ['type' => 'function_call', 'call_id' => 'call_1', 'name' => 'get_weather']],
+        ['type' => 'response.function_call_arguments.delta', 'output_index' => 1, 'delta' => '{"city":"NYC"}'],
+        ['type' => 'response.output_item.done', 'output_index' => 1, 'item' => ['type' => 'function_call', 'call_id' => 'call_1', 'name' => 'get_weather', 'arguments' => '{"city":"NYC"}']],
+        ['type' => 'response.completed', 'response' => ['status' => 'completed']],
+    ]);
+
+    $last = $chunks[array_key_last($chunks)];
+    $toolCalls = array_merge(...array_map(fn($r) => $r->toolCalls, $chunks));
+
+    expect($last->finishReason)->toBe(ProviderFinishReason::Refusal)
+        ->and($toolCalls)->toBe([])
+        ->and(array_map(fn($r) => $r->finishReason, $chunks))->not->toContain(ProviderFinishReason::ToolUse);
+});
+
+test('chat refusal item wins over function_call items', function () {
+    $mockClient = new MockHttpClient([mockResponsesApiResponse(['output' => [
+        ['type' => 'message', 'content' => [['type' => 'refusal', 'refusal' => 'I cannot help with that.']]],
+        ['type' => 'function_call', 'call_id' => 'call_1', 'name' => 'get_weather', 'arguments' => '{"city":"NYC"}'],
+    ]])]);
+    $response = (new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient))->chat([new UserMessage('hi')]);
+
+    expect($response->finishReason)->toBe(ProviderFinishReason::Refusal)
+        ->and($response->content)->toBe('I cannot help with that.')
+        ->and($response->toolCalls)->toBe([]);
+});

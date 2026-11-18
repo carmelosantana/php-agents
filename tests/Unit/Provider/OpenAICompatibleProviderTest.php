@@ -904,3 +904,35 @@ test('stream that finishes yields no extra Error chunk', function () {
     $errors = array_filter($chunks, fn(Response $r) => $r->finishReason === ProviderFinishReason::Error);
     expect($errors)->toBeEmpty();
 });
+
+test('stream refusal wins over pending tool calls on a tool_calls finish', function () {
+    $chunks = openAIStreamChunks([
+        ['choices' => [['delta' => ['refusal' => 'I cannot help.'], 'finish_reason' => null]]],
+        ['choices' => [['delta' => ['tool_calls' => [['index' => 0, 'id' => 'call_1', 'function' => ['name' => 'get_weather', 'arguments' => '{"city":"NYC"}']]]], 'finish_reason' => null]]],
+        ['choices' => [['delta' => [], 'finish_reason' => 'tool_calls']]],
+    ]);
+
+    $last = $chunks[array_key_last($chunks)];
+    $toolCalls = array_merge(...array_map(fn(Response $r) => $r->toolCalls, $chunks));
+
+    expect($last->finishReason)->toBe(ProviderFinishReason::Refusal)
+        ->and($toolCalls)->toBe([])
+        ->and(array_map(fn(Response $r) => $r->finishReason, $chunks))->not->toContain(ProviderFinishReason::ToolUse);
+});
+
+test('chat message refusal wins over message tool_calls', function () {
+    $mockClient = new MockHttpClient([mockOpenAIResponse(['choices' => [[
+        'message' => [
+            'role' => 'assistant',
+            'content' => null,
+            'refusal' => 'I cannot help with that.',
+            'tool_calls' => [['id' => 'call_1', 'type' => 'function', 'function' => ['name' => 'get_weather', 'arguments' => '{"city":"NYC"}']]],
+        ],
+        'finish_reason' => 'tool_calls',
+    ]]])]);
+    $response = (new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient))->chat([new UserMessage('hi')]);
+
+    expect($response->finishReason)->toBe(ProviderFinishReason::Refusal)
+        ->and($response->content)->toBe('I cannot help with that.')
+        ->and($response->toolCalls)->toBe([]);
+});

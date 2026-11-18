@@ -149,8 +149,21 @@ class OpenAICompatibleProvider extends AbstractProvider
             }
 
             // When the stream signals tool_calls finish, yield a
-            // Response with the fully-assembled ToolCall objects.
+            // Response with the fully-assembled ToolCall objects. A refusal
+            // wins: its pending tool calls are discarded.
             if ($finishReason === 'tool_calls') {
+                if ($refused) {
+                    $pendingToolCalls = [];
+
+                    yield new Response(
+                        content: $delta['content'] ?? '',
+                        finishReason: ProviderFinishReason::Refusal,
+                        toolCalls: [],
+                        model: $json['model'] ?? $this->model,
+                    );
+                    continue;
+                }
+
                 if (!empty($pendingToolCalls)) {
                     $toolCalls = [];
                     foreach ($pendingToolCalls as $tc) {
@@ -426,12 +439,14 @@ class OpenAICompatibleProvider extends AbstractProvider
         // on the message object alongside `content`.
         $reasoning = $message['thinking'] ?? '';
 
-        // A refusal arrives in message.refusal; the person sees its text.
+        // A refusal arrives in message.refusal; the person sees its text and
+        // no tool call is returned.
         $content = $message['content'] ?? '';
         $refusal = $message['refusal'] ?? null;
         if (is_string($refusal) && $refusal !== '') {
             $content = $refusal;
             $finishReason = ProviderFinishReason::Refusal;
+            $toolCalls = [];
         }
 
         return new Response(
