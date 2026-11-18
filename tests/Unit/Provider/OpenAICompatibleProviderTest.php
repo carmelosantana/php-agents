@@ -780,3 +780,112 @@ test('stream keeps stream true and the conversation when options try to override
     expect($requestPayload['stream'])->toBeTrue()
         ->and($requestPayload['messages'])->toBe([['role' => 'user', 'content' => 'hi']]);
 });
+
+// --- Finish reasons, refusals and terminal chunks ---
+
+dataset('openai finish reasons', [
+    'content_filter' => ['content_filter', ProviderFinishReason::ContentFilter],
+    'error' => ['error', ProviderFinishReason::Error],
+    'length' => ['length', ProviderFinishReason::MaxTokens],
+    'tool_calls' => ['tool_calls', ProviderFinishReason::ToolUse],
+    'function_call' => ['function_call', ProviderFinishReason::ToolUse],
+    'stop' => ['stop', ProviderFinishReason::Stop],
+    'unknown' => ['something_new', ProviderFinishReason::Stop],
+]);
+
+test('chat maps every finish_reason', function (string $raw, ProviderFinishReason $expected) {
+    $mockClient = new MockHttpClient([mockOpenAIResponse(['choices' => [['message' => ['content' => 'x'], 'finish_reason' => $raw]]])]);
+    $response = (new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient))->chat([new UserMessage('hi')]);
+
+    expect($response->finishReason)->toBe($expected);
+})->with('openai finish reasons');
+
+test('chat puts a message refusal into content with the Refusal reason', function () {
+    $mockClient = new MockHttpClient([mockOpenAIResponse(['choices' => [[
+        'message' => ['role' => 'assistant', 'content' => null, 'refusal' => 'I cannot help with that.'],
+        'finish_reason' => 'stop',
+    ]]])]);
+    $response = (new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient))->chat([new UserMessage('hi')]);
+
+    expect($response->content)->toBe('I cannot help with that.')
+        ->and($response->finishReason)->toBe(ProviderFinishReason::Refusal);
+});
+
+test('chat ignores a null message refusal', function () {
+    $mockClient = new MockHttpClient([mockOpenAIResponse(['choices' => [[
+        'message' => ['role' => 'assistant', 'content' => 'Sure.', 'refusal' => null],
+        'finish_reason' => 'stop',
+    ]]])]);
+    $response = (new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient))->chat([new UserMessage('hi')]);
+
+    expect($response->content)->toBe('Sure.')
+        ->and($response->finishReason)->toBe(ProviderFinishReason::Stop);
+});
+
+function openAIStreamChunks(array $events): array
+{
+    $lines = array_map(fn(array $e) => 'data: ' . json_encode($e), $events);
+    $mockClient = new MockHttpClient([new MockResponse(implode("\n\n", [...$lines, 'data: [DONE]', '']), ['http_code' => 200])]);
+    $provider = new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient);
+
+    return iterator_to_array($provider->stream([new UserMessage('hi')]), false);
+}
+
+test('stream yields a terminal chunk for content_filter with an empty delta', function () {
+    $chunks = openAIStreamChunks([
+        ['choices' => [['delta' => ['content' => 'Partial'], 'finish_reason' => null]]],
+        ['choices' => [['delta' => [], 'finish_reason' => 'content_filter']]],
+    ]);
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[0]->content)->toBe('Partial')
+        ->and($chunks[1]->content)->toBe('')
+        ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::ContentFilter);
+});
+
+test('stream yields delta refusal text as content and ends with Refusal', function () {
+    $chunks = openAIStreamChunks([
+        ['choices' => [['delta' => ['role' => 'assistant', 'content' => null, 'refusal' => ''], 'finish_reason' => null]]],
+        ['choices' => [['delta' => ['refusal' => 'I cannot '], 'finish_reason' => null]]],
+        ['choices' => [['delta' => ['refusal' => 'help.'], 'finish_reason' => null]]],
+        ['choices' => [['delta' => [], 'finish_reason' => 'stop']]],
+    ]);
+
+    $content = implode('', array_map(fn(Response $r) => $r->content, $chunks));
+    $last = $chunks[array_key_last($chunks)];
+
+    expect($content)->toBe('I cannot help.')
+        ->and($last->finishReason)->toBe(ProviderFinishReason::Refusal);
+});
+
+test('stream ending without a finish_reason yields one terminal Error chunk', function () {
+    $chunks = openAIStreamChunks([
+        ['choices' => [['delta' => ['content' => 'Half an ans'], 'finish_reason' => null]]],
+    ]);
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[0]->content)->toBe('Half an ans')
+        ->and($chunks[1]->content)->toBe('')
+        ->and($chunks[1]->toolCalls)->toBe([])
+        ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::Error);
+});
+
+test('stream with pending tool calls but no finish_reason yields Error and no tool calls', function () {
+    $chunks = openAIStreamChunks([
+        ['choices' => [['delta' => ['tool_calls' => [['index' => 0, 'id' => 'call_1', 'function' => ['name' => 'get_weather', 'arguments' => '{"city":"NYC"}']]]], 'finish_reason' => null]]],
+    ]);
+
+    expect($chunks)->toHaveCount(1)
+        ->and($chunks[0]->toolCalls)->toBe([])
+        ->and($chunks[0]->finishReason)->toBe(ProviderFinishReason::Error);
+});
+
+test('stream that finishes yields no extra Error chunk', function () {
+    $chunks = openAIStreamChunks([
+        ['choices' => [['delta' => ['content' => 'Done.'], 'finish_reason' => 'stop']]],
+        ['choices' => [], 'usage' => ['prompt_tokens' => 1, 'completion_tokens' => 1, 'total_tokens' => 2]],
+    ]);
+
+    $errors = array_filter($chunks, fn(Response $r) => $r->finishReason === ProviderFinishReason::Error);
+    expect($errors)->toBeEmpty();
+});

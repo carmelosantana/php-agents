@@ -80,9 +80,16 @@ class OpenAICompatibleProvider extends AbstractProvider
         /** @var array<int, array{id: string, name: string, arguments: string}> $pendingToolCalls */
         $pendingToolCalls = [];
 
+        // Every non-null finish_reason yields a terminal chunk. A stream that
+        // ends without one (EOF) yields a terminal Error chunk instead.
+        $finished = false;
+        $refused = false;
+        $model = $this->model;
+
         $parser = new SseStreamParser($this->httpClient, $response);
 
         foreach ($parser->events() as $json) {
+            $model = $json['model'] ?? $model;
             $choice = $json['choices'][0] ?? [];
             $delta = $choice['delta'] ?? [];
             $finishReason = $choice['finish_reason'] ?? null;
@@ -121,6 +128,24 @@ class OpenAICompatibleProvider extends AbstractProvider
                     model: $json['model'] ?? $this->model,
                     reasoning: $reasoningDelta,
                 );
+            }
+
+            // A refusal streams as delta.refusal; its text is yielded as
+            // content and the terminal chunk becomes Refusal.
+            $refusalDelta = $delta['refusal'] ?? null;
+            if (is_string($refusalDelta) && $refusalDelta !== '') {
+                $refused = true;
+
+                yield new Response(
+                    content: $refusalDelta,
+                    finishReason: ProviderFinishReason::Stop,
+                    toolCalls: [],
+                    model: $json['model'] ?? $this->model,
+                );
+            }
+
+            if ($finishReason !== null) {
+                $finished = true;
             }
 
             // When the stream signals tool_calls finish, yield a
@@ -180,17 +205,19 @@ class OpenAICompatibleProvider extends AbstractProvider
                 continue;
             }
 
-            // Regular text delta — yield immediately
+            // Regular text delta — yield immediately (terminal when it
+            // carries the finish_reason)
             if (isset($delta['content']) && $delta['content'] !== '') {
                 yield new Response(
                     content: $delta['content'],
-                    finishReason: $this->mapFinishReason($finishReason),
+                    finishReason: $this->streamFinishReason($finishReason, $refused),
                     toolCalls: [],
                     model: $json['model'] ?? $this->model,
                 );
-            } elseif ($finishReason === 'stop') {
-                // Final content chunk (stop signal, usage may follow
-                // in a separate chunk when stream_options is set)
+            } elseif ($finishReason !== null) {
+                // Terminal chunk for any finish_reason, even with an empty
+                // delta (usage may follow in a separate chunk when
+                // stream_options is set)
                 $usage = null;
                 if (isset($json['usage'])) {
                     $usage = new Usage(
@@ -202,13 +229,32 @@ class OpenAICompatibleProvider extends AbstractProvider
 
                 yield new Response(
                     content: '',
-                    finishReason: ProviderFinishReason::Stop,
+                    finishReason: $this->streamFinishReason($finishReason, $refused),
                     toolCalls: [],
                     model: $json['model'] ?? $this->model,
                     usage: $usage,
                 );
             }
         }
+
+        // EOF without a finish_reason: the answer is incomplete, and any
+        // pending tool calls are dropped so that no tool runs.
+        if (!$finished) {
+            yield new Response(
+                content: '',
+                finishReason: ProviderFinishReason::Error,
+                toolCalls: [],
+                model: $model,
+            );
+        }
+    }
+
+    /** A streamed refusal turns a plain Stop into Refusal. */
+    private function streamFinishReason(?string $finishReason, bool $refused): ProviderFinishReason
+    {
+        $mapped = $this->mapFinishReason($finishReason);
+
+        return $refused && $mapped === ProviderFinishReason::Stop ? ProviderFinishReason::Refusal : $mapped;
     }
 
     /**
@@ -380,8 +426,16 @@ class OpenAICompatibleProvider extends AbstractProvider
         // on the message object alongside `content`.
         $reasoning = $message['thinking'] ?? '';
 
+        // A refusal arrives in message.refusal; the person sees its text.
+        $content = $message['content'] ?? '';
+        $refusal = $message['refusal'] ?? null;
+        if (is_string($refusal) && $refusal !== '') {
+            $content = $refusal;
+            $finishReason = ProviderFinishReason::Refusal;
+        }
+
         return new Response(
-            content: $message['content'] ?? '',
+            content: $content,
             finishReason: $finishReason,
             toolCalls: $toolCalls,
             model: $data['model'] ?? $this->model,
@@ -396,6 +450,8 @@ class OpenAICompatibleProvider extends AbstractProvider
             'stop' => ProviderFinishReason::Stop,
             'tool_calls', 'function_call' => ProviderFinishReason::ToolUse,
             'length' => ProviderFinishReason::MaxTokens,
+            'content_filter' => ProviderFinishReason::ContentFilter,
+            'error' => ProviderFinishReason::Error,
             default => ProviderFinishReason::Stop,
         };
     }
