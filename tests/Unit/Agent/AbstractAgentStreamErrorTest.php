@@ -61,7 +61,8 @@ test('a stream error event reaches the agent output and agent.error sanitised an
     expect($output->finishReason)->toBe(\CarmeloSantana\PHPAgents\Enum\AgentFinishReason::Error)
         ->and($output->content)->toStartWith('Provider error: error: Bad [2J x')
         ->and($output->content)->toEndWith('…')
-        ->and(mb_strlen($output->content))->toBe(mb_strlen('Provider error: error: ') + 301)
+        // The agent bounds the whole exception message (type included) to 300 characters.
+        ->and(mb_strlen($output->content))->toBe(mb_strlen('Provider error: ') + 301)
         ->and(preg_match('/\p{Cc}/u', $output->content))->toBe(0)
         ->and($errors)->toBe([substr($output->content, strlen('Provider error: '))]);
 });

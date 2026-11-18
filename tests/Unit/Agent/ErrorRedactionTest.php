@@ -1,0 +1,362 @@
+<?php
+
+declare(strict_types=1);
+
+use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
+use CarmeloSantana\PHPAgents\Agent\Output;
+use CarmeloSantana\PHPAgents\Config\ModelDefinition;
+use CarmeloSantana\PHPAgents\Contract\BatchToolExecutorInterface;
+use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
+use CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface;
+use CarmeloSantana\PHPAgents\Contract\ToolInterface;
+use CarmeloSantana\PHPAgents\Enum\AgentFinishReason;
+use CarmeloSantana\PHPAgents\Enum\ModelCapability;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Enum\ToolResultStatus;
+use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
+use CarmeloSantana\PHPAgents\Message\UserMessage;
+use CarmeloSantana\PHPAgents\Provider\OpenAICompatibleProvider;
+use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Tool\Tool;
+use CarmeloSantana\PHPAgents\Tool\ToolCall;
+use CarmeloSantana\PHPAgents\Tool\ToolResult;
+use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Response\MockResponse;
+
+// Provider error bodies, provider exception messages and tool error text are untrusted: they can
+// carry credentials and terminal control bytes, and they reach Output, agent events, the
+// conversation and the model. These pin the redaction and the bounds.
+
+final class RedactionScriptedProvider implements ProviderInterface
+{
+    /** @param list<list<Response>|\Throwable> $streams */
+    public function __construct(private array $streams) {}
+
+    public function chat(array $messages, array $tools = [], array $options = []): Response
+    {
+        throw new LogicException('unused');
+    }
+
+    public function stream(array $messages, array $tools = [], array $options = []): iterable
+    {
+        $next = array_shift($this->streams) ?? throw new RuntimeException('No scripted stream left.');
+        if ($next instanceof \Throwable) {
+            throw $next;
+        }
+
+        yield from $next;
+    }
+
+    public function structured(array $messages, string $schema, array $options = []): mixed
+    {
+        throw new LogicException('unused');
+    }
+
+    public function models(): array
+    {
+        return [new ModelDefinition(id: 'test-model', name: 'Test Model', provider: 'test', capabilities: [ModelCapability::Text, ModelCapability::Tools])];
+    }
+
+    public function isAvailable(): bool
+    {
+        return true;
+    }
+
+    public function getModel(): string
+    {
+        return 'test-model';
+    }
+
+    public function withModel(string $model): static
+    {
+        return $this;
+    }
+}
+
+final class RedactionEventRecorder implements SplObserver
+{
+    /** @var list<array{string, mixed}> */
+    public array $events = [];
+
+    public function update(SplSubject $subject): void
+    {
+        /** @var AbstractAgent $subject */
+        $this->events[] = [$subject->lastEvent(), $subject->lastEventData()];
+    }
+
+    /** @return list<mixed> */
+    public function dataFor(string $event): array
+    {
+        return array_values(array_map(fn(array $e): mixed => $e[1], array_filter($this->events, fn(array $e): bool => $e[0] === $event)));
+    }
+}
+
+final class RedactionTestAgent extends AbstractAgent
+{
+    /** @var list<ToolInterface> */
+    public array $extraTools = [];
+
+    public function instructions(): string
+    {
+        return 'You are a redaction test agent.';
+    }
+
+    public function tools(): array
+    {
+        return $this->extraTools;
+    }
+}
+
+final class RedactionBatchExecutor implements BatchToolExecutorInterface
+{
+    public function execute(ToolInterface $tool, array $arguments): ToolResult
+    {
+        return $tool->execute($arguments);
+    }
+
+    public function executeBatch(array $batch): array
+    {
+        return array_map(
+            fn(array $entry): ToolResult => ToolResult::error("worker died: token=batch-secret-1 \x1b[0m"),
+            $batch,
+        );
+    }
+}
+
+final class RedactionLeakyPolicy implements ToolExecutionPolicyInterface
+{
+    public function shouldExecute(string $toolName, array $arguments): true|string
+    {
+        return "rule matched password=policy-pass-9\x07";
+    }
+}
+
+/** A tool whose execute() throws, bypassing Tool's own catch. */
+final class RedactionThrowingTool implements ToolInterface
+{
+    public function name(): string
+    {
+        return 'boom';
+    }
+
+    public function description(): string
+    {
+        return 'Throws.';
+    }
+
+    public function parameters(): array
+    {
+        return [];
+    }
+
+    public function execute(array $input): ToolResult
+    {
+        throw new RuntimeException('db down: Bearer abcdefgh12345678' . str_repeat(' long', 400));
+    }
+
+    public function toFunctionSchema(): array
+    {
+        return ['type' => 'function', 'function' => ['name' => 'boom', 'description' => 'Throws.', 'parameters' => ['type' => 'object', 'properties' => []]]];
+    }
+}
+
+function redactionToolRound(array $calls): array
+{
+    return [new Response(content: '', finishReason: ProviderFinishReason::ToolUse, toolCalls: $calls, model: 'test-model')];
+}
+
+function redactionTextRound(): array
+{
+    return [new Response(content: 'Finished.', finishReason: ProviderFinishReason::Stop, model: 'test-model')];
+}
+
+/** Every error string the run exposed: Output.toolResults, the conversation, agent.tool_result and agent.tool_error. */
+function redactionExposedErrors(Output $output, RedactionEventRecorder $events): array
+{
+    $texts = [];
+    foreach ($output->toolResults as $r) {
+        $texts[] = $r->content;
+    }
+    foreach ($output->conversation?->messages() ?? [] as $m) {
+        if ($m instanceof ToolResultMessage) {
+            $texts[] = $m->toArray()['content'] ?? '';
+        }
+    }
+    foreach ($events->dataFor('agent.tool_result') as $r) {
+        $texts[] = $r->content;
+    }
+    foreach ($events->dataFor('agent.tool_error') as $s) {
+        $texts[] = $s;
+    }
+
+    return $texts;
+}
+
+function redactionHttpAgent(MockResponse $response): array
+{
+    $provider = new OpenAICompatibleProvider(
+        model: 'test-model',
+        baseUrl: 'https://api.example.test/v1',
+        httpClient: new MockHttpClient([$response]),
+    );
+    $agent = new RedactionTestAgent(provider: $provider);
+    $events = new RedactionEventRecorder();
+    $agent->attach($events);
+
+    return [$agent, $events];
+}
+
+test('a 4xx body is bounded and redacted in Output and agent.error', function () {
+    $body = '{"error":{"message":"bad key sk-ant-AAAAAAAAAAAAAAAAAAAAAAAA\u001b[31m"}}' . str_repeat(' ', 100 * 1024);
+    [$agent, $events] = redactionHttpAgent(new MockResponse($body, ['http_code' => 401, 'response_headers' => ['Content-Type: application/json']]));
+
+    $output = $agent->run(new UserMessage('Hi'));
+    $errors = $events->dataFor('agent.error');
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Error)
+        ->and($output->content)->toStartWith('Provider error: ')
+        ->and($output->content)->toContain("\n\nAPI response: bad key [redacted] [31m")
+        ->and($output->content)->not->toContain('sk-ant-AAAA')
+        ->and($output->content)->not->toContain("\x1b")
+        ->and(mb_strlen($output->content))->toBeLessThanOrEqual(700)
+        ->and($errors)->toHaveCount(1)
+        ->and($errors[0])->not->toContain('sk-ant-AAAA')
+        ->and($errors[0])->not->toContain("\x1b")
+        ->and(mb_strlen($errors[0]))->toBeLessThanOrEqual(700);
+});
+
+test('a short 4xx JSON body keeps its API message, redacted', function () {
+    [$agent, $events] = redactionHttpAgent(new MockResponse('{"error":{"message":"bad key sk-ant-AAAAAAAAAAAAAAAAAAAAAAAA\u001b[31m"}}', ['http_code' => 401]));
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->content)->toContain("\n\nAPI response: bad key [redacted] [31m")
+        ->and($output->content)->toContain('401');
+});
+
+test('a non-JSON error body is not echoed', function () {
+    [$agent, $events] = redactionHttpAgent(new MockResponse('<html>internal trace: password=hunter2 at /srv/app.php</html>', ['http_code' => 400]));
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->content)->toStartWith('Provider error: ')
+        ->and($output->content)->not->toContain('API response')
+        ->and($output->content)->not->toContain('hunter2')
+        ->and($output->content)->not->toContain('/srv/app.php');
+});
+
+test('a JSON body whose message is not a string is not echoed', function () {
+    [$agent] = redactionHttpAgent(new MockResponse('{"error":{"message":{"token":"x"}},"debug":"token=leak-123"}', ['http_code' => 400]));
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->content)->not->toContain('API response')
+        ->and($output->content)->not->toContain('leak-123');
+});
+
+test('a provider exception message is redacted and bounded', function () {
+    $provider = new RedactionScriptedProvider([new RuntimeException("connect failed: api_key=sk-AAAAAAAAAAAAAAAAAAAA \x1b[2J" . str_repeat(' z', 1000))]);
+    $agent = new RedactionTestAgent(provider: $provider);
+    $events = new RedactionEventRecorder();
+    $agent->attach($events);
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->content)->toStartWith('Provider error: connect failed: api_key=[redacted]')
+        ->and($output->content)->not->toContain("\x1b")
+        ->and(mb_strlen($output->content))->toBe(mb_strlen('Provider error: ') + 301)
+        ->and($events->dataFor('agent.error')[0])->not->toContain('sk-AAAA');
+});
+
+test('a tool exception message is redacted and bounded', function () {
+    $tool = new Tool('leaky', 'Throws.', [], function (array $input): ToolResult {
+        throw new RuntimeException("query failed: password=hunter2 \x1b[31m" . str_repeat(' w', 1000));
+    });
+    $provider = new RedactionScriptedProvider([redactionToolRound([new ToolCall('c1', 'leaky', [])]), redactionTextRound()]);
+    $agent = new RedactionTestAgent(provider: $provider);
+    $agent->extraTools = [$tool];
+    $events = new RedactionEventRecorder();
+    $agent->attach($events);
+
+    $direct = $tool->execute([]);
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($direct->content)->toStartWith('query failed: password=[redacted] [31m')
+        ->and(mb_strlen($direct->content))->toBe(501);
+    foreach (redactionExposedErrors($output, $events) as $text) {
+        expect($text)->not->toContain('hunter2')->and($text)->not->toContain("\x1b")->and(mb_strlen($text))->toBeLessThanOrEqual(501);
+    }
+});
+
+test('an exception thrown past the tool is redacted in the result and agent.tool_error', function () {
+    $provider = new RedactionScriptedProvider([redactionToolRound([new ToolCall('c1', 'boom', [])]), redactionTextRound()]);
+    $agent = new RedactionTestAgent(provider: $provider);
+    $agent->extraTools = [new RedactionThrowingTool()];
+    $events = new RedactionEventRecorder();
+    $agent->attach($events);
+
+    $output = $agent->run(new UserMessage('Hi'));
+    $texts = redactionExposedErrors($output, $events);
+
+    expect($events->dataFor('agent.tool_error'))->toHaveCount(1)
+        ->and($output->toolResults[0]->content)->toStartWith('db down: Bearer [redacted]')
+        ->and(mb_strlen($output->toolResults[0]->content))->toBe(501);
+    foreach ($texts as $text) {
+        expect($text)->not->toContain('abcdefgh12345678');
+    }
+});
+
+test('a returned error result with a secret is redacted, success content is not rewritten', function () {
+    $bad = new Tool('bad', 'Errors.', [], fn(array $i): ToolResult => ToolResult::error("denied for token=tool-secret-77\n\nretry later"));
+    $good = new Tool('good', 'Succeeds.', [], fn(array $i): ToolResult => ToolResult::success("line one\n\nhere is token=user-data-ok"));
+    $provider = new RedactionScriptedProvider([redactionToolRound([new ToolCall('c1', 'bad', []), new ToolCall('c2', 'good', [])]), redactionTextRound()]);
+    $agent = new RedactionTestAgent(provider: $provider);
+    $agent->extraTools = [$bad, $good];
+    $events = new RedactionEventRecorder();
+    $agent->attach($events);
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->toolResults[0]->content)->toBe('denied for token=[redacted] retry later')
+        ->and($output->toolResults[0]->status)->toBe(ToolResultStatus::Error)
+        ->and($output->toolResults[0]->callId)->toBe('c1')
+        ->and($output->toolResults[1]->content)->toBe("line one\n\nhere is token=user-data-ok");
+    foreach (redactionExposedErrors($output, $events) as $text) {
+        expect($text)->not->toContain('tool-secret-77');
+    }
+});
+
+test('batch executor error results are redacted', function () {
+    $a = new Tool('a', 'A.', [], fn(array $i): ToolResult => ToolResult::success('a'));
+    $b = new Tool('b', 'B.', [], fn(array $i): ToolResult => ToolResult::success('b'));
+    $provider = new RedactionScriptedProvider([redactionToolRound([new ToolCall('c1', 'a', []), new ToolCall('c2', 'b', [])]), redactionTextRound()]);
+    $agent = new RedactionTestAgent(provider: $provider, toolExecutor: new RedactionBatchExecutor());
+    $agent->extraTools = [$a, $b];
+    $events = new RedactionEventRecorder();
+    $agent->attach($events);
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->toolResults)->toHaveCount(2)
+        ->and($output->toolResults[0]->content)->toBe('worker died: token=[redacted] [0m')
+        ->and($output->toolResults[1]->callId)->toBe('c2');
+    foreach (redactionExposedErrors($output, $events) as $text) {
+        expect($text)->not->toContain('batch-secret-1')->and($text)->not->toContain("\x1b");
+    }
+});
+
+test('policy denial text is redacted', function () {
+    $t = new Tool('t', 'T.', [], fn(array $i): ToolResult => ToolResult::success('t'));
+    $provider = new RedactionScriptedProvider([redactionToolRound([new ToolCall('c1', 't', [])]), redactionTextRound()]);
+    $agent = new RedactionTestAgent(provider: $provider, executionPolicy: new RedactionLeakyPolicy());
+    $agent->extraTools = [$t];
+    $events = new RedactionEventRecorder();
+    $agent->attach($events);
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->toolResults[0]->content)->toBe('Denied by policy: rule matched password=[redacted]');
+    foreach (redactionExposedErrors($output, $events) as $text) {
+        expect($text)->not->toContain('policy-pass-9');
+    }
+});

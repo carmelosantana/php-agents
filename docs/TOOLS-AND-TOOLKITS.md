@@ -689,6 +689,15 @@ sends, so the metadata is for your code and your logs, not for the model.
 
 A result the server marked `isError` comes back as an error `ToolResult` with the error code
 `mcp_tool_error`, not as an exception — the model is meant to read it and try something else.
+
+Results are redacted too. Before the parts are joined and cut, `callTool()` replaces every
+configured `McpServer::$headers` value and every session id it has held with `[redacted]`, as it
+does for exception messages, and then credential-shaped strings
+(`UntrustedText::redactSecrets()`), so a server that echoes the `Authorization` header back does
+not hand the token to the model. The same runs over every string key and value in
+`$result->metadata['mcp']`, the blocks in `content` and `structuredContent` included, and
+`bytes` is the size of the redacted text. An opaque credential that the server transforms, or
+that is neither configured nor credential-shaped, cannot be redacted.
 A JSON-RPC error is the other case, and that throws `McpRpcException`.
 
 ### Asking a person before a destructive call

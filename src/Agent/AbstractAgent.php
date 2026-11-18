@@ -33,10 +33,12 @@ use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Prompt\SystemPrompt;
 use CarmeloSantana\PHPAgents\Provider\Response;
 use CarmeloSantana\PHPAgents\Provider\Usage;
+use CarmeloSantana\PHPAgents\Security\UntrustedText;
 use CarmeloSantana\PHPAgents\Tool\DoneTool;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use SplObserver;
+use Symfony\Component\HttpClient\Response\StreamableInterface;
 use Symfony\Contracts\HttpClient\Exception\ClientExceptionInterface;
 
 abstract class AbstractAgent implements AgentInterface
@@ -46,6 +48,15 @@ abstract class AbstractAgent implements AgentInterface
      * Use 0 to indicate unlimited iterations (maps to PHP_INT_MAX internally).
      */
     public const int DEFAULT_MAX_ITERATIONS = 25;
+
+    /** Characters of a provider exception message, and of an API error message, that reach Output and agent.error. */
+    private const int PROVIDER_ERROR_MAX_CHARS = 300;
+
+    /** Bytes of a provider's HTTP error body read before decoding it. */
+    private const int PROVIDER_ERROR_BODY_MAX_BYTES = 65536;
+
+    /** Characters of error tool-result text that reach the conversation, Output and events. */
+    private const int TOOL_ERROR_MAX_CHARS = 500;
 
     /** @var SplObserver[] */
     private array $observers = [];
@@ -358,27 +369,7 @@ abstract class AbstractAgent implements AgentInterface
                     contentBlocks: $contentBlocks,
                 );
             } catch (\Throwable $e) {
-                $errorMessage = $e->getMessage();
-
-                // Extract API response body for HTTP client errors (4xx/5xx)
-                // Symfony's ClientException only includes the status line, not the
-                // API error body, for non-RFC-7807 APIs like Anthropic and OpenAI.
-                if ($e instanceof ClientExceptionInterface) {
-                    try {
-                        $body = $e->getResponse()->getContent(false);
-                        $decoded = json_decode($body, true);
-
-                        // Anthropic: {"type":"error","error":{"message":"..."}}
-                        // OpenAI:    {"error":{"message":"..."}}
-                        $apiMessage = $decoded['error']['message']
-                            ?? $decoded['message']
-                            ?? $body;
-
-                        $errorMessage .= "\n\nAPI response: " . $apiMessage;
-                    } catch (\Throwable) {
-                        // If we can't read the body, fall through with original message
-                    }
-                }
+                $errorMessage = $this->providerErrorMessage($e);
 
                 $this->notify('agent.error', $errorMessage);
 
@@ -578,6 +569,43 @@ abstract class AbstractAgent implements AgentInterface
             conversation: $conversation,
             finishReason: AgentFinishReason::MaxIterations,
         );
+    }
+
+    /**
+     * The text Output.content (after `Provider error: `) and agent.error carry for a
+     * provider failure. The exception message is redacted and bounded. For a 4xx, at most
+     * the first 64 KiB of the body are read and only a string `error.message` (Anthropic,
+     * OpenAI) or top-level `message` is appended, redacted and bounded; the raw body never is.
+     */
+    private function providerErrorMessage(\Throwable $e): string
+    {
+        $message = UntrustedText::forDisplay($e->getMessage(), self::PROVIDER_ERROR_MAX_CHARS);
+        if (!$e instanceof ClientExceptionInterface) {
+            return $message;
+        }
+
+        try {
+            $response = $e->getResponse();
+            if ($response instanceof StreamableInterface) {
+                $body = (string) stream_get_contents($response->toStream(false), self::PROVIDER_ERROR_BODY_MAX_BYTES);
+            } else {
+                $body = substr($response->getContent(false), 0, self::PROVIDER_ERROR_BODY_MAX_BYTES);
+            }
+            $decoded = json_decode($body, true);
+        } catch (\Throwable) {
+            return $message;
+        }
+
+        if (!is_array($decoded)) {
+            return $message;
+        }
+        $apiMessage = is_array($decoded['error'] ?? null) && is_string($decoded['error']['message'] ?? null)
+            ? $decoded['error']['message']
+            : ($decoded['message'] ?? null);
+
+        return is_string($apiMessage)
+            ? $message . "\n\nAPI response: " . UntrustedText::forDisplay($apiMessage, self::PROVIDER_ERROR_MAX_CHARS)
+            : $message;
     }
 
     /**
@@ -785,8 +813,9 @@ abstract class AbstractAgent implements AgentInterface
             try {
                 $tool = $this->findTool($toolCall->name, $executableToolIndex);
             } catch (ToolNotFoundException $e) {
-                $this->notify('agent.tool_error', $e->getMessage());
-                $preResolved[$position] = ToolResult::error($e->getMessage())->withCallId($toolCall->id);
+                $message = UntrustedText::forDisplay($e->getMessage(), self::TOOL_ERROR_MAX_CHARS);
+                $this->notify('agent.tool_error', $message);
+                $preResolved[$position] = ToolResult::error($message)->withCallId($toolCall->id);
                 continue;
             }
 
@@ -858,8 +887,9 @@ abstract class AbstractAgent implements AgentInterface
                     $terminationException = $e;
                     break;
                 } catch (\Throwable $e) {
-                    $this->notify('agent.tool_error', $e->getMessage());
-                    $executedResults[$position] = ToolResult::error($e->getMessage())
+                    $message = UntrustedText::forDisplay($e->getMessage(), self::TOOL_ERROR_MAX_CHARS);
+                    $this->notify('agent.tool_error', $message);
+                    $executedResults[$position] = ToolResult::error($message)
                         ->withCallId($entry['toolCall']->id);
                 }
             }
@@ -873,6 +903,13 @@ abstract class AbstractAgent implements AgentInterface
             if ($result === null) {
                 // Tool was skipped (cancellation during pre-flight)
                 continue;
+            }
+
+            // The single exposure boundary for error text: Output.toolResults, the
+            // conversation and agent.tool_result all receive this result. Success
+            // content is the tool author's data and is not rewritten.
+            if ($result->status === ToolResultStatus::Error) {
+                $result = $result->withContent(UntrustedText::forDisplay($result->content, self::TOOL_ERROR_MAX_CHARS));
             }
 
             $allToolResults[] = $result;

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Tool;
 
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
+use CarmeloSantana\PHPAgents\Security\UntrustedText;
 use CarmeloSantana\PHPAgents\Tool\Parameter\Parameter;
 use Closure;
 
@@ -94,7 +95,7 @@ final class Tool implements ToolInterface
 
             return ToolResult::success(is_string($result) ? $result : (json_encode($result) ?: ''));
         } catch (\Throwable $e) {
-            return ToolResult::error($e->getMessage());
+            return ToolResult::error(UntrustedText::forDisplay($e->getMessage(), 500));
         }
     }
 
