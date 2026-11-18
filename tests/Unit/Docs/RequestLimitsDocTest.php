@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
+use CarmeloSantana\PHPAgents\Image\Internal\PublicImageDownloader;
 use CarmeloSantana\PHPAgents\Provider\RequestLimits;
 
 // docs/PROVIDERS.md lists the RequestLimits defaults in a table. This reads the defaults from
@@ -49,7 +49,7 @@ test('the docs say PHP\'s filter already refuses IPv4-mapped IPv6 addresses', fu
 
 test('the docs list every range in the Gemini IPv6 deny-list', function (string $path) {
     $doc = (string) file_get_contents(__DIR__ . '/../../../' . $path);
-    $ranges = (new ReflectionClassConstant(GeminiProvider::class, 'DENIED_IPV6_RANGES'))->getValue();
+    $ranges = (new ReflectionClassConstant(PublicImageDownloader::class, 'DENIED_IPV6_RANGES'))->getValue();
 
     expect($ranges)->not->toBeEmpty();
     foreach ($ranges as [$prefix, $bits]) {
