@@ -270,6 +270,12 @@ final class AnthropicProvider extends AbstractProvider
         $rebuilt = [];
 
         foreach ($blocks as $block) {
+            // A text block that got no deltas would be sent back as an empty
+            // text block, which the Messages API rejects.
+            if ($block['type'] === 'text' && $block['text'] === '') {
+                continue;
+            }
+
             $rebuiltBlock = match ($block['type']) {
                 'thinking' => ['type' => 'thinking', 'thinking' => $block['thinking'], 'signature' => $block['signature']],
                 'redacted_thinking' => ['type' => 'redacted_thinking', 'data' => $block['data']],

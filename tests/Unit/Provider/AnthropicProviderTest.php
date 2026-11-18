@@ -1062,6 +1062,25 @@ test('stream sets content blocks on a Stop terminal chunk', function () {
         ->toBe('[{"type":"thinking","thinking":"","signature":"sig1"},{"type":"text","text":"Done."}]');
 });
 
+test('stream skips a text block that received no deltas when rebuilding content blocks', function () {
+    $chunks = streamAnthropic(
+        anthropicMessageStart(),
+        ['type' => 'content_block_start', 'index' => 0, 'content_block' => ['type' => 'thinking', 'thinking' => '', 'signature' => '']],
+        ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'signature_delta', 'signature' => 'sig1']],
+        ['type' => 'content_block_stop', 'index' => 0],
+        ['type' => 'content_block_start', 'index' => 1, 'content_block' => ['type' => 'text', 'text' => '']],
+        ['type' => 'content_block_stop', 'index' => 1],
+        anthropicToolStart(2, 'toolu_1', 'lookup'),
+        anthropicToolJson(2, '{"q":"x"}'),
+        ['type' => 'content_block_stop', 'index' => 2],
+        anthropicStopDelta('tool_use', 3),
+        ANTHROPIC_MESSAGE_STOP,
+    );
+
+    expect(json_encode(end($chunks)->contentBlocks))
+        ->toBe('[{"type":"thinking","thinking":"","signature":"sig1"},{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"q":"x"}}]');
+});
+
 test('stream drops contentBlocks on an unknown block type, on max_tokens, and on truncated tool JSON', function (array $events, ProviderFinishReason $reason) {
     $chunks = streamAnthropic(anthropicMessageStart(), ...$events);
     $terminal = end($chunks);
