@@ -45,12 +45,12 @@ class OpenAICompatibleProvider extends AbstractProvider
             $payload['tools'] = $this->formatTools($tools);
         }
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/chat/completions", [
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/chat/completions", $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
-        ]);
+        ]));
 
-        return $this->parseResponse($response->toArray());
+        return $this->parseResponse($this->decodeResponse($response));
     }
 
     public function stream(array $messages, array $tools = [], array $options = []): iterable
@@ -79,10 +79,10 @@ class OpenAICompatibleProvider extends AbstractProvider
             $payload['tools'] = $this->formatTools($tools);
         }
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/chat/completions", [
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/chat/completions", $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
-        ]);
+        ]));
 
         // Accumulate tool call deltas across chunks. OpenAI streams tool calls
         // as incremental fragments: the first chunk carries the tool ID and
@@ -268,11 +268,11 @@ class OpenAICompatibleProvider extends AbstractProvider
     public function models(): array
     {
         try {
-            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [
+            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", $this->requestLimits->apply([
                 'headers' => $this->headers(),
-            ]);
+            ]));
 
-            $data = $response->toArray();
+            $data = $this->decodeResponse($response);
             $models = [];
 
                 foreach ($this->extractModelEntries($data) as $model) {
@@ -312,10 +312,9 @@ class OpenAICompatibleProvider extends AbstractProvider
     public function isAvailable(): bool
     {
         try {
-            $this->httpClient->request('GET', "{$this->baseUrl}/models", [
+            $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->requestLimits->apply([
                 'headers' => $this->headers(),
-                'timeout' => 5,
-            ]);
+            ]), 'timeout' => 5.0]);
 
             return true;
         } catch (\Throwable $e) {

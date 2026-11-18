@@ -7,6 +7,7 @@ namespace CarmeloSantana\PHPAgents\Embedding;
 use CarmeloSantana\PHPAgents\Contract\EmbeddingProviderInterface;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Memory\Document;
+use CarmeloSantana\PHPAgents\Provider\RequestLimits;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
@@ -14,19 +15,39 @@ final class OpenAIEmbeddingProvider implements EmbeddingProviderInterface
 {
     private HttpClientInterface $httpClient;
 
+    /** Time, size and redirect limits that every embedding request passes through apply(). */
+    private RequestLimits $requestLimits;
+
     public function __construct(
         private readonly string $modelName = 'text-embedding-3-small',
         private readonly string $apiKey = '',
         private readonly string $baseUrl = 'https://api.openai.com/v1',
         ?HttpClientInterface $httpClient = null,
     ) {
-        $this->httpClient = $httpClient ?? HttpClient::create(['timeout' => 60]);
+        $this->httpClient = $httpClient ?? HttpClient::create();
+        $this->requestLimits = new RequestLimits(idleTimeout: 60.0);
+    }
+
+    /**
+     * Return a copy whose later requests use $limits. The original keeps its limits.
+     */
+    public function withRequestLimits(RequestLimits $limits): static
+    {
+        $clone = clone $this;
+        $clone->requestLimits = $limits;
+
+        return $clone;
+    }
+
+    public function requestLimits(): RequestLimits
+    {
+        return $this->requestLimits;
     }
 
     public function embedText(string $text): array
     {
         try {
-            $response = $this->httpClient->request('POST', "{$this->baseUrl}/embeddings", [
+            $response = $this->httpClient->request('POST', "{$this->baseUrl}/embeddings", $this->requestLimits->apply([
                 'headers' => [
                     'Authorization' => "Bearer {$this->apiKey}",
                     'Content-Type' => 'application/json',
@@ -35,7 +56,7 @@ final class OpenAIEmbeddingProvider implements EmbeddingProviderInterface
                     'model' => $this->modelName,
                     'input' => $text,
                 ],
-            ]);
+            ]));
 
             $data = $response->toArray();
 
@@ -57,7 +78,7 @@ final class OpenAIEmbeddingProvider implements EmbeddingProviderInterface
     {
         $texts = array_map(fn(Document $d) => $d->content, $documents);
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/embeddings", [
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/embeddings", $this->requestLimits->apply([
             'headers' => [
                 'Authorization' => "Bearer {$this->apiKey}",
                 'Content-Type' => 'application/json',
@@ -66,7 +87,7 @@ final class OpenAIEmbeddingProvider implements EmbeddingProviderInterface
                 'model' => $this->modelName,
                 'input' => $texts,
             ],
-        ]);
+        ]));
 
         $data = $response->toArray();
         $results = [];

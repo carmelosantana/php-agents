@@ -54,12 +54,12 @@ final class OpenAIResponsesProvider extends AbstractProvider
             $payload['tools'] = $this->formatTools($tools);
         }
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", [
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
-        ]);
+        ]));
 
-        return $this->parseResponse($response->toArray());
+        return $this->parseResponse($this->decodeResponse($response));
     }
 
     public function stream(array $messages, array $tools = [], array $options = []): iterable
@@ -77,10 +77,10 @@ final class OpenAIResponsesProvider extends AbstractProvider
             $payload['tools'] = $this->formatTools($tools);
         }
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", [
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
-        ]);
+        ]));
 
         /** @var array<int, array{call_id: string, name: string, arguments: string}> $pendingToolCalls */
         $pendingToolCalls = [];
@@ -223,12 +223,12 @@ final class OpenAIResponsesProvider extends AbstractProvider
             ...$options,
         ];
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", [
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
-        ]);
+        ]));
 
-        $data = $response->toArray();
+        $data = $this->decodeResponse($response);
 
         foreach ($data['output'] ?? [] as $item) {
             if (($item['type'] ?? '') === 'function_call' && ($item['name'] ?? '') === $toolName) {
@@ -242,11 +242,11 @@ final class OpenAIResponsesProvider extends AbstractProvider
     public function models(): array
     {
         try {
-            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [
+            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", $this->requestLimits->apply([
                 'headers' => $this->headers(),
-            ]);
+            ]));
 
-            $data = $response->toArray();
+            $data = $this->decodeResponse($response);
             $models = [];
 
             foreach ($data['data'] ?? [] as $model) {
@@ -271,10 +271,9 @@ final class OpenAIResponsesProvider extends AbstractProvider
     public function isAvailable(): bool
     {
         try {
-            $this->httpClient->request('GET', "{$this->baseUrl}/models", [
+            $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->requestLimits->apply([
                 'headers' => $this->headers(),
-                'timeout' => 5,
-            ]);
+            ]), 'timeout' => 5.0]);
 
             return true;
         } catch (\Throwable $e) {

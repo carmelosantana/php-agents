@@ -2,25 +2,31 @@
 
 declare(strict_types=1);
 
+use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Provider\SseStreamParser;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
+use Symfony\Contracts\HttpClient\Exception\ClientExceptionInterface;
+use Symfony\Contracts\HttpClient\Exception\ServerExceptionInterface;
 
 /**
  * Build an SseStreamParser from a list of raw HTTP chunk strings.
  *
  * @param list<string> $chunks
+ * @param array<string, mixed> $responseInfo
  */
-function makeParser(array $chunks): SseStreamParser
+function makeParser(array $chunks, ?int $maxLineBytes = null, array $responseInfo = []): SseStreamParser
 {
-    $response = new MockResponse($chunks, ['http_code' => 200]);
+    $response = new MockResponse($chunks, $responseInfo + ['http_code' => 200]);
     $client = new MockHttpClient([$response]);
 
     // The response must be issued by MockHttpClient before stream() works.
     // We call request() to bind the response to the client.
     $issuedResponse = $client->request('GET', 'https://example.com/stream');
 
-    return new SseStreamParser($client, $issuedResponse);
+    return $maxLineBytes === null
+        ? new SseStreamParser($client, $issuedResponse)
+        : new SseStreamParser($client, $issuedResponse, $maxLineBytes);
 }
 
 test('parses complete SSE events from a single chunk', function () {
@@ -116,4 +122,79 @@ test('buffers incomplete final line across multiple chunks', function () {
 
     expect($events)->toHaveCount(1)
         ->and($events[0]['part'])->toBe('one');
+});
+
+/** Drains the parser and returns what it threw, or null. */
+function sseParserCatch(SseStreamParser $parser): ?Throwable
+{
+    try {
+        iterator_to_array($parser->events());
+    } catch (Throwable $e) {
+        return $e;
+    }
+
+    return null;
+}
+
+test('a data line split across chunks still yields one event', function () {
+    $parser = makeParser([
+        'data: {"msg":"a',
+        'b"}',
+        "\n\n",
+    ], maxLineBytes: 64);
+
+    $events = iterator_to_array($parser->events());
+
+    expect($events)->toHaveCount(1)
+        ->and($events[0]['msg'])->toBe('ab');
+});
+
+test('an unterminated line over the cap throws', function () {
+    // 65 bytes with no newline, split across two chunks: one byte over a 64-byte cap.
+    $parser = makeParser([str_repeat('a', 32), str_repeat('b', 33)], maxLineBytes: 64);
+
+    $thrown = sseParserCatch($parser);
+
+    expect($thrown)->toBeInstanceOf(ProviderException::class)
+        ->and($thrown?->getMessage())->toContain('SSE line exceeded 64 bytes');
+});
+
+test('an unterminated line at exactly the cap is still buffered', function () {
+    $parser = makeParser([str_repeat('a', 32), str_repeat('b', 32)], maxLineBytes: 64);
+
+    expect(sseParserCatch($parser))->toBeNull();
+});
+
+test('the default line cap is 1048576 bytes', function () {
+    $parser = makeParser([str_repeat('a', 1_048_576), 'b']);
+
+    expect(sseParserCatch($parser)?->getMessage())->toContain('SSE line exceeded 1048576 bytes');
+});
+
+test('a 307 stream answer is refused as a redirect not followed', function () {
+    $parser = makeParser(["data: {\"ok\":true}\n\n"], responseInfo: [
+        'http_code' => 307,
+        'response_headers' => ['Location: https://evil.example/'],
+    ]);
+
+    $thrown = sseParserCatch($parser);
+
+    expect($thrown)->toBeInstanceOf(ProviderException::class)
+        ->and($thrown?->getMessage())->toContain('Provider request refused')
+        ->and($thrown?->getMessage())->toContain('redirect not followed');
+});
+
+test('a 4xx stream answer propagates the Symfony client exception naming the status', function () {
+    $parser = makeParser(['{"error":"bad key"}'], responseInfo: ['http_code' => 401]);
+
+    $thrown = sseParserCatch($parser);
+
+    expect($thrown)->toBeInstanceOf(ClientExceptionInterface::class)
+        ->and($thrown?->getMessage())->toContain('401');
+});
+
+test('a 5xx stream answer propagates the Symfony server exception', function () {
+    $parser = makeParser(['oops'], responseInfo: ['http_code' => 503]);
+
+    expect(sseParserCatch($parser))->toBeInstanceOf(ServerExceptionInterface::class);
 });

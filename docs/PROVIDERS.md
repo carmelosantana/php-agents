@@ -367,6 +367,8 @@ $provider = new GeminiProvider(
 | `apiKey` | `string` | `''` | Google AI API key |
 | `baseUrl` | `string` | `'https://generativelanguage.googleapis.com/v1beta'` | API base URL |
 | `httpClient` | `?HttpClientInterface` | `null` | Custom HTTP client |
+| `logger` | `?LoggerInterface` | `null` | PSR-3 logger |
+| `imageHttpClient` | `?HttpClientInterface` | `null` | Client for `image_url` downloads only; `null` uses a library-owned `HttpClient::create()`, never `httpClient` |
 
 ### Tool Calling
 
@@ -377,7 +379,7 @@ Gemini uses `functionCall`/`functionResponse` parts within the Content format. T
 Gemini uses `inlineData` parts with base64-encoded image data. The provider automatically converts OpenAI-format `image_url` blocks:
 
 - **Base64 data URIs** are extracted and sent as `inlineData` with the correct MIME type
-- **URL images** are auto-downloaded and converted to base64 `inlineData` (Gemini doesn't support URL references natively)
+- **URL images** are auto-downloaded and converted to base64 `inlineData` (Gemini doesn't support URL references natively), only from public addresses and only when the answer is `image/*` (see [Gemini image URLs](#gemini-image-urls))
 
 ```php
 // Both formats work transparently:
@@ -580,6 +582,58 @@ The Claude SDK JSON output reports `usage.input_tokens`, `output_tokens`,
 `cache_read_input_tokens`, `cache_creation_input_tokens`, and `total_cost_usd`. The adapter folds the
 input + cache tokens into `Usage.promptTokens` so host-side budget tracking works the same as for
 HTTP providers.
+
+## Request Limits
+
+Every HTTP request a provider or embedding provider sends through its HTTP client carries a `RequestLimits` value object. `RequestLimits::apply()` turns it into per-request symfony/http-client options (`timeout`, `max_duration`, `max_redirects` and an `on_progress` byte and redirect check). The per-request `timeout` replaces an injected Symfony client's own default, and so does `max_duration` when `maxDuration` is above 0.0; with `maxDuration: 0.0` no `max_duration` is sent and the client's own `max_duration` default applies (none for `HttpClient::create()`). Use `withRequestLimits()` to change them.
+
+The limits hold for an injected client that honours symfony/http-client's `max_redirects`, `max_duration`, `on_progress` and `resolve` options. A client that ignores them does not get them; Coqui's ReactPHP adapter is the known case. The Gemini image download uses its own client (see [Gemini Image URLs](#gemini-image-urls)), so its checks always hold.
+
+Two requests are outside `RequestLimits`:
+
+- `CliProvider` runs a local command and sends no HTTP request.
+- `LlamaCppProvider` runs the model in-process, but `LlamaCppMultimodalNormalizer` fetches a remote `image_url` with `file_get_contents()`, with no time, size, redirect or private-network limit. This is a known open finding (L2); pass images to llama.cpp as `data:` URIs.
+
+`gethostbynamel()` and `dns_get_record()`, which the Gemini image check calls, block and are not covered by any of these limits.
+
+| Limit | Default | Meaning |
+|-------|---------|---------|
+| `idleTimeout` | `300.0` | Seconds to wait between two chunks (`timeout`) |
+| `maxDuration` | `600.0` | Seconds for the whole request, stream included (`max_duration`); `0.0` sends none, leaving the client's default |
+| `maxResponseBytes` | `33_554_432` | Bytes of response body (32 MiB); `0` means no cap |
+| `maxRedirects` | `0` | Redirects followed; any caller `max_redirects` is replaced |
+
+Embedding providers (`OpenAIEmbeddingProvider`, `OllamaEmbeddingProvider`) use the same defaults with `idleTimeout` `60.0`. Some requests keep a shorter idle timeout of their own: `isAvailable()` waits 5 s, and `models()` on Anthropic and Gemini and Ollama's `/api/show` model lookup wait 10 s. Ollama `pull()` keeps the provider's idle timeout and refuses redirects, but has no total limit and no byte cap, because a model download can run far longer than 600 s.
+
+`withRequestLimits()` returns a copy with new limits, like `withModel()`; the original keeps its own. `requestLimits()` returns the current ones:
+
+```php
+use CarmeloSantana\PHPAgents\Provider\RequestLimits;
+
+$provider = $provider->withRequestLimits(new RequestLimits(maxDuration: 45.0));
+
+$provider->requestLimits()->maxDuration; // 45.0
+```
+
+A response over the byte cap is aborted with a `ProviderException` whose message contains `exceeded`. symfony/http-client wraps it in its own `TransportExceptionInterface`, so look for the `ProviderException` as the previous exception. `SseStreamParser` also caps a stream line that has no newline yet at 1_048_576 bytes.
+
+### No Redirects
+
+Providers follow no redirect. A base URL that answers 3xx to `chat()`, `stream()` or `structured()`, including a same-host `http://` to `https://` redirect, fails with `ProviderException` and the message `Provider request refused: redirect not followed (...)`, instead of re-sending the API key header and the conversation to the host the `Location` names. A streamed request refuses a 3xx before reading any data, and lets a 4xx or 5xx propagate unchanged so the API error body still reaches the agent. Embedding providers do not follow a 3xx either: `embedText()` and `OllamaEmbeddingProvider::embedDocuments()` report it as `ProviderException::embeddingFailed()`, and `OpenAIEmbeddingProvider::embedDocuments()` lets symfony/http-client's `RedirectionExceptionInterface` through. `isAvailable()` and `models()` treat a 3xx like any failed request: `isAvailable()` returns `false`, and `models()` returns its fallback (an empty list, or Anthropic's built-in list). Point the base URL at the final address.
+
+### Gemini Image URLs
+
+`GeminiProvider` downloads `image_url` URLs on the server to send them as `inlineData`. The download goes through the `imageHttpClient` constructor argument, or a library-owned `HttpClient::create()` when it is `null`; it never uses the provider's `httpClient`, so a host client that ignores `resolve`, `max_redirects` or `on_progress` cannot weaken it, and the host client's proxy settings do not apply to it (the library-owned client still reads `HTTP_PROXY` and `HTTPS_PROXY`). The download:
+
+- accepts only `http` and `https` URLs;
+- resolves the host and refuses it unless every resolved address passes `FILTER_FLAG_GLOBAL_RANGE`, so loopback, private, link-local and reserved addresses (such as `127.0.0.1`, `10.0.0.5`, `169.254.169.254` and `::1`) are never fetched;
+- also refuses IPv6 addresses PHP's filter accepts but that can reach a private or non-unicast address: `64:ff9b::/96` and `64:ff9b:1::/48` (NAT64), `fec0::/10` (site-local), `ff00::/8` (multicast) and `::/8` (reserved). `::/8` covers IPv4-compatible `::/96` (such as `::7f00:1` and `::a00:1`), IPv4-translated `::ffff:0:0:0/96` and IPv4-mapped `::ffff:0:0/96`, which PHP's filter already refuses;
+- pins the checked address of a host name through the `resolve` option, so the connection goes to the address that was checked; an IP-literal host needs no DNS lookup and gets no pin;
+- follows up to 3 redirects by hand, checking and pinning each hop again;
+- limits each hop to 10 s idle, 30 s total and 20 MiB (20_971_520 bytes), independent of `withRequestLimits()`;
+- keeps the image only when the answer is 2xx with an `image/*` content type; a missing or other content type is refused, with no guess from the file extension.
+
+Any refusal or failure sends the existing `[Image: could not download …]` text part instead of the image.
 
 ## Shared Provider Utilities
 

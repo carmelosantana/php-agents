@@ -12,6 +12,7 @@ use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Schema\JsonSchemaRepair;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
+use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
@@ -54,12 +55,21 @@ final class GeminiProvider extends AbstractProvider
         'dependentRequired',
     ];
 
+    /**
+     * Test seam for the image guard's DNS lookup: host name to its addresses. Null uses
+     * lookupHostAddresses(). Private and set only by reflection in tests; not public API.
+     *
+     * @var (\Closure(string): list<string>)|null
+     */
+    private ?\Closure $hostResolver = null;
+
     public function __construct(
         string $model = 'gemini-2.5-flash',
         string $baseUrl = 'https://generativelanguage.googleapis.com/v1beta',
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
         ?LoggerInterface $logger = null,
+        private readonly ?HttpClientInterface $imageHttpClient = null,
     ) {
         parent::__construct(
             model: $model,
@@ -86,13 +96,13 @@ final class GeminiProvider extends AbstractProvider
         $response = $this->httpClient->request(
             'POST',
             "{$this->baseUrl}/models/{$this->model}:generateContent",
-            [
+            $this->requestLimits->apply([
                 'headers' => $this->headers(),
                 'json' => $payload,
-            ],
+            ]),
         );
 
-        return $this->parseResponse($response->toArray());
+        return $this->parseResponse($this->decodeResponse($response));
     }
 
     public function stream(array $messages, array $tools = [], array $options = []): iterable
@@ -102,10 +112,10 @@ final class GeminiProvider extends AbstractProvider
         $response = $this->httpClient->request(
             'POST',
             "{$this->baseUrl}/models/{$this->model}:streamGenerateContent?alt=sse",
-            [
+            $this->requestLimits->apply([
                 'headers' => $this->headers(),
                 'json' => $payload,
-            ],
+            ]),
         );
 
         $parser = new SseStreamParser($this->httpClient, $response);
@@ -223,12 +233,11 @@ final class GeminiProvider extends AbstractProvider
     public function models(): array
     {
         try {
-            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [
+            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->requestLimits->apply([
                 'headers' => $this->headers(),
-                'timeout' => 10,
-            ]);
+            ]), 'timeout' => 10.0]);
 
-            $data = $response->toArray();
+            $data = $this->decodeResponse($response);
             $models = [];
 
             foreach ($data['models'] ?? [] as $model) {
@@ -274,10 +283,9 @@ final class GeminiProvider extends AbstractProvider
         }
 
         try {
-            $this->httpClient->request('GET', "{$this->baseUrl}/models", [
+            $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->requestLimits->apply([
                 'headers' => $this->headers(),
-                'timeout' => 5,
-            ]);
+            ]), 'timeout' => 5.0]);
 
             return true;
         } catch (\Throwable $e) {
@@ -531,47 +539,86 @@ final class GeminiProvider extends AbstractProvider
         ];
     }
 
+    /** Most redirects followed while downloading an image for inlineData. */
+    private const int IMAGE_MAX_REDIRECTS = 3;
+
     /**
      * Download an image URL and return a Gemini inlineData part.
+     *
+     * Each hop must be http(s) and its host must resolve only to global addresses
+     * (FILTER_FLAG_GLOBAL_RANGE, plus the IPv6 DENIED_IPV6_RANGES), so loopback, private,
+     * link-local, CGNAT, NAT64, site-local, multicast and other reserved ranges are never
+     * requested. The checked address is pinned with the
+     * `resolve` option so the connection goes to that address. The client follows no
+     * redirects; this method follows up to IMAGE_MAX_REDIRECTS 3xx hops itself and checks
+     * each Location the same way. Every hop is limited to 10s idle, 30s total and 20 MiB.
+     *
+     * The fetch goes through $imageHttpClient, or a library-owned HttpClient::create()
+     * when none was given, never through the provider's API client: an injected host
+     * client may ignore `resolve`, `max_redirects` or `on_progress`, and this guard needs
+     * all three.
+     *
+     * A refused hop, a 3xx without Location, a fourth redirect, a non-2xx status, a
+     * content type that is not image/*, an empty body or any exception returns null.
      *
      * @return array{inlineData: array{mimeType: string, data: string}}|null
      */
     private function downloadImageForInlineData(string $url): ?array
     {
+        $limits = new RequestLimits(idleTimeout: 10.0, maxDuration: 30.0, maxResponseBytes: 20_971_520);
+        $client = $this->imageHttpClient ?? HttpClient::create();
+
         try {
-            $response = $this->httpClient->request('GET', $url, [
-                'timeout' => 30,
-                'max_redirects' => 5,
-                'headers' => [
-                    'Accept' => 'image/*',
-                ],
-            ]);
+            for ($hop = 0; $hop <= self::IMAGE_MAX_REDIRECTS; $hop++) {
+                $pin = $this->publicHostPin($url);
+                if ($pin === null) {
+                    $this->logger?->debug('Refused image URL: {url}', ['url' => $url]);
 
-            $statusCode = $response->getStatusCode();
-            if ($statusCode < 200 || $statusCode >= 300) {
-                return null;
+                    return null;
+                }
+
+                $response = $client->request('GET', $url, $limits->apply([
+                    'headers' => ['Accept' => 'image/*'],
+                    'resolve' => $pin,
+                ]));
+
+                $statusCode = $response->getStatusCode();
+                if ($statusCode >= 300 && $statusCode < 400) {
+                    $location = $response->getHeaders(false)['location'][0] ?? '';
+                    $response->cancel();
+                    if ($location === '') {
+                        return null;
+                    }
+                    $url = $this->resolveRedirectUrl($url, $location);
+                    continue;
+                }
+
+                if ($statusCode < 200 || $statusCode >= 300) {
+                    return null;
+                }
+
+                $contentType = $response->getHeaders()['content-type'][0] ?? '';
+                $mime = strtolower(trim(explode(';', $contentType)[0]));
+                if (!str_starts_with($mime, 'image/')) {
+                    return null;
+                }
+
+                $body = $response->getContent();
+                if ($body === '') {
+                    return null;
+                }
+
+                return [
+                    'inlineData' => [
+                        'mimeType' => $mime,
+                        'data' => base64_encode($body),
+                    ],
+                ];
             }
 
-            $headers = $response->getHeaders();
-            $contentType = $headers['content-type'][0] ?? 'image/jpeg';
-            $mime = trim(explode(';', $contentType)[0]);
+            $this->logger?->debug('Refused image URL after {max} redirects', ['max' => self::IMAGE_MAX_REDIRECTS]);
 
-            // Validate it looks like an image
-            if (!str_starts_with($mime, 'image/')) {
-                $mime = $this->guessMimeFromUrl($url) ?? 'image/jpeg';
-            }
-
-            $body = $response->getContent();
-            if ($body === '') {
-                return null;
-            }
-
-            return [
-                'inlineData' => [
-                    'mimeType' => $mime,
-                    'data' => base64_encode($body),
-                ],
-            ];
+            return null;
         } catch (\Throwable $e) {
             $this->logger?->debug('Failed to download image from URL: {error}', ['error' => $e->getMessage()]);
 
@@ -579,24 +626,145 @@ final class GeminiProvider extends AbstractProvider
         }
     }
 
-    private function guessMimeFromUrl(string $url): ?string
+    /**
+     * Returns the `resolve` option `[host => ip]` for an http(s) URL whose host resolves
+     * only to global addresses (an empty array when the host is an IP literal), or null when the scheme is not http(s), the host does not
+     * resolve, or any resolved address is not global.
+     *
+     * @return array<string, string>|null
+     */
+    private function publicHostPin(string $url): ?array
     {
-        $path = parse_url($url, PHP_URL_PATH);
-        if (!is_string($path)) {
+        $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+        $host = parse_url($url, PHP_URL_HOST);
+        if (($scheme !== 'http' && $scheme !== 'https') || !is_string($host) || $host === '') {
             return null;
         }
 
-        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        $addresses = $this->resolveHostAddresses(trim($host, '[]'));
+        if ($addresses === []) {
+            return null;
+        }
 
-        return match ($ext) {
-            'jpg', 'jpeg' => 'image/jpeg',
-            'png' => 'image/png',
-            'gif' => 'image/gif',
-            'webp' => 'image/webp',
-            'bmp' => 'image/bmp',
-            'svg' => 'image/svg+xml',
-            default => null,
-        };
+        foreach ($addresses as $ip) {
+            if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_GLOBAL_RANGE) === false || self::inDeniedIpv6Range($ip)) {
+                return null;
+            }
+        }
+
+        // An IP literal has no DNS to rebind, and curl rejects a bracketed IPv6 resolve key.
+        if (filter_var(trim($host, '[]'), FILTER_VALIDATE_IP) !== false) {
+            return [];
+        }
+
+        return [$host => $addresses[0]];
+    }
+
+    /**
+     * IPv6 ranges FILTER_FLAG_GLOBAL_RANGE accepts that can still reach a private or
+     * non-unicast address: NAT64 (/96 well-known, /48 local-use), deprecated site-local,
+     * multicast and the reserved ::/8 block. ::/8 holds IPv4-compatible (::/96, e.g.
+     * ::7f00:1), IPv4-translated (::ffff:0:0:0/96, RFC 2765) and IPv4-mapped
+     * (::ffff:0:0/96, which PHP's filter already refuses) addresses.
+     */
+    private const array DENIED_IPV6_RANGES = [
+        ['64:ff9b::', 96],
+        ['64:ff9b:1::', 48],
+        ['fec0::', 10],
+        ['ff00::', 8],
+        ['::', 8],
+    ];
+
+    /** True when $ip is an IPv6 address inside one of DENIED_IPV6_RANGES. */
+    private static function inDeniedIpv6Range(string $ip): bool
+    {
+        $packed = @inet_pton($ip);
+        if ($packed === false || strlen($packed) !== 16) {
+            return false;
+        }
+
+        foreach (self::DENIED_IPV6_RANGES as [$prefix, $bits]) {
+            $range = (string) inet_pton($prefix);
+            $bytes = intdiv($bits, 8);
+            if (strncmp($packed, $range, $bytes) !== 0) {
+                continue;
+            }
+            $rest = $bits % 8;
+            $mask = $rest === 0 ? 0 : (0xFF << (8 - $rest)) & 0xFF;
+            if ($rest === 0 || (ord($packed[$bytes]) & $mask) === (ord($range[$bytes]) & $mask)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Returns the host itself when it is an IP literal, otherwise the addresses
+     * $hostResolver (by default lookupHostAddresses()) gives for it. Empty when nothing
+     * resolves.
+     *
+     * @return list<string>
+     */
+    private function resolveHostAddresses(string $host): array
+    {
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            return [$host];
+        }
+
+        return ($this->hostResolver ?? $this->lookupHostAddresses(...))($host);
+    }
+
+    /**
+     * The host name's A records (gethostbynamel) followed by its AAAA records
+     * (dns_get_record). Empty when nothing resolves.
+     *
+     * @return list<string>
+     */
+    private function lookupHostAddresses(string $host): array
+    {
+        $addresses = gethostbynamel($host) ?: [];
+
+        $aaaa = @dns_get_record($host, DNS_AAAA);
+        foreach (is_array($aaaa) ? $aaaa : [] as $record) {
+            if (isset($record['ipv6']) && is_string($record['ipv6'])) {
+                $addresses[] = $record['ipv6'];
+            }
+        }
+
+        return $addresses;
+    }
+
+    /**
+     * Resolves a Location header against the URL that answered with it: an absolute URL
+     * is returned as is, `//host/...` takes the current scheme, `/path` takes the
+     * current origin, `?query` replaces the current query, and any other value replaces
+     * the last segment of the current path.
+     */
+    private function resolveRedirectUrl(string $current, string $location): string
+    {
+        if (preg_match('#^[a-z][a-z0-9+.-]*:#i', $location) === 1) {
+            return $location;
+        }
+
+        if (preg_match('#^([a-z][a-z0-9+.-]*:)(//[^/?\#]*)([^?\#]*)#i', $current, $m) !== 1) {
+            return $location;
+        }
+        [, $scheme, $authority, $path] = $m;
+
+        if (str_starts_with($location, '//')) {
+            return $scheme . $location;
+        }
+        if (str_starts_with($location, '/')) {
+            return $scheme . $authority . $location;
+        }
+        if (str_starts_with($location, '?')) {
+            return $scheme . $authority . $path . $location;
+        }
+
+        $directory = substr($path, 0, (int) strrpos($path, '/'));
+
+        return $scheme . $authority . $directory . '/' . $location;
     }
 
     /**
