@@ -12,6 +12,7 @@ use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Schema\JsonSchemaRepair;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
+use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
@@ -60,6 +61,7 @@ final class GeminiProvider extends AbstractProvider
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
         ?LoggerInterface $logger = null,
+        private readonly ?HttpClientInterface $imageHttpClient = null,
     ) {
         parent::__construct(
             model: $model,
@@ -542,6 +544,11 @@ final class GeminiProvider extends AbstractProvider
      * redirects; this method follows up to IMAGE_MAX_REDIRECTS 3xx hops itself and checks
      * each Location the same way. Every hop is limited to 10s idle, 30s total and 20 MiB.
      *
+     * The fetch goes through $imageHttpClient, or a library-owned HttpClient::create()
+     * when none was given, never through the provider's API client: an injected host
+     * client may ignore `resolve`, `max_redirects` or `on_progress`, and this guard needs
+     * all three.
+     *
      * A refused hop, a 3xx without Location, a fourth redirect, a non-2xx status, a
      * content type that is not image/*, an empty body or any exception returns null.
      *
@@ -550,6 +557,7 @@ final class GeminiProvider extends AbstractProvider
     private function downloadImageForInlineData(string $url): ?array
     {
         $limits = new RequestLimits(idleTimeout: 10.0, maxDuration: 30.0, maxResponseBytes: 20_971_520);
+        $client = $this->imageHttpClient ?? HttpClient::create();
 
         try {
             for ($hop = 0; $hop <= self::IMAGE_MAX_REDIRECTS; $hop++) {
@@ -560,7 +568,7 @@ final class GeminiProvider extends AbstractProvider
                     return null;
                 }
 
-                $response = $this->httpClient->request('GET', $url, $limits->apply([
+                $response = $client->request('GET', $url, $limits->apply([
                     'headers' => ['Accept' => 'image/*'],
                     'resolve' => $pin,
                 ]));

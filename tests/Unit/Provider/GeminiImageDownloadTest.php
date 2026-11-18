@@ -8,10 +8,11 @@ use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 
 /**
- * Sends one UserMessage holding $imageUrl through GeminiProvider::chat() against a
- * MockHttpClient. $images maps a GET URL to the MockResponse it answers with; any other
- * GET answers 404. Returns the GET URLs asked for, their options, and the image part of
- * the generateContent body.
+ * Sends one UserMessage holding $imageUrl through GeminiProvider::chat(). The API client
+ * only answers generateContent and fails the test on any GET; image GETs go to a separate
+ * MockHttpClient injected as imageHttpClient. $images maps a GET URL to the MockResponse it
+ * answers with; any other GET answers 404. Returns the GET URLs asked for, their options,
+ * and the image part of the generateContent body.
  *
  * @param array<string, MockResponse> $images
  * @return array{gets: list<string>, options: list<array<string, mixed>>, part: array<string, mixed>}
@@ -22,12 +23,16 @@ function geminiImageDownload(string $imageUrl, array $images = []): array
     $getOptions = [];
     $payload = null;
 
-    $client = new MockHttpClient(function (string $method, string $url, array $options) use (&$gets, &$getOptions, &$payload, $images): MockResponse {
-        if ($method === 'GET') {
-            $gets[] = $url;
-            $getOptions[] = $options;
+    $imageClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$gets, &$getOptions, $images): MockResponse {
+        $gets[] = $url;
+        $getOptions[] = $options;
 
-            return $images[$url] ?? new MockResponse('', ['http_code' => 404]);
+        return $images[$url] ?? new MockResponse('', ['http_code' => 404]);
+    });
+
+    $apiClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$payload): MockResponse {
+        if ($method === 'GET') {
+            throw new \LogicException("The API client was asked for {$url}");
         }
         $payload = json_decode($options['body'], true);
 
@@ -40,7 +45,7 @@ function geminiImageDownload(string $imageUrl, array $images = []): array
         ]), ['http_code' => 200]);
     });
 
-    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $client);
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $apiClient, imageHttpClient: $imageClient);
     $provider->chat([
         new UserMessage([
             ['type' => 'image_url', 'image_url' => ['url' => $imageUrl]],
@@ -176,4 +181,29 @@ test('a redirect to a non-http scheme is refused', function () {
 
     expect($result['gets'])->toBe(['http://93.184.216.34/a.png'])
         ->and($result['part']['text'])->toContain('[Image: could not download');
+});
+
+test('the provider API client is never used for an image fetch', function () {
+    $imageClient = new MockHttpClient(fn() => pngResponse());
+    $sawImageUrl = false;
+    // The image fetch catches every Throwable, so the flag below also catches a swallowed fail().
+    $apiClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$sawImageUrl): MockResponse {
+        if (str_contains($url, '93.184.216.34')) {
+            $sawImageUrl = true;
+            test()->fail("The API client was asked for the image URL {$url}");
+        }
+
+        return new MockResponse((string) json_encode([
+            'candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'ok']]], 'finishReason' => 'STOP']],
+        ]), ['http_code' => 200]);
+    });
+
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $apiClient, imageHttpClient: $imageClient);
+    $provider->chat([
+        new UserMessage([['type' => 'image_url', 'image_url' => ['url' => 'http://93.184.216.34/a.png']]]),
+    ]);
+
+    expect($sawImageUrl)->toBeFalse()
+        ->and($imageClient->getRequestsCount())->toBe(1)
+        ->and($apiClient->getRequestsCount())->toBe(1);
 });
