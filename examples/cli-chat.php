@@ -1,6 +1,8 @@
 #!/usr/bin/env php
 <?php
 
+declare(strict_types=1);
+
 /**
  * CLI Chat — Simple conversational agent using php-agents.
  *
@@ -15,10 +17,8 @@
  *   - OpenAICompatibleProvider (OpenAI, OpenRouter, etc.)
  *   - AnthropicProvider (Claude)
  *
- * @see QUICKSTART.md for provider examples.
+ * @see docs/PROVIDERS.md for provider examples.
  */
-
-declare(strict_types=1);
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 
