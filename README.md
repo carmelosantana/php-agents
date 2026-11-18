@@ -8,38 +8,67 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT License"></a>
 </p>
 
-PHP 8.4+ framework for building AI agents with tool-use loops, provider abstraction, and composable toolkits.
+**php-agents runs tool-using AI agents in plain PHP.** Give an agent a model and some tools; it
+calls the model, runs the tools the model asks for, feeds the results back, and stops when the
+model has an answer. One interface covers Ollama, llama.cpp, OpenAI (Chat and Responses),
+Anthropic, Gemini, xAI, Mistral, OpenRouter and any OpenAI-compatible endpoint. It depends only on
+`symfony/http-client` and `psr/log`.
 
-Build agents that reason, use tools, and iterate autonomously — powered by any OpenAI-compatible API, Anthropic, local models via Ollama, or a native llama.cpp runtime. You provide the toolkits; php-agents provides a non-opinionated agent loop.
+## Quick start
 
-```mermaid
-graph LR
-    APP[Your App] --> AGENT[Agent]
-    AGENT --> PROVIDER[Provider<br/>OpenAI / Anthropic / Ollama / llama.cpp]
-    AGENT --> TOOLS[Tools & Toolkits<br/>Custom Toolkits]
-    AGENT --> OBSERVER[Observers<br/>Logging / Streaming / Metrics]
-    PROVIDER --> LLM[LLM]
-    LLM -->|tool calls| AGENT
-    TOOLS -->|results| AGENT
+```php
+use CarmeloSantana\PHPAgents\Agent\Agent;
+use CarmeloSantana\PHPAgents\Message\UserMessage;
+use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
+use CarmeloSantana\PHPAgents\Tool\{Tool, ToolResult};
+use CarmeloSantana\PHPAgents\Tool\Parameter\NumberParameter;
+
+$add = new Tool('add', 'Add two numbers', [new NumberParameter('a', 'First', required: true), new NumberParameter('b', 'Second', required: true)],
+    fn(array $in): ToolResult => ToolResult::success((string) ($in['a'] + $in['b'])));
+
+$agent = new Agent(new OllamaProvider(model: 'llama3.2'), instructions: 'You are a calculator.', tools: [$add]);
+echo $agent->run(new UserMessage('What is 42 + 58?'))->content;
 ```
 
-## Features
+Run `ollama pull llama3.2` first, or swap in any provider below.
 
-- **Agentic tool-use loop** — automatic iteration: the LLM calls tools, processes results, and decides when it's done
-- **Multi-provider** — Ollama (local), native llama.cpp, the Claude Code CLI (`claude`), OpenAI, Anthropic, Gemini, xAI, Mistral, OpenRouter, or any OpenAI-compatible endpoint
-- **Streaming + tool calls** — all providers support streaming with assembled tool call deltas
-- **Structured output** — extract typed data from LLMs via JSON mode (OpenAI) or tool-use trick (Anthropic)
-- **Image input** — send images to vision models via base64, URL, or file path (auto-converts between provider formats; URLs pre-downloaded for providers that don't support them natively)
-- **Composable toolkits** — implement `ToolkitInterface` to give agents any capability; `McpToolkit` is the one implementation that ships (`grep -rn 'implements ToolkitInterface' src/`)
-- **Remote MCP servers as toolkits** — Streamable HTTP, 2026-07-28 and 2025-11-25, pinned tool allowlists
-- **Context window management** — automatic conversation pruning when approaching token limits
-- **Observer pattern** — attach `SplObserver` to watch agent lifecycle events in real time
-- **Embedding & vector stores** — `EmbeddingProviderInterface` and `VectorStoreInterface` for semantic search
-- **OpenClaw config** — centralized model routing with aliases, fallbacks, and per-provider settings
-- **PSR-3 logging** — optional `LoggerInterface` on all providers for diagnostic visibility
-- **Zero framework coupling** — depends only on `symfony/http-client` and `psr/log`
+## Install
 
-## Provider Feature Matrix
+```bash
+composer require carmelosantana/php-agents
+```
+
+PHP 8.4+ with `curl`, `json` and `mbstring`.
+
+## Common paths
+
+| You want to | Use |
+| --- | --- |
+| Chat once, no agent loop | `$provider->chat([new UserMessage('Hi')])->content` |
+| An agent with tools | `new Agent($provider, instructions: '…', tools: [...], toolkits: [...])`, or extend `AbstractAgent` |
+| Stream the agent's text | `$agent->attach(new CallbackObserver(fn($event, $delta) => print $delta, 'agent.text_delta'))` |
+| Stream without an agent | `foreach ($provider->stream($messages) as $chunk) echo $chunk->content;` |
+| Typed data out | `StructuredOutput::extract($provider, $messages, ['type' => 'object', ...])` returns an array |
+| A remote MCP server's tools | `McpClient` + `McpToolkit` with pinned fingerprints, see [Tools & Toolkits](docs/TOOLS-AND-TOOLKITS.md) |
+| Pick a provider from config | `ProviderFactory::fromModelString('anthropic/claude-sonnet-5-5')` (reads the key from env) |
+
+## Providers
+
+```php
+new OllamaProvider(model: 'llama3.2');                                                     // local, no key
+new AnthropicProvider(model: 'claude-sonnet-5-5', apiKey: getenv('ANTHROPIC_API_KEY'));
+new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: getenv('OPENAI_API_KEY'));
+new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: getenv('OPENAI_API_KEY'));
+new GeminiProvider(model: 'gemini-2.5-flash', apiKey: getenv('GEMINI_API_KEY'));
+new XAIProvider(model: 'grok-3', apiKey: getenv('XAI_API_KEY'));
+new MistralProvider(model: 'mistral-large-latest', apiKey: getenv('MISTRAL_API_KEY'));
+new OpenAICompatibleProvider(model: 'meta-llama/llama-3.1-70b-instruct',                    // OpenRouter, Groq, vLLM…
+    apiKey: getenv('OPENROUTER_API_KEY'), baseUrl: 'https://openrouter.ai/api/v1');
+```
+
+All classes live in `CarmeloSantana\PHPAgents\Provider`. The native llama.cpp runtime (FFI, no
+HTTP sidecar) and the Claude Code CLI provider are covered in [Local Runtime](docs/LOCAL-RUNTIME.md)
+and [Providers](docs/PROVIDERS.md).
 
 | Feature | OpenAI Compatible | OpenAI Responses | Ollama | Anthropic | Gemini | xAI | Mistral |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -55,247 +84,28 @@ graph LR
 
 *\* Gemini does not natively support URL image references. The provider auto-downloads URL images and converts them to base64 `inlineData`.*
 
-## Requirements
+## Tools and toolkits
 
-- PHP 8.4 or later
-- Extensions: `curl`, `json`, `mbstring`
-- Composer 2.x
-- [Ollama](https://ollama.ai) (recommended for local inference)
-
-## Installation
-
-```bash
-composer require carmelosantana/php-agents
-```
-
-## Local Inference Modes
-
-- `OllamaProvider` is the easiest local path and remains the default quick-start option.
-- The native llama.cpp runtime is for direct FFI-based local inference without an HTTP sidecar.
-- The full native setup, benchmarking, and comparison workflow lives in [docs/LOCAL-RUNTIME.md](docs/LOCAL-RUNTIME.md).
-
-Fastest path to validate native llama.cpp in this repo:
-
-```bash
-composer setup:llama-cpp
-source ./.llama-cpp.env
-composer test:llama-cpp-runtime -- --skip-remote
-composer compare:llama-cpp-vs-ollama
-```
-
-The setup script writes a local `.llama-cpp.env` file for your machine. That file is generated runtime state and should not be committed.
-
-## Quick Start
-
-Create an agent with a custom tool:
-
-```php
-<?php
-
-declare(strict_types=1);
-
-require 'vendor/autoload.php';
-
-use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
-use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
-use CarmeloSantana\PHPAgents\Message\UserMessage;
-use CarmeloSantana\PHPAgents\Tool\Tool;
-use CarmeloSantana\PHPAgents\Tool\ToolResult;
-use CarmeloSantana\PHPAgents\Tool\Parameter\NumberParameter;
-
-$agent = new class(provider: new OllamaProvider(model: 'llama3.2')) extends AbstractAgent {
-    public function instructions(): string
-    {
-        return 'You are a calculator. Use tools to answer math questions.';
-    }
-
-    public function name(): string
-    {
-        return 'Calculator';
-    }
-};
-
-$agent->addTool(new Tool(
-    name: 'add',
-    description: 'Add two numbers',
-    parameters: [
-        new NumberParameter('a', 'First number', required: true),
-        new NumberParameter('b', 'Second number', required: true),
-    ],
-    callback: fn(array $args): ToolResult => ToolResult::success(
-        (string) ($args['a'] + $args['b']),
-    ),
-));
-
-$output = $agent->run(new UserMessage('What is 42 + 58?'));
-echo $output->content . "\n";
-```
-
-> Make sure Ollama is running: `ollama serve` and a model is pulled: `ollama pull llama3.2`
-
-## Providers
-
-```php
-use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
-use CarmeloSantana\PHPAgents\Provider\OpenAICompatibleProvider;
-use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
-use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
-use CarmeloSantana\PHPAgents\Provider\XAIProvider;
-use CarmeloSantana\PHPAgents\Provider\MistralProvider;
-
-// Ollama (local — no API key needed)
-$provider = new OllamaProvider(model: 'llama3.2');
-
-// OpenAI
-$provider = new OpenAICompatibleProvider(
-    model: 'gpt-4o',
-    apiKey: getenv('OPENAI_API_KEY'),
-);
-
-// Anthropic
-$provider = new AnthropicProvider(
-    model: 'claude-sonnet-4-20250514',
-    apiKey: getenv('ANTHROPIC_API_KEY'),
-);
-
-// Google Gemini
-$provider = new GeminiProvider(
-    model: 'gemini-2.5-flash',
-    apiKey: getenv('GEMINI_API_KEY'),
-);
-
-// xAI (Grok)
-$provider = new XAIProvider(
-    model: 'grok-3',
-    apiKey: getenv('XAI_API_KEY'),
-);
-
-// Mistral
-$provider = new MistralProvider(
-    model: 'mistral-large-latest',
-    apiKey: getenv('MISTRAL_API_KEY'),
-);
-
-// Any OpenAI-compatible endpoint (OpenRouter, Together, Groq, vLLM, etc.)
-$provider = new OpenAICompatibleProvider(
-    model: 'meta-llama/llama-3.1-70b-instruct',
-    apiKey: getenv('OPENROUTER_API_KEY'),
-    baseUrl: 'https://openrouter.ai/api/v1',
-);
-```
-
-## Creating Custom Agents
-
-Extend `AbstractAgent` and implement `instructions()`:
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace MyPackage;
-
-use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
-use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
-
-final class DatabaseAgent extends AbstractAgent
-{
-    public function __construct(ProviderInterface $provider)
-    {
-        parent::__construct($provider, maxIterations: 10);
-    }
-
-    public function instructions(): string
-    {
-        return 'You are a database agent. Query databases and return results.';
-    }
-
-    public function name(): string
-    {
-        return 'DatabaseAgent';
-    }
-}
-```
-
-Register toolkits in the constructor with `$this->addToolkit()` to give your agent capabilities.
-
-## Creating Custom Tools
-
-Define tools with typed parameters and a callback:
-
-```php
-use CarmeloSantana\PHPAgents\Tool\Tool;
-use CarmeloSantana\PHPAgents\Tool\ToolResult;
-use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
-
-$tool = new Tool(
-    name: 'word_count',
-    description: 'Count words in the given text',
-    parameters: [
-        new StringParameter('text', 'The text to count words in', required: true),
-    ],
-    callback: fn(array $args): ToolResult => ToolResult::success(
-        'Word count: ' . str_word_count($args['text']),
-    ),
-);
-```
-
-Group related tools into a toolkit by implementing `ToolkitInterface`:
-
-```php
-use CarmeloSantana\PHPAgents\Contract\ToolkitInterface;
-
-final class MyToolkit implements ToolkitInterface
-{
-    public function tools(): array
-    {
-        return [$this->buildWordCountTool(), /* ... */];
-    }
-
-    public function guidelines(): string
-    {
-        return 'Use these tools to analyze text.';
-    }
-}
-```
-
-### Toolkit Auto-Discovery
-
-Publish your toolkit as a Composer package with auto-discovery:
-
-```json
-{
-    "extra": {
-        "php-agents": {
-            "toolkits": ["Acme\\MyToolkit\\MyToolkit"],
-            "credentials": {
-                "MY_API_KEY": "API key for MyService — get one at https://myservice.com/keys"
-            }
-        }
-    }
-}
-```
+A `Tool` is a name, a description, typed parameters and a callback returning `ToolResult`. Group
+related tools in a class implementing `ToolkitInterface` (`tools()` plus `guidelines()` for the
+system prompt) and register it with `$agent->addToolkit()`. A toolkit package can declare itself
+for auto-discovery under `extra.php-agents.toolkits` in its `composer.json`. Execution policies,
+parameter types and MCP are in [Tools & Toolkits](docs/TOOLS-AND-TOOLKITS.md).
 
 ## Documentation
 
-| Guide | Description |
+| Guide | Covers |
 | --- | --- |
-| [Architecture](docs/architecture.md) | System design, Mermaid diagrams, extension points |
-| [Getting Started](docs/getting-started.md) | Installation, provider setup, first agent |
-| [Local Runtime](docs/LOCAL-RUNTIME.md) | Native llama.cpp setup, testing, benchmarking, comparison |
-| [Providers](docs/providers.md) | Feature matrix, streaming, structured output, images |
-| [Tools & Toolkits](docs/tools-and-toolkits.md) | Parameter types, execution policies, publishing packages |
-| [Agents](docs/agents.md) | Agent loop, observers, cancellation, context window |
-| [Embeddings & Vector Stores](docs/memory.md) | Vector similarity search, embedding providers |
+| [Getting Started](docs/GETTING-STARTED.md) | Installation, provider setup, first agent |
+| [Agents](docs/AGENTS.md) | The loop, observers, cancellation, context window |
+| [Providers](docs/PROVIDERS.md) | Feature matrix, streaming, structured output, images |
+| [Tools & Toolkits](docs/TOOLS-AND-TOOLKITS.md) | Parameters, execution policies, MCP client and server |
+| [Embeddings & Vector Stores](docs/MEMORY.md) | Embedding providers, similarity search |
+| [Local Runtime](docs/LOCAL-RUNTIME.md) | Native llama.cpp setup, benchmarks |
+| [Architecture](docs/ARCHITECTURE.md) | Design, diagrams, extension points |
+| [Decisions](docs/adr/) | Architecture decision records |
 
-## Examples
-
-Working examples live in the [`examples/`](examples/) directory:
-
-| Example | Description | Run |
-| --- | --- | --- |
-| [CLI Chat](examples/cli-chat.php) | Interactive terminal conversation with an LLM | `php examples/cli-chat.php` |
-| [README Summarizer](examples/web-summarizer/) | Web UI that auto-summarizes this README using an agent | `php -S localhost:8080 -t examples/web-summarizer/` |
+Runnable examples are in [`examples/`](examples/) (repo only, not in the Composer dist).
 
 ## `php-agents` In The Wild
 
