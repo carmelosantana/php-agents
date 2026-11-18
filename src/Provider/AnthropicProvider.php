@@ -63,12 +63,12 @@ final class AnthropicProvider extends AbstractProvider
         unset($options['max_tokens']);
         $payload = [...$payload, ...$options];
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", [
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->limits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
-        ]);
+        ]));
 
-        return $this->parseResponse($response->toArray());
+        return $this->parseResponse($this->decodeResponse($response));
     }
 
     public function stream(array $messages, array $tools = [], array $options = []): iterable
@@ -90,10 +90,10 @@ final class AnthropicProvider extends AbstractProvider
             $payload['tools'] = $this->formatTools($tools);
         }
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", [
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->limits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
-        ]);
+        ]));
 
         // Accumulate tool use blocks across stream events. Anthropic sends:
         //   content_block_start  → type: tool_use with id + name
@@ -239,12 +239,12 @@ final class AnthropicProvider extends AbstractProvider
         ];
         $payload['tool_choice'] = ['type' => 'tool', 'name' => $toolName];
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", [
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->limits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
-        ]);
+        ]));
 
-        $data = $response->toArray();
+        $data = $this->decodeResponse($response);
 
         // Extract the structured data from the tool_use content block
         foreach ($data['content'] ?? [] as $block) {
@@ -286,12 +286,11 @@ final class AnthropicProvider extends AbstractProvider
     {
         // Attempt to fetch from Anthropic's models API (available since 2024)
         try {
-            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [
+            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->limits->apply([
                 'headers' => $this->headers(),
-                'timeout' => 10,
-            ]);
+            ]), 'timeout' => 10.0]);
 
-            $data = $response->toArray();
+            $data = $this->decodeResponse($response);
             $models = [];
 
             foreach ($data['data'] ?? [] as $model) {
@@ -337,10 +336,9 @@ final class AnthropicProvider extends AbstractProvider
         }
 
         try {
-            $this->httpClient->request('GET', "{$this->baseUrl}/models", [
+            $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->limits->apply([
                 'headers' => $this->headers(),
-                'timeout' => 5,
-            ]);
+            ]), 'timeout' => 5.0]);
 
             return true;
         } catch (\Throwable $e) {

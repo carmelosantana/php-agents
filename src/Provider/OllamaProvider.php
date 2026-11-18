@@ -121,8 +121,8 @@ final class OllamaProvider extends OpenAICompatibleProvider
     {
         try {
             $ollamaBaseUrl = str_replace('/v1', '', $this->baseUrl);
-            $response = $this->httpClient->request('GET', "{$ollamaBaseUrl}/api/tags");
-            $data = $response->toArray();
+            $response = $this->httpClient->request('GET', "{$ollamaBaseUrl}/api/tags", $this->limits->apply([]));
+            $data = $this->decodeResponse($response);
 
             $models = [];
             foreach ($data['models'] ?? [] as $model) {
@@ -157,12 +157,11 @@ final class OllamaProvider extends OpenAICompatibleProvider
     {
         try {
             $ollamaBaseUrl = str_replace('/v1', '', $this->baseUrl);
-            $response = $this->httpClient->request('POST', "{$ollamaBaseUrl}/api/show", [
+            $response = $this->httpClient->request('POST', "{$ollamaBaseUrl}/api/show", [...$this->limits->apply([
                 'json' => ['name' => $model],
-                'timeout' => 10,
-            ]);
+            ]), 'timeout' => 10.0]);
 
-            return $response->toArray();
+            return $this->decodeResponse($response);
         } catch (\Throwable $e) {
             $this->logger?->debug('Failed to fetch Ollama model details: {model} {error}', [
                 'model' => $model,
@@ -220,13 +219,21 @@ final class OllamaProvider extends OpenAICompatibleProvider
 
     /**
      * Pull a model from Ollama registry.
+     *
+     * A pull can run for a long time and stream a large progress body, so this request
+     * keeps the provider's idle timeout and follows no redirect, but has no total time
+     * limit and no byte cap.
      */
     public function pull(string $model): void
     {
         $ollamaBaseUrl = str_replace('/v1', '', $this->baseUrl);
-        $this->httpClient->request('POST', "{$ollamaBaseUrl}/api/pull", [
+        $this->httpClient->request('POST', "{$ollamaBaseUrl}/api/pull", (new RequestLimits(
+            idleTimeout: $this->limits->idleTimeout,
+            maxDuration: 0.0,
+            maxResponseBytes: 0,
+        ))->apply([
             'json' => ['name' => $model],
-        ]);
+        ]));
     }
 
     /**
@@ -249,9 +256,7 @@ final class OllamaProvider extends OpenAICompatibleProvider
     {
         try {
             $ollamaBaseUrl = str_replace('/v1', '', $this->baseUrl);
-            $this->httpClient->request('GET', "{$ollamaBaseUrl}/api/tags", [
-                'timeout' => 5,
-            ]);
+            $this->httpClient->request('GET', "{$ollamaBaseUrl}/api/tags", [...$this->limits->apply([]), 'timeout' => 5.0]);
 
             return true;
         } catch (\Throwable $e) {

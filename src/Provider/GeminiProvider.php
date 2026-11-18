@@ -86,13 +86,13 @@ final class GeminiProvider extends AbstractProvider
         $response = $this->httpClient->request(
             'POST',
             "{$this->baseUrl}/models/{$this->model}:generateContent",
-            [
+            $this->limits->apply([
                 'headers' => $this->headers(),
                 'json' => $payload,
-            ],
+            ]),
         );
 
-        return $this->parseResponse($response->toArray());
+        return $this->parseResponse($this->decodeResponse($response));
     }
 
     public function stream(array $messages, array $tools = [], array $options = []): iterable
@@ -102,10 +102,10 @@ final class GeminiProvider extends AbstractProvider
         $response = $this->httpClient->request(
             'POST',
             "{$this->baseUrl}/models/{$this->model}:streamGenerateContent?alt=sse",
-            [
+            $this->limits->apply([
                 'headers' => $this->headers(),
                 'json' => $payload,
-            ],
+            ]),
         );
 
         $parser = new SseStreamParser($this->httpClient, $response);
@@ -223,12 +223,11 @@ final class GeminiProvider extends AbstractProvider
     public function models(): array
     {
         try {
-            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [
+            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->limits->apply([
                 'headers' => $this->headers(),
-                'timeout' => 10,
-            ]);
+            ]), 'timeout' => 10.0]);
 
-            $data = $response->toArray();
+            $data = $this->decodeResponse($response);
             $models = [];
 
             foreach ($data['models'] ?? [] as $model) {
@@ -274,10 +273,9 @@ final class GeminiProvider extends AbstractProvider
         }
 
         try {
-            $this->httpClient->request('GET', "{$this->baseUrl}/models", [
+            $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->limits->apply([
                 'headers' => $this->headers(),
-                'timeout' => 5,
-            ]);
+            ]), 'timeout' => 5.0]);
 
             return true;
         } catch (\Throwable $e) {

@@ -24,8 +24,8 @@ final class ProviderException extends \RuntimeException
         );
     }
 
-    public static function requestRefused(string $reason): self
+    public static function requestRefused(string $reason, ?\Throwable $previous = null): self
     {
-        return new self(sprintf('Provider request refused: %s', $reason));
+        return new self(sprintf('Provider request refused: %s', $reason), 0, $previous);
     }
 }

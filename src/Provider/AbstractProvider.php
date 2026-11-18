@@ -7,9 +7,12 @@ namespace CarmeloSantana\PHPAgents\Provider;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
+use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpClient\HttpClient;
+use Symfony\Contracts\HttpClient\Exception\RedirectionExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Symfony\Contracts\HttpClient\ResponseInterface;
 
 abstract class AbstractProvider implements ProviderInterface
 {
@@ -21,6 +24,9 @@ abstract class AbstractProvider implements ProviderInterface
     protected HttpClientInterface $httpClient;
     protected ?LoggerInterface $logger;
 
+    /** Time, size and redirect limits that every request of this provider passes through apply(). */
+    protected RequestLimits $limits;
+
     public function __construct(
         string $model,
         string $baseUrl,
@@ -31,8 +37,9 @@ abstract class AbstractProvider implements ProviderInterface
         $this->model = $model;
         $this->baseUrl = rtrim($baseUrl, '/');
         $this->apiKey = $apiKey;
-        $this->httpClient = $httpClient ?? HttpClient::create(['timeout' => 300]);
+        $this->httpClient = $httpClient ?? HttpClient::create();
         $this->logger = $logger;
+        $this->limits = new RequestLimits();
     }
 
     public function getModel(): string
@@ -46,6 +53,38 @@ abstract class AbstractProvider implements ProviderInterface
         $clone->model = $model;
 
         return $clone;
+    }
+
+    /**
+     * Return a copy whose later requests use $limits. The original keeps its limits.
+     */
+    public function withRequestLimits(RequestLimits $limits): static
+    {
+        $clone = clone $this;
+        $clone->limits = $limits;
+
+        return $clone;
+    }
+
+    public function requestLimits(): RequestLimits
+    {
+        return $this->limits;
+    }
+
+    /**
+     * Decode a JSON response body. A 3xx is not followed (max_redirects is 0 by default),
+     * so it surfaces as a ProviderException that says the redirect was refused, with
+     * symfony's RedirectionException as its previous.
+     *
+     * @return array<string, mixed>
+     */
+    protected function decodeResponse(ResponseInterface $response): array
+    {
+        try {
+            return $response->toArray();
+        } catch (RedirectionExceptionInterface $e) {
+            throw ProviderException::requestRefused(sprintf('redirect not followed (%s)', $e->getMessage()), $e);
+        }
     }
 
     /**
