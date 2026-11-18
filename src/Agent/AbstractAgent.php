@@ -35,8 +35,10 @@ use CarmeloSantana\PHPAgents\Provider\Response;
 use CarmeloSantana\PHPAgents\Provider\Usage;
 use CarmeloSantana\PHPAgents\Security\UntrustedText;
 use CarmeloSantana\PHPAgents\Tool\DoneTool;
+use CarmeloSantana\PHPAgents\Tool\Parameter\Parameter;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
+use CarmeloSantana\PHPAgents\Tool\UnknownKeys;
 use SplObserver;
 use Symfony\Component\HttpClient\Response\StreamableInterface;
 use Symfony\Contracts\HttpClient\Exception\ClientExceptionInterface;
@@ -483,22 +485,25 @@ abstract class AbstractAgent implements AgentInterface
                 return $failedStop;
             }
 
-            foreach ($response->toolCalls as $toolCall) {
-                if ($toolCall->name === DoneTool::NAME) {
-                    $this->notify('agent.done', $toolCall->arguments);
+            // The first `done` call is authorized by the policy and validated; when it passes
+            // the run finishes. Otherwise it, and any later `done`, gets an error result that
+            // goes through executeToolCalls with the rest of the response.
+            $finishingCall = null;
+            $doneResults = $this->resolveDoneCalls($response->toolCalls, $finishingCall);
+            if ($finishingCall !== null) {
+                $this->notify('agent.done', $finishingCall->arguments);
 
-                    return new Output(
-                        content: $toolCall->arguments['response'] ?? '',
-                        toolResults: $allToolResults,
-                        usage: $totalUsage,
-                        model: $response->model,
-                        iterations: $i + 1,
-                        conversation: $conversation,
-                        finishReason: AgentFinishReason::Done,
-                        reasoning: $response->reasoning,
-                        providerFinishReason: $response->finishReason,
-                    );
-                }
+                return new Output(
+                    content: (string) $finishingCall->arguments['response'],
+                    toolResults: $allToolResults,
+                    usage: $totalUsage,
+                    model: $response->model,
+                    iterations: $i + 1,
+                    conversation: $conversation,
+                    finishReason: AgentFinishReason::Done,
+                    reasoning: $response->reasoning,
+                    providerFinishReason: $response->finishReason,
+                );
             }
 
             if (!empty($response->toolCalls)) {
@@ -521,6 +526,7 @@ abstract class AbstractAgent implements AgentInterface
                     $runTimeReached,
                     $conversation,
                     $allToolResults,
+                    $doneResults,
                 );
 
                 if ($executionResult !== null) {
@@ -903,6 +909,9 @@ abstract class AbstractAgent implements AgentInterface
      * @param bool $runTimeReached Set when the run time limit stopped a tool or batch call; each
      *                             call it stopped gets an error result
      * @param ToolResult[] $allToolResults Accumulated results (modified by reference)
+     * @param array<int, ToolResult> $resolvedCalls Results already decided for calls at these
+     *                                              positions (refused `done` calls); they skip the
+     *                                              caps, the policy and the executor
      */
     private function executeToolCalls(
         array $toolCalls,
@@ -914,6 +923,7 @@ abstract class AbstractAgent implements AgentInterface
         bool &$runTimeReached,
         Conversation $conversation,
         array &$allToolResults,
+        array $resolvedCalls = [],
     ): ?TerminationException {
         // === Phase 1: Pre-flight (serial) ===
         // Process each tool call: emit events, check policy, resolve tool.
@@ -940,6 +950,11 @@ abstract class AbstractAgent implements AgentInterface
 
             $this->notify('agent.tool_call', $toolCall);
 
+            if (isset($resolvedCalls[$position])) {
+                $preResolved[$position] = $resolvedCalls[$position];
+                continue;
+            }
+
             // Tool-call caps: a refused call is answered here and never
             // reaches the policy or the executor.
             if ($perTurn > 0 && $turnToolCalls >= $perTurn) {
@@ -961,19 +976,10 @@ abstract class AbstractAgent implements AgentInterface
             $turnToolCalls++;
             $runToolCalls++;
 
-            // Check execution policy
-            if ($this->executionPolicy !== null) {
-                $policyResult = $this->executionPolicy->shouldExecute(
-                    $toolCall->name,
-                    $toolCall->arguments,
-                );
-
-                if ($policyResult !== true) {
-                    $preResolved[$position] = ToolResult::error(
-                        "Denied by policy: {$policyResult}",
-                    )->withCallId($toolCall->id);
-                    continue;
-                }
+            $denied = $this->policyDenial($toolCall);
+            if ($denied !== null) {
+                $preResolved[$position] = $denied;
+                continue;
             }
 
             // Resolve tool
@@ -1104,6 +1110,91 @@ abstract class AbstractAgent implements AgentInterface
         $this->applyToolGrants($approved, $executedResults, $executableToolIndex, $fullToolIndex);
 
         return $terminationException;
+    }
+
+    /**
+     * The execution policy's refusal of a call as an error result paired to it,
+     * or null when there is no policy or it allows the call.
+     */
+    private function policyDenial(ToolCall $toolCall): ?ToolResult
+    {
+        if ($this->executionPolicy === null) {
+            return null;
+        }
+
+        $decision = $this->executionPolicy->shouldExecute($toolCall->name, $toolCall->arguments);
+
+        return $decision === true
+            ? null
+            : ToolResult::error("Denied by policy: {$decision}")->withCallId($toolCall->id);
+    }
+
+    /**
+     * Decide the `done` calls in one response. Only the first is put to the policy and then
+     * validated; when both pass it is returned in $finishingCall and no results are returned.
+     * Otherwise every `done` call gets an error result keyed by its position: the refusal or
+     * argument error for the first, a one-per-response error for the rest.
+     *
+     * @param ToolCall[] $toolCalls
+     * @param ToolCall|null $finishingCall Set to the `done` call that finishes the run
+     * @return array<int, ToolResult>
+     */
+    private function resolveDoneCalls(array $toolCalls, ?ToolCall &$finishingCall): array
+    {
+        $finishingCall = null;
+        $results = [];
+        $first = true;
+
+        foreach ($toolCalls as $position => $toolCall) {
+            if ($toolCall->name !== DoneTool::NAME) {
+                continue;
+            }
+
+            if (!$first) {
+                $results[$position] = ToolResult::error('Only one done call is allowed per response.')
+                    ->withCallId($toolCall->id);
+                continue;
+            }
+
+            $first = false;
+            $error = $this->policyDenial($toolCall) ?? $this->doneArgumentsError($toolCall);
+            if ($error === null) {
+                $finishingCall = $toolCall;
+
+                return [];
+            }
+
+            $results[$position] = $error;
+        }
+
+        return $results;
+    }
+
+    /**
+     * Validate `done` arguments against its schema: unknown keys are refused the way
+     * Tool::execute refuses them, and `response` must be a string.
+     */
+    private function doneArgumentsError(ToolCall $toolCall): ?ToolResult
+    {
+        $declared = array_map(
+            static fn(Parameter $param): string => $param->name,
+            DoneTool::create()->parameters(),
+        );
+        $unknown = array_diff(array_map('strval', array_keys($toolCall->arguments)), $declared);
+
+        if ($unknown !== []) {
+            return ToolResult::error(sprintf(
+                'Unknown parameters: %s. Allowed: %s.',
+                UnknownKeys::format($unknown),
+                UnknownKeys::format($declared),
+            ))->withCallId($toolCall->id);
+        }
+
+        if (!is_string($toolCall->arguments['response'] ?? null)) {
+            return ToolResult::error('Parameter "response" must be a string.')->withCallId($toolCall->id);
+        }
+
+        return null;
     }
 
     /**

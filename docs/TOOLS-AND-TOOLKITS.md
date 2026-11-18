@@ -422,6 +422,16 @@ A returned string denies the call, and the agent turns it into an error tool res
 is `Denied by policy: ` followed by that string, so the model reads it (`src/Agent/AbstractAgent.php`;
 `grep -rn 'Denied by policy' src/` finds the one site). Returning `true` lets the call through.
 
+The policy also sees the built-in `done` call, as `shouldExecute('done', $arguments)`, before it
+can finish the run. Only the first `done` in a response is put to the policy; any later `done` in
+that response gets `Only one done call is allowed per response.` without a policy call. An allowed
+`done` is then validated: unknown keys are refused as for any tool (`Unknown parameters: …`) and
+`Parameter "response" must be a string.` is returned for a missing or non-string `response`. An
+allowed, valid `done` finishes the run with `AgentFinishReason::Done` and the other calls in that
+response are not run. A denied or malformed `done` gets its error result, the other calls run as
+usual, and the loop continues. This authorizes the `done` call; it is not output moderation: a
+plain-text completion and the reasoning fallback finish the run without going through the policy.
+
 ### Limiting the tools a model sees
 
 `$agent->setMaxTools(n)` caps the tools sent to the provider at `n`, `done` included; tools from
