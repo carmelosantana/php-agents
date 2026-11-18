@@ -9,6 +9,7 @@ use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
+use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -75,7 +76,14 @@ final class OpenAIResponsesProvider extends AbstractProvider
 
         /** @var array<int, array{call_id: string, name: string, arguments: string}> $pendingToolCalls */
         $pendingToolCalls = [];
+        $refused = false;
 
+        // Terminal events, each yielding exactly one terminal chunk:
+        //   response.completed  → Stop, ToolUse (with the tool calls) or Refusal
+        //   response.incomplete → ContentFilter or MaxTokens, no tool calls
+        //   response.failed     → Error; thrown when it carries an error message
+        // An `error` event is thrown as a ProviderException. A stream that
+        // ends without a terminal event yields a terminal Error chunk.
         $parser = new SseStreamParser($this->httpClient, $response);
 
         foreach ($parser->events() as $json) {
@@ -85,8 +93,11 @@ final class OpenAIResponsesProvider extends AbstractProvider
 
             $eventType = $json['type'];
 
-            if ($eventType === 'response.output_text.delta') {
+            if ($eventType === 'response.output_text.delta' || $eventType === 'response.refusal.delta') {
                 $delta = $json['delta'] ?? '';
+                if ($eventType === 'response.refusal.delta') {
+                    $refused = true;
+                }
                 if ($delta !== '') {
                     yield new Response(
                         content: $delta,
@@ -160,12 +171,37 @@ final class OpenAIResponsesProvider extends AbstractProvider
                 } else {
                     yield new Response(
                         content: '',
-                        finishReason: ProviderFinishReason::Stop,
+                        finishReason: $refused ? ProviderFinishReason::Refusal : ProviderFinishReason::Stop,
                         toolCalls: [],
                         model: $this->model,
                         usage: $usage,
                     );
                 }
+
+                return;
+            } elseif ($eventType === 'response.incomplete' || $eventType === 'response.failed') {
+                $responseData = $json['response'] ?? [];
+                $status = $eventType === 'response.failed' ? 'failed' : 'incomplete';
+                $errorMessage = $responseData['error']['message'] ?? '';
+
+                if ($status === 'failed' && is_string($errorMessage) && $errorMessage !== '') {
+                    throw ProviderException::streamError((string) ($responseData['error']['code'] ?? 'response.failed'), $errorMessage);
+                }
+
+                yield new Response(
+                    content: '',
+                    finishReason: $this->mapStatus([...$responseData, 'status' => $status], false, false),
+                    toolCalls: [],
+                    model: $this->model,
+                    usage: $this->parseUsage($responseData),
+                );
+
+                return;
+            } elseif ($eventType === 'error') {
+                throw ProviderException::streamError(
+                    (string) ($json['code'] ?? 'error'),
+                    (string) ($json['message'] ?? 'unknown stream error'),
+                );
             } elseif ($eventType === 'response.created') {
                 // Initial response metadata — extract model if present
                 $responseData = $json['response'] ?? [];
@@ -182,6 +218,15 @@ final class OpenAIResponsesProvider extends AbstractProvider
                 }
             }
         }
+
+        // EOF before a terminal event: the response is incomplete, and any
+        // pending tool calls are dropped so that no tool runs.
+        yield new Response(
+            content: '',
+            finishReason: ProviderFinishReason::Error,
+            toolCalls: [],
+            model: $this->model,
+        );
     }
 
     /**
@@ -349,14 +394,20 @@ final class OpenAIResponsesProvider extends AbstractProvider
         $content = '';
         $reasoning = '';
         $toolCalls = [];
+        $refused = false;
 
         foreach ($data['output'] ?? [] as $item) {
             $type = $item['type'] ?? '';
 
             if ($type === 'message') {
                 foreach ($item['content'] ?? [] as $block) {
-                    if (($block['type'] ?? '') === 'output_text') {
+                    $blockType = $block['type'] ?? '';
+                    if ($blockType === 'output_text') {
                         $content .= $block['text'] ?? '';
+                    } elseif ($blockType === 'refusal') {
+                        // The person sees the refusal text.
+                        $content .= $block['refusal'] ?? '';
+                        $refused = true;
                     }
                 }
             } elseif ($type === 'reasoning') {
@@ -373,20 +424,35 @@ final class OpenAIResponsesProvider extends AbstractProvider
             }
         }
 
-        $finishReason = match ($data['status'] ?? 'completed') {
-            'completed' => empty($toolCalls) ? ProviderFinishReason::Stop : ProviderFinishReason::ToolUse,
-            'incomplete' => ProviderFinishReason::MaxTokens,
-            default => ProviderFinishReason::Stop,
-        };
-
         return new Response(
             content: $content,
-            finishReason: $finishReason,
+            finishReason: $this->mapStatus($data, !empty($toolCalls), $refused),
             toolCalls: $toolCalls,
             model: $data['model'] ?? $this->model,
             usage: $this->parseUsage($data),
             reasoning: $reasoning,
         );
+    }
+
+    /**
+     * Map a response's `status` (and `incomplete_details.reason`) to a finish reason.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function mapStatus(array $data, bool $hasToolCalls, bool $refused): ProviderFinishReason
+    {
+        return match ($data['status'] ?? 'completed') {
+            'completed' => match (true) {
+                $refused => ProviderFinishReason::Refusal,
+                $hasToolCalls => ProviderFinishReason::ToolUse,
+                default => ProviderFinishReason::Stop,
+            },
+            'incomplete' => ($data['incomplete_details']['reason'] ?? null) === 'content_filter'
+                ? ProviderFinishReason::ContentFilter
+                : ProviderFinishReason::MaxTokens,
+            'failed' => ProviderFinishReason::Error,
+            default => ProviderFinishReason::Stop,
+        };
     }
 
     /**

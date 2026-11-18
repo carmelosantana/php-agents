@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
@@ -612,4 +613,135 @@ test('stream keeps stream true and the conversation when options try to override
 
     expect($requestPayload['stream'])->toBeTrue()
         ->and($requestPayload['input'])->toBe([['role' => 'user', 'content' => 'hi']]);
+});
+
+// --- Finish reasons, refusals and terminal chunks ---
+
+dataset('responses statuses', [
+    'completed' => [['status' => 'completed'], ProviderFinishReason::Stop],
+    'incomplete content_filter' => [['status' => 'incomplete', 'incomplete_details' => ['reason' => 'content_filter']], ProviderFinishReason::ContentFilter],
+    'incomplete max_output_tokens' => [['status' => 'incomplete', 'incomplete_details' => ['reason' => 'max_output_tokens']], ProviderFinishReason::MaxTokens],
+    'incomplete without a reason' => [['status' => 'incomplete'], ProviderFinishReason::MaxTokens],
+    'failed' => [['status' => 'failed'], ProviderFinishReason::Error],
+]);
+
+test('chat maps every response status', function (array $overrides, ProviderFinishReason $expected) {
+    $mockClient = new MockHttpClient([mockResponsesApiResponse($overrides)]);
+    $response = (new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient))->chat([new UserMessage('hi')]);
+
+    expect($response->finishReason)->toBe($expected);
+})->with('responses statuses');
+
+test('chat puts a refusal content item into content with the Refusal reason', function () {
+    $mockClient = new MockHttpClient([mockResponsesApiResponse(['output' => [[
+        'type' => 'message',
+        'content' => [['type' => 'refusal', 'refusal' => 'I cannot help with that.']],
+    ]]])]);
+    $response = (new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient))->chat([new UserMessage('hi')]);
+
+    expect($response->content)->toBe('I cannot help with that.')
+        ->and($response->finishReason)->toBe(ProviderFinishReason::Refusal);
+});
+
+function responsesStreamChunks(array $events): array
+{
+    $sse = implode('', array_map(fn(array $e) => 'data: ' . json_encode($e) . "\n\n", $events));
+    $mockClient = new MockHttpClient([new MockResponse($sse, ['http_code' => 200])]);
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
+
+    return iterator_to_array($provider->stream([new UserMessage('hi')]), false);
+}
+
+test('stream response.incomplete with content_filter yields one ContentFilter terminal chunk with usage', function () {
+    $chunks = responsesStreamChunks([
+        ['type' => 'response.output_text.delta', 'delta' => 'Partial'],
+        ['type' => 'response.incomplete', 'response' => [
+            'status' => 'incomplete',
+            'incomplete_details' => ['reason' => 'content_filter'],
+            'usage' => ['input_tokens' => 4, 'output_tokens' => 2],
+        ]],
+    ]);
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::ContentFilter)
+        ->and($chunks[1]->toolCalls)->toBe([])
+        ->and($chunks[1]->usage?->totalTokens)->toBe(6);
+});
+
+test('stream response.incomplete with max_output_tokens drops pending tool calls', function () {
+    $chunks = responsesStreamChunks([
+        ['type' => 'response.output_item.added', 'output_index' => 0, 'item' => ['type' => 'function_call', 'call_id' => 'call_1', 'name' => 'get_weather']],
+        ['type' => 'response.function_call_arguments.delta', 'output_index' => 0, 'delta' => '{"ci'],
+        ['type' => 'response.incomplete', 'response' => ['status' => 'incomplete', 'incomplete_details' => ['reason' => 'max_output_tokens']]],
+    ]);
+
+    expect($chunks)->toHaveCount(1)
+        ->and($chunks[0]->finishReason)->toBe(ProviderFinishReason::MaxTokens)
+        ->and($chunks[0]->toolCalls)->toBe([]);
+});
+
+test('stream response.failed without an error message yields one Error terminal chunk', function () {
+    $chunks = responsesStreamChunks([
+        ['type' => 'response.output_text.delta', 'delta' => 'Partial'],
+        ['type' => 'response.failed', 'response' => ['status' => 'failed', 'error' => null, 'usage' => ['input_tokens' => 4, 'output_tokens' => 1]]],
+    ]);
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::Error)
+        ->and($chunks[1]->usage?->totalTokens)->toBe(5);
+});
+
+test('stream response.failed with an error message throws ProviderException', function () {
+    responsesStreamChunks([
+        ['type' => 'response.output_text.delta', 'delta' => 'Partial'],
+        ['type' => 'response.failed', 'response' => ['status' => 'failed', 'error' => ['code' => 'server_error', 'message' => 'The server had an error.']]],
+    ]);
+})->throws(ProviderException::class, 'The server had an error.');
+
+test('stream error event throws ProviderException with its message', function () {
+    responsesStreamChunks([
+        ['type' => 'response.output_text.delta', 'delta' => 'Partial'],
+        ['type' => 'error', 'code' => 'rate_limit_exceeded', 'message' => 'Rate limit reached.', 'param' => null],
+    ]);
+})->throws(ProviderException::class, 'Rate limit reached.');
+
+test('stream yields refusal delta text as content and ends with Refusal', function () {
+    $chunks = responsesStreamChunks([
+        ['type' => 'response.refusal.delta', 'delta' => 'I cannot '],
+        ['type' => 'response.refusal.delta', 'delta' => 'help.'],
+        ['type' => 'response.refusal.done', 'refusal' => 'I cannot help.'],
+        ['type' => 'response.completed', 'response' => ['status' => 'completed', 'output' => [[
+            'type' => 'message',
+            'content' => [['type' => 'refusal', 'refusal' => 'I cannot help.']],
+        ]]]],
+    ]);
+
+    $content = implode('', array_map(fn($r) => $r->content, $chunks));
+
+    expect($content)->toBe('I cannot help.')
+        ->and($chunks)->toHaveCount(3)
+        ->and($chunks[2]->finishReason)->toBe(ProviderFinishReason::Refusal);
+});
+
+test('stream ending without a terminal event yields one terminal Error chunk', function () {
+    $chunks = responsesStreamChunks([
+        ['type' => 'response.output_item.added', 'output_index' => 0, 'item' => ['type' => 'function_call', 'call_id' => 'call_1', 'name' => 'get_weather']],
+        ['type' => 'response.function_call_arguments.delta', 'output_index' => 0, 'delta' => '{"city":"NYC"}'],
+        ['type' => 'response.output_text.delta', 'delta' => 'Half'],
+    ]);
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::Error)
+        ->and($chunks[1]->content)->toBe('')
+        ->and($chunks[1]->toolCalls)->toBe([]);
+});
+
+test('stream that completes yields no extra Error chunk', function () {
+    $chunks = responsesStreamChunks([
+        ['type' => 'response.output_text.delta', 'delta' => 'Done.'],
+        ['type' => 'response.completed', 'response' => ['status' => 'completed']],
+    ]);
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::Stop);
 });
