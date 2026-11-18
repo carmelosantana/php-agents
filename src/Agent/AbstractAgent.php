@@ -907,9 +907,9 @@ abstract class AbstractAgent implements AgentInterface
 
             // The single exposure boundary for error text: Output.toolResults, the
             // conversation and agent.tool_result all receive this result. Success
-            // content is the tool author's data and is not rewritten.
+            // content and metadata are the tool author's data and are not rewritten.
             if ($result->status === ToolResultStatus::Error) {
-                $result = $result->withContent(UntrustedText::forDisplay($result->content, self::TOOL_ERROR_MAX_CHARS));
+                $result = $this->redactedErrorResult($result);
             }
 
             $allToolResults[] = $result;
@@ -924,6 +924,35 @@ abstract class AbstractAgent implements AgentInterface
         $this->applyToolGrants($approved, $executedResults, $executableToolIndex, $fullToolIndex);
 
         return $terminationException;
+    }
+
+    /**
+     * An error result with its content and every string value in its metadata
+     * (recursively) passed through UntrustedText::forDisplay(…, 500).
+     */
+    private function redactedErrorResult(ToolResult $result): ToolResult
+    {
+        $redact = static function (mixed $value) use (&$redact): mixed {
+            if (is_string($value)) {
+                return UntrustedText::forDisplay($value, self::TOOL_ERROR_MAX_CHARS);
+            }
+
+            return is_array($value) ? array_map($redact, $value) : $value;
+        };
+
+        /** @var array<string, mixed> $metadata */
+        $metadata = $redact($result->metadata);
+
+        return new ToolResult(
+            $result->status,
+            UntrustedText::forDisplay($result->content, self::TOOL_ERROR_MAX_CHARS),
+            $result->callId,
+            $metadata,
+            $result->mimeType,
+            $result->displayHint,
+            $result->retryable,
+            $result->errorCode,
+        );
     }
 
     /**

@@ -61,3 +61,12 @@ test('streamError replaces format characters used for Trojan-Source spoofing', f
     expect(preg_match('/[\p{Cc}\p{Cf}]/u', $message))->toBe(0)
         ->and($message)->toBe('api_error: safe txt.exe x a b c d');
 });
+
+test('streamError redacts before it cuts, so a key on the boundary leaves no readable prefix', function () {
+    $message = ProviderException::streamError('api_error', str_repeat('a', 290) . ' sk-ant-' . str_repeat('Z', 40))->getMessage();
+
+    expect($message)->not->toContain('sk-ant')
+        ->and($message)->not->toContain('ZZ')
+        // 290 + ' [redacted]' passes 300, so the cut lands inside the marker, never the key.
+        ->and($message)->toEndWith(' [redacted…');
+});

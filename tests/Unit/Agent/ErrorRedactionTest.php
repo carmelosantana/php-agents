@@ -360,3 +360,30 @@ test('policy denial text is redacted', function () {
         expect($text)->not->toContain('policy-pass-9');
     }
 });
+
+test('string metadata on an error result is redacted and bounded', function () {
+    $schemaTool = new \CarmeloSantana\PHPAgents\Tool\SchemaTool('remote', 'Remote.', ['type' => 'object'], function (array $input): never {
+        throw new RuntimeException('POST https://x.test/mcp?api_key=meta-secret-5 failed' . str_repeat(' pad', 400));
+    });
+    $nested = new Tool('nested', 'Nested.', [], fn(array $i): ToolResult => ToolResult::error('nope')->withMetadata([
+        'detail' => ['inner' => "token=deep-secret-6 \x1b[1m", 'count' => 3],
+    ]));
+    $ok = new Tool('ok', 'OK.', [], fn(array $i): ToolResult => ToolResult::success('fine')->withMetadata(['raw' => 'token=kept-on-success']));
+    $provider = new RedactionScriptedProvider([redactionToolRound([new ToolCall('c1', 'remote', []), new ToolCall('c2', 'nested', []), new ToolCall('c3', 'ok', [])]), redactionTextRound()]);
+    $agent = new RedactionTestAgent(provider: $provider);
+    $agent->extraTools = [$schemaTool, $nested, $ok];
+    $events = new RedactionEventRecorder();
+    $agent->attach($events);
+
+    $output = $agent->run(new UserMessage('Hi'));
+    $results = array_merge($output->toolResults, $events->dataFor('agent.tool_result'));
+
+    expect($output->toolResults[0]->metadata['message'])->toStartWith('POST https://x.test/mcp?api_key=[redacted] failed')
+        ->and(mb_strlen($output->toolResults[0]->metadata['message']))->toBe(501)
+        ->and($output->toolResults[0]->metadata['exception'])->toBe(RuntimeException::class)
+        ->and($output->toolResults[1]->metadata['detail'])->toBe(['inner' => 'token=[redacted] [1m', 'count' => 3])
+        ->and($output->toolResults[2]->metadata['raw'])->toBe('token=kept-on-success');
+    foreach ($results as $r) {
+        expect(json_encode($r->metadata))->not->toContain('meta-secret-5')->not->toContain('deep-secret-6');
+    }
+});

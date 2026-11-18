@@ -14,7 +14,9 @@ test('the agents guide documents error redaction and its bounds', function () {
         ->and($doc)->toContain('first 64 KiB of the body')
         ->and($doc)->toContain('is never echoed')
         ->and($doc)->toContain('is cut to 500 characters')
-        ->and($doc)->toContain('Successful tool content is the tool\'s own data and is not rewritten.')
+        ->and($doc)->toContain('Bearer and Basic credentials')
+        ->and($doc)->toContain('and so is every string in its metadata')
+        ->and($doc)->toContain('Successful tool content and metadata are the tool\'s own data and are not rewritten.')
         ->and($doc)->toContain('An opaque credential that matches none of these shapes cannot be redacted');
 });
 

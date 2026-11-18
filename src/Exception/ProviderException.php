@@ -36,10 +36,11 @@ final class ProviderException extends \RuntimeException
 
     /**
      * An `error` event inside a provider's stream, as `type: message`. The
-     * provider's text is untrusted: control and format characters (such as
+     * provider's text is untrusted: credential-shaped strings are redacted
+     * first, then control and format characters (such as
      * bidi overrides and zero-width spaces) become spaces,
      * whitespace collapses, the message is cut to 300 characters (with `…`)
-     * and a type that is not 1-64 of `[a-z0-9_]` becomes `error` (UntrustedText::scrub()).
+     * and a type that is not 1-64 of `[a-z0-9_]` becomes `error` (UntrustedText::forDisplay()).
      */
     public static function streamError(string $type, string $message): self
     {
@@ -47,7 +48,7 @@ final class ProviderException extends \RuntimeException
             $type = 'error';
         }
 
-        return new self(sprintf('%s: %s', $type, UntrustedText::scrub($message, self::STREAM_ERROR_MAX_CHARS)));
+        return new self(sprintf('%s: %s', $type, UntrustedText::forDisplay($message, self::STREAM_ERROR_MAX_CHARS)));
     }
 
     /** A 3xx answer that was not followed, refused with Symfony's status message. */
