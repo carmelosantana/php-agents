@@ -95,6 +95,9 @@ test('an IPv6 address PHP calls global but that reaches a private network is ref
     'site-local fec0::/10' => 'fec0::1',
     'multicast ff00::/8' => 'ff02::1',
     'IPv4-translated ::ffff:0:0:0/96' => '::ffff:0:7f00:1',
+    'reserved ::/8 (0:0:0:ffff::)' => '::ffff:0:0:7f00:1',
+    'IPv4-compatible ::/96 loopback' => '::7f00:1',
+    'IPv4-compatible ::/96 rfc1918' => '::a00:1',
 ]);
 
 test('a public IPv6 address is still accepted by the deny-list', function () {
@@ -168,13 +171,20 @@ test('a redirect to another host name is pinned to that host\'s address', functi
 });
 
 test('a host name that resolves to a private address is never requested', function () {
+    $asked = [];
     $result = geminiImageDownload(
         'https://img.test/a.png',
         ['https://img.test/a.png' => geminiImagePngResponse()],
-        fn(string $host): array => ['10.0.0.1'],
+        function (string $host) use (&$asked): array {
+            $asked[] = $host;
+
+            return ['10.0.0.1'];
+        },
     );
 
-    expect($result['gets'])->toBe([])
+    // img.test is NXDOMAIN on real DNS, so the refusal alone would pass with the seam bypassed.
+    expect($asked)->toBe(['img.test'])
+        ->and($result['gets'])->toBe([])
         ->and($result['part']['text'])->toContain('[Image: could not download');
 });
 

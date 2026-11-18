@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
 use CarmeloSantana\PHPAgents\Provider\RequestLimits;
 
 // docs/PROVIDERS.md lists the RequestLimits defaults in a table. This reads the defaults from
@@ -43,5 +44,16 @@ test('the docs say PHP\'s filter already refuses IPv4-mapped IPv6 addresses', fu
     expect(filter_var('::ffff:127.0.0.1', FILTER_VALIDATE_IP, FILTER_FLAG_GLOBAL_RANGE))->toBeFalse()
         ->and(filter_var('::ffff:8.8.8.8', FILTER_VALIDATE_IP, FILTER_FLAG_GLOBAL_RANGE))->toBeFalse()
         ->and($doc)->not->toContain('`::ffff:0:0/96` (IPv4-mapped) and')
-        ->and($doc)->toContain('`::ffff:0:0/96` (IPv4-mapped), which PHP\'s filter already refuses');
+        ->and($doc)->toContain('IPv4-mapped `::ffff:0:0/96`, which PHP\'s filter already refuses');
+})->with(['docs/PROVIDERS.md', 'docs/adr/0003-provider-request-limits.md']);
+
+test('the docs list every range in the Gemini IPv6 deny-list', function (string $path) {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../' . $path);
+    $ranges = (new ReflectionClassConstant(GeminiProvider::class, 'DENIED_IPV6_RANGES'))->getValue();
+
+    expect($ranges)->not->toBeEmpty();
+    foreach ($ranges as [$prefix, $bits]) {
+        expect($doc)->toContain(sprintf('`%s/%d`', $prefix, $bits));
+    }
+    expect($doc)->toContain('`::/8` (reserved)');
 })->with(['docs/PROVIDERS.md', 'docs/adr/0003-provider-request-limits.md']);

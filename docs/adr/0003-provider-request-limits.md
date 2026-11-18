@@ -50,13 +50,14 @@ the same problem per request (ADR 0001).
   seam), never the provider's API client, because the guard needs `resolve`, `max_redirects` and
   `on_progress` to be honoured. It accepts only `http(s)`, resolves the host and refuses it
   unless every resolved address passes `FILTER_FLAG_GLOBAL_RANGE` and is outside an IPv6
-  deny-list. Its ranges pass PHP's filter: `64:ff9b::/96` and `64:ff9b:1::/48` (NAT64),
-  `fec0::/10` (site-local), `ff00::/8` (multicast) and `::ffff:0:0:0/96` (IPv4-translated);
-  the list also holds `::ffff:0:0/96` (IPv4-mapped), which PHP's filter already refuses, as
-  defence in depth. The checked address of a host name is pinned through the
-  `resolve` option; an IP-literal host has no DNS to rebind and gets no pin. Up to 3
-  redirects are followed by hand, each hop checked and pinned again. Each hop is limited to 10 s
-  idle, 30 s total and 20 MiB, and only a 2xx `image/*` answer is kept; anything else sends the
+  deny-list of ranges holding addresses PHP's filter accepts: `64:ff9b::/96` and
+  `64:ff9b:1::/48` (NAT64), `fec0::/10` (site-local), `ff00::/8` (multicast) and
+  `::/8` (reserved). `::/8` covers IPv4-compatible `::/96` (such as `::7f00:1` and `::a00:1`),
+  IPv4-translated `::ffff:0:0:0/96` and IPv4-mapped `::ffff:0:0/96`, which PHP's filter
+  already refuses. The checked address of a host name is pinned through the `resolve` option;
+  an IP-literal host has no DNS to rebind and gets no pin. Up to 3 redirects are followed by
+  hand, each hop checked and pinned again. Each hop is limited to 10 s idle, 30 s total and
+  20 MiB, and only a 2xx `image/*` answer is kept; anything else sends the
   existing "could not download" text part. This is hand-rolled rather than Symfony's
   `NoPrivateNetworkHttpClient`, which needs `symfony/http-foundation`: no new dependency.
 

@@ -627,7 +627,7 @@ Providers follow no redirect. A base URL that answers 3xx to `chat()`, `stream()
 
 - accepts only `http` and `https` URLs;
 - resolves the host and refuses it unless every resolved address passes `FILTER_FLAG_GLOBAL_RANGE`, so loopback, private, link-local and reserved addresses (such as `127.0.0.1`, `10.0.0.5`, `169.254.169.254` and `::1`) are never fetched;
-- also refuses IPv6 addresses PHP's filter accepts but that can reach a private or non-unicast address: `64:ff9b::/96` and `64:ff9b:1::/48` (NAT64), `fec0::/10` (site-local), `ff00::/8` (multicast) and `::ffff:0:0:0/96` (IPv4-translated); its deny-list also holds `::ffff:0:0/96` (IPv4-mapped), which PHP's filter already refuses, as defence in depth;
+- also refuses IPv6 addresses PHP's filter accepts but that can reach a private or non-unicast address: `64:ff9b::/96` and `64:ff9b:1::/48` (NAT64), `fec0::/10` (site-local), `ff00::/8` (multicast) and `::/8` (reserved). `::/8` covers IPv4-compatible `::/96` (such as `::7f00:1` and `::a00:1`), IPv4-translated `::ffff:0:0:0/96` and IPv4-mapped `::ffff:0:0/96`, which PHP's filter already refuses;
 - pins the checked address of a host name through the `resolve` option, so the connection goes to the address that was checked; an IP-literal host needs no DNS lookup and gets no pin;
 - follows up to 3 redirects by hand, checking and pinning each hop again;
 - limits each hop to 10 s idle, 30 s total and 20 MiB (20_971_520 bytes), independent of `withRequestLimits()`;
