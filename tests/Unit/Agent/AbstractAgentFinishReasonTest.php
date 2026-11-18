@@ -357,3 +357,78 @@ test('a Gemini MAX_TOKENS chunk carrying a done call runs no tool and emits no a
         ->and($recorder->dataFor('agent.tool_call'))->toBe([])
         ->and($recorder->dataFor('agent.done'))->toBe([]);
 });
+
+dataset('failure then later tool use', [
+    'content filter then tool use' => [
+        [finishReasonChunk(ProviderFinishReason::ContentFilter, 'Blocked'), finishReasonChunk(ProviderFinishReason::ToolUse, '', [finishReasonPingCall()])],
+        ProviderFinishReason::ContentFilter, AgentFinishReason::ContentFilter,
+    ],
+    'error then tool use' => [
+        [finishReasonChunk(ProviderFinishReason::Error), finishReasonChunk(ProviderFinishReason::ToolUse, '', [finishReasonPingCall()])],
+        ProviderFinishReason::Error, AgentFinishReason::Error,
+    ],
+    'max tokens then tool use' => [
+        [finishReasonChunk(ProviderFinishReason::MaxTokens), finishReasonChunk(ProviderFinishReason::ToolUse, '', [finishReasonPingCall()])],
+        ProviderFinishReason::MaxTokens, AgentFinishReason::Error,
+    ],
+    'refusal then tool use carrying done' => [
+        [finishReasonChunk(ProviderFinishReason::Refusal, 'No.'), finishReasonChunk(ProviderFinishReason::ToolUse, '', [finishReasonDoneCall()])],
+        ProviderFinishReason::Refusal, AgentFinishReason::Refusal,
+    ],
+    'content filter then stop with tool calls' => [
+        [finishReasonChunk(ProviderFinishReason::ContentFilter), finishReasonChunk(ProviderFinishReason::Stop, '', [finishReasonPingCall()])],
+        ProviderFinishReason::ContentFilter, AgentFinishReason::ContentFilter,
+    ],
+    'first failure wins over a later one' => [
+        [finishReasonChunk(ProviderFinishReason::ContentFilter), finishReasonChunk(ProviderFinishReason::Error)],
+        ProviderFinishReason::ContentFilter, AgentFinishReason::ContentFilter,
+    ],
+]);
+
+test('a failure stop stays sticky when a later chunk says ToolUse or Stop', function (
+    array $chunks,
+    ProviderFinishReason $providerReason,
+    AgentFinishReason $agentReason,
+) {
+    [$output, $provider, $executor, $recorder] = runFinishReasonAgent([
+        $chunks,
+        [finishReasonChunk(ProviderFinishReason::Stop, 'A second turn that must not happen.')],
+    ]);
+
+    expect($output->finishReason)->toBe($agentReason)
+        ->and($output->providerFinishReason)->toBe($providerReason)
+        ->and($executor->calls)->toBe(0)
+        ->and($provider->streamCalls)->toHaveCount(1)
+        ->and($recorder->dataFor('agent.tool_call'))->toBe([])
+        ->and($recorder->dataFor('agent.done'))->toBe([]);
+
+    foreach ($output->conversation?->messages() ?? [] as $message) {
+        expect($message->toolCalls())->toBe([]);
+    }
+})->with('failure then later tool use');
+
+test('a Gemini SAFETY candidate followed by a STOP candidate with a functionCall runs no tool', function () {
+    $sseData = 'data: ' . json_encode(['candidates' => [[
+        'content' => ['role' => 'model', 'parts' => [['text' => 'Partial']]],
+        'finishReason' => 'SAFETY',
+    ]]]) . "\n\n"
+        . 'data: ' . json_encode(['candidates' => [[
+            'content' => ['role' => 'model', 'parts' => [['functionCall' => ['name' => 'ping', 'args' => []]]]],
+            'finishReason' => 'STOP',
+        ]]]) . "\n\n";
+
+    $provider = new \CarmeloSantana\PHPAgents\Provider\GeminiProvider(
+        apiKey: 'k',
+        httpClient: new \Symfony\Component\HttpClient\MockHttpClient([
+            new \Symfony\Component\HttpClient\Response\MockResponse($sseData, ['http_code' => 200]),
+        ]),
+    );
+    $executor = new FinishReasonSpyExecutor();
+    $agent = new FinishReasonTestAgent(provider: $provider, toolExecutor: $executor);
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::ContentFilter)
+        ->and($output->providerFinishReason)->toBe(ProviderFinishReason::ContentFilter)
+        ->and($executor->calls)->toBe(0);
+});

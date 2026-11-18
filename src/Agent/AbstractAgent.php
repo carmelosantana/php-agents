@@ -260,8 +260,9 @@ abstract class AbstractAgent implements AgentInterface
                 $streamUsage = null;
                 $streamModel = '';
                 $contentBlocks = [];
-                // The last reason that is not Stop wins (a later failing chunk
-                // overrides an earlier ToolUse).
+                // A failure reason is sticky: the first one seen ends the turn
+                // and no later chunk can turn it back into ToolUse or Stop.
+                // Otherwise the last reason that is not Stop wins.
                 $streamFinishReason = null;
 
                 foreach ($this->provider->stream($conversation->messages(), $advertisedTools, $this->providerOptions) as $chunk) {
@@ -316,7 +317,9 @@ abstract class AbstractAgent implements AgentInterface
                         $contentBlocks = $chunk->contentBlocks;
                     }
 
-                    if ($chunk->finishReason !== ProviderFinishReason::Stop) {
+                    $failed = $streamFinishReason !== null
+                        && $streamFinishReason !== ProviderFinishReason::ToolUse;
+                    if (!$failed && $chunk->finishReason !== ProviderFinishReason::Stop) {
                         $streamFinishReason = $chunk->finishReason;
                     }
                 }
