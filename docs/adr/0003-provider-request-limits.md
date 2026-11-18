@@ -50,9 +50,10 @@ the same problem per request (ADR 0001).
   seam), never the provider's API client, because the guard needs `resolve`, `max_redirects` and
   `on_progress` to be honoured. It accepts only `http(s)`, resolves the host and refuses it
   unless every resolved address passes `FILTER_FLAG_GLOBAL_RANGE` and is outside an IPv6
-  deny-list of ranges that pass PHP's filter: `64:ff9b::/96` and `64:ff9b:1::/48` (NAT64),
-  `fec0::/10` (site-local), `ff00::/8` (multicast), `::ffff:0:0/96` (IPv4-mapped) and
-  `::ffff:0:0:0/96` (IPv4-translated). The checked address of a host name is pinned through the
+  deny-list. Its ranges pass PHP's filter: `64:ff9b::/96` and `64:ff9b:1::/48` (NAT64),
+  `fec0::/10` (site-local), `ff00::/8` (multicast) and `::ffff:0:0:0/96` (IPv4-translated);
+  the list also holds `::ffff:0:0/96` (IPv4-mapped), which PHP's filter already refuses, as
+  defence in depth. The checked address of a host name is pinned through the
   `resolve` option; an IP-literal host has no DNS to rebind and gets no pin. Up to 3
   redirects are followed by hand, each hop checked and pinned again. Each hop is limited to 10 s
   idle, 30 s total and 20 MiB, and only a 2xx `image/*` answer is kept; anything else sends the
@@ -74,8 +75,10 @@ Behaviour changes, hence a minor release:
    guesses the type from the file extension. Its redirect budget drops from 5 to 3.
 5. The 32 MiB `maxResponseBytes` cap counts a stream's whole body, not one event, so a very long
    stream is aborted. Raise it with `withRequestLimits()`.
-6. The per-request `timeout` and `max_duration` replace an injected Symfony client's own
-   defaults. `withRequestLimits()` is the way to change them.
+6. The per-request `timeout` replaces an injected Symfony client's own default, and so does
+   `max_duration` when `maxDuration` is above 0.0. With `maxDuration: 0.0` no `max_duration` is
+   sent and the client's own `max_duration` default applies (none for `HttpClient::create()`).
+   `withRequestLimits()` is the way to change them.
 7. Gemini image downloads no longer go through the host's HTTP client, so that client's proxy
    and other settings do not apply to them; they use a library-owned client, which still reads
    the `HTTP_PROXY` and `HTTPS_PROXY` environment variables.

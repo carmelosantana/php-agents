@@ -94,7 +94,7 @@ test('an IPv6 address PHP calls global but that reaches a private network is ref
     'NAT64 local-use /48' => '64:ff9b:1::a9fe:a9fe',
     'site-local fec0::/10' => 'fec0::1',
     'multicast ff00::/8' => 'ff02::1',
-    'IPv4-translated ::ffff:0:0/96' => '::ffff:0:7f00:1',
+    'IPv4-translated ::ffff:0:0:0/96' => '::ffff:0:7f00:1',
 ]);
 
 test('a public IPv6 address is still accepted by the deny-list', function () {

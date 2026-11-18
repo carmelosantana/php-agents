@@ -11,8 +11,8 @@ use CarmeloSantana\PHPAgents\Exception\ProviderException;
  * symfony/http-client options array by apply().
  *
  * - $idleTimeout goes out as `timeout`, the longest wait between two chunks.
- * - $maxDuration goes out as `max_duration`, the total time for the request; 0.0 means
- *   no total limit and leaves `max_duration` out.
+ * - $maxDuration goes out as `max_duration`, the total time for the request; 0.0 leaves
+ *   `max_duration` out, so the client's own default applies (none for HttpClient::create()).
  * - $maxResponseBytes caps the downloaded body; 0 means no cap.
  * - $maxRedirects goes out as `max_redirects`, replacing any caller value, so by default
  *   no redirect is followed and request headers such as an API key never reach a host

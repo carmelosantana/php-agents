@@ -663,8 +663,8 @@ final class GeminiProvider extends AbstractProvider
     /**
      * IPv6 ranges FILTER_FLAG_GLOBAL_RANGE accepts that can still reach a private or
      * non-unicast address: NAT64 (/96 well-known, /48 local-use), deprecated site-local,
-     * multicast, IPv4-mapped (::ffff:0:0/96, also refused by PHP) and IPv4-translated
-     * (::ffff:0:0:0/96, RFC 2765).
+     * multicast and IPv4-translated (::ffff:0:0:0/96, RFC 2765). IPv4-mapped
+     * (::ffff:0:0/96) is already refused by PHP's filter and is listed as defence in depth.
      */
     private const array DENIED_IPV6_RANGES = [
         ['64:ff9b::', 96],

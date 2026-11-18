@@ -28,3 +28,20 @@ test('the defaults table matches the RequestLimits constructor defaults', functi
         expect($doc)->toContain(sprintf('| `%s` | `%s` |', $parameter->getName(), $shown));
     }
 });
+
+test('the docs say maxDuration 0.0 leaves the client max_duration default in place', function (string $path) {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../' . $path);
+
+    expect((new RequestLimits(maxDuration: 0.0))->apply([]))->not->toHaveKey('max_duration')
+        ->and($doc)->not->toContain('`max_duration` replace')
+        ->and($doc)->toContain("client's own `max_duration` default applies");
+})->with(['docs/PROVIDERS.md', 'docs/adr/0003-provider-request-limits.md']);
+
+test('the docs say PHP\'s filter already refuses IPv4-mapped IPv6 addresses', function (string $path) {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../' . $path);
+
+    expect(filter_var('::ffff:127.0.0.1', FILTER_VALIDATE_IP, FILTER_FLAG_GLOBAL_RANGE))->toBeFalse()
+        ->and(filter_var('::ffff:8.8.8.8', FILTER_VALIDATE_IP, FILTER_FLAG_GLOBAL_RANGE))->toBeFalse()
+        ->and($doc)->not->toContain('`::ffff:0:0/96` (IPv4-mapped) and')
+        ->and($doc)->toContain('`::ffff:0:0/96` (IPv4-mapped), which PHP\'s filter already refuses');
+})->with(['docs/PROVIDERS.md', 'docs/adr/0003-provider-request-limits.md']);
