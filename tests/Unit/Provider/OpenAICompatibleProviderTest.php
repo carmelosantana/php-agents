@@ -781,6 +781,21 @@ test('stream keeps stream true and the conversation when options try to override
         ->and($requestPayload['messages'])->toBe([['role' => 'user', 'content' => 'hi']]);
 });
 
+test('chat keeps stream false and the conversation when options try to override them', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockOpenAIResponse();
+    });
+    $provider = new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient);
+
+    $response = $provider->chat([new UserMessage('hi')], [], ['stream' => true, 'messages' => []]);
+
+    expect($requestPayload['stream'])->toBeFalse()
+        ->and($requestPayload['messages'])->toBe([['role' => 'user', 'content' => 'hi']])
+        ->and($response->content)->not->toBe('');
+});
+
 // --- Finish reasons, refusals and terminal chunks ---
 
 dataset('openai finish reasons', [

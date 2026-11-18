@@ -745,6 +745,20 @@ test('chat keeps tool calls when the response is completed', function () {
         ->and($response->toolCalls[0]->arguments)->toBe(['city' => 'NYC']);
 });
 
+test('chat keeps the input and stays non-streaming when options try to override them', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockResponsesApiResponse();
+    });
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'test-key', httpClient: $mockClient);
+
+    $provider->chat([new UserMessage('hi')], [], ['stream' => true, 'input' => []]);
+
+    expect($requestPayload)->not->toHaveKey('stream')
+        ->and($requestPayload['input'])->toBe([['role' => 'user', 'content' => 'hi']]);
+});
+
 test('stream yields refusal delta text as content and ends with Refusal', function () {
     $chunks = responsesStreamChunks([
         ['type' => 'response.refusal.delta', 'delta' => 'I cannot '],
