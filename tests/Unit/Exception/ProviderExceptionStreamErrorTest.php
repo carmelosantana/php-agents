@@ -54,3 +54,10 @@ test('streamError survives a message that is not valid UTF-8', function () {
         ->and($message)->toStartWith('api_error: bad ')
         ->and($message)->toEndWith(' bytes');
 });
+
+test('streamError replaces format characters used for Trojan-Source spoofing', function () {
+    $message = ProviderException::streamError('api_error', "safe\u{202E}txt.exe\u{200B}x\u{2066}a\u{2067}b\u{2068}c\u{2069}d\u{FEFF}")->getMessage();
+
+    expect(preg_match('/[\p{Cc}\p{Cf}]/u', $message))->toBe(0)
+        ->and($message)->toBe('api_error: safe txt.exe x a b c d');
+});
