@@ -31,6 +31,12 @@ final class ProviderException extends \RuntimeException
         return new self(sprintf('Provider request refused: %s', $reason), 0, $previous);
     }
 
+    /** An `error` event inside a provider's stream, as `type: message`. */
+    public static function streamError(string $type, string $message): self
+    {
+        return new self(sprintf('%s: %s', $type, $message));
+    }
+
     /** A 3xx answer that was not followed, refused with Symfony's status message. */
     public static function redirectRefused(RedirectionExceptionInterface $e): self
     {

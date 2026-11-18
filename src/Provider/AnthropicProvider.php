@@ -9,6 +9,7 @@ use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
+use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -63,56 +64,51 @@ final class AnthropicProvider extends AbstractProvider
             'json' => $payload,
         ]));
 
-        // Accumulate tool use blocks across stream events. Anthropic sends:
-        //   content_block_start  → type: tool_use with id + name
-        //   content_block_delta  → type: input_json_delta with partial JSON
+        // Anthropic's stream, by the `type` field of each data payload:
+        //   message_start        → model and input (prompt) token usage
+        //   content_block_start  → opens the block at `index` (text, thinking, tool_use)
+        //   content_block_delta  → text_delta / thinking_delta are yielded as they arrive;
+        //                          input_json_delta accumulates the tool's arguments
         //   content_block_stop   → block finalized
-        //   message_delta        → stop_reason: tool_use when all blocks done
-        //
-        // Extended thinking blocks follow a similar pattern:
-        //   content_block_start  → type: thinking
-        //   content_block_delta  → type: thinking_delta with partial thinking text
-        //   content_block_delta  → type: signature_delta (ignored)
-        //   content_block_stop   → block finalized
-        /** @var array<int, array{id: string, name: string, arguments: string}> $pendingToolCalls */
-        $pendingToolCalls = [];
+        //   message_delta        → may repeat; carries stop_reason and cumulative output_tokens
+        //   message_stop         → end of message: exactly one terminal chunk is yielded
+        //   error                → thrown as a ProviderException
+        // A stream that ends before message_stop yields a terminal Error chunk.
+        /** @var array<int, array{type: string, id: string, name: string, json: string}> $blocks */
+        $blocks = [];
         $currentBlockIndex = -1;
-        $currentBlockType = '';
+        $model = $this->model;
+        $promptTokens = null;
+        $completionTokens = null;
+        $stopReason = null;
 
         $parser = new SseStreamParser($this->httpClient, $response);
 
         foreach ($parser->events() as $json) {
-            if (!isset($json['type'])) {
-                continue;
-            }
-
-            $eventType = $json['type'];
+            $eventType = $json['type'] ?? null;
 
             if ($eventType === 'content_block_start') {
                 $currentBlockIndex = $json['index'] ?? 0;
                 $block = $json['content_block'] ?? [];
-                $currentBlockType = $block['type'] ?? 'text';
-
-                if ($currentBlockType === 'tool_use') {
-                    $pendingToolCalls[$currentBlockIndex] = [
-                        'id' => $block['id'] ?? '',
-                        'name' => $block['name'] ?? '',
-                        'arguments' => '',
-                    ];
-                }
+                $blocks[$currentBlockIndex] = [
+                    'type' => $block['type'] ?? 'text',
+                    'id' => $block['id'] ?? '',
+                    'name' => $block['name'] ?? '',
+                    'json' => '',
+                ];
             } elseif ($eventType === 'content_block_delta') {
                 $delta = $json['delta'] ?? [];
                 $index = $json['index'] ?? $currentBlockIndex;
                 $deltaType = $delta['type'] ?? '';
 
-                if ($deltaType === 'input_json_delta' && isset($pendingToolCalls[$index])) {
-                    $pendingToolCalls[$index]['arguments'] .= $delta['partial_json'] ?? '';
+                if ($deltaType === 'input_json_delta' && isset($blocks[$index])) {
+                    $blocks[$index]['json'] .= $delta['partial_json'] ?? '';
                 } elseif ($deltaType === 'thinking_delta' && isset($delta['thinking'])) {
                     yield new Response(
                         content: '',
                         finishReason: ProviderFinishReason::Stop,
                         toolCalls: [],
-                        model: $this->model,
+                        model: $model,
                         reasoning: $delta['thinking'],
                     );
                 } elseif ($deltaType === 'text_delta' && isset($delta['text'])) {
@@ -120,63 +116,118 @@ final class AnthropicProvider extends AbstractProvider
                         content: $delta['text'],
                         finishReason: ProviderFinishReason::Stop,
                         toolCalls: [],
-                        model: $this->model,
+                        model: $model,
                     );
                 }
+            } elseif ($eventType === 'message_start') {
+                $model = $json['message']['model'] ?? $model;
+                $promptTokens = $json['message']['usage']['input_tokens'] ?? $promptTokens;
             } elseif ($eventType === 'message_delta') {
-                $stopReason = $json['delta']['stop_reason'] ?? null;
+                $stopReason = $json['delta']['stop_reason'] ?? $stopReason;
+                $completionTokens = $json['usage']['output_tokens'] ?? $completionTokens;
+            } elseif ($eventType === 'message_stop') {
+                yield $this->streamTerminal($stopReason, $blocks, $model, $promptTokens, $completionTokens);
 
-                $usage = null;
-                if (isset($json['usage'])) {
-                    $usage = new Usage(
-                        promptTokens: 0,
-                        completionTokens: $json['usage']['output_tokens'] ?? 0,
-                        totalTokens: $json['usage']['output_tokens'] ?? 0,
-                    );
-                }
-
-                if ($stopReason === 'tool_use' && !empty($pendingToolCalls)) {
-                    $toolCalls = [];
-                    foreach ($pendingToolCalls as $tc) {
-                        $toolCalls[] = new ToolCall(
-                            id: $tc['id'],
-                            name: $tc['name'],
-                            arguments: json_decode($tc['arguments'], true) ?? [],
-                        );
-                    }
-                    $pendingToolCalls = [];
-
-                    yield new Response(
-                        content: '',
-                        finishReason: ProviderFinishReason::ToolUse,
-                        toolCalls: $toolCalls,
-                        model: $this->model,
-                        usage: $usage,
-                    );
-                } elseif ($stopReason === 'end_turn' || $stopReason === 'max_tokens') {
-                    yield new Response(
-                        content: '',
-                        finishReason: $stopReason === 'max_tokens' ? ProviderFinishReason::MaxTokens : ProviderFinishReason::Stop,
-                        toolCalls: [],
-                        model: $this->model,
-                        usage: $usage,
-                    );
-                }
-            } elseif ($eventType === 'message_start' && isset($json['message']['usage'])) {
-                // Initial usage data (input tokens)
-                yield new Response(
-                    content: '',
-                    finishReason: ProviderFinishReason::Stop,
-                    toolCalls: [],
-                    model: $json['message']['model'] ?? $this->model,
-                    usage: new Usage(
-                        promptTokens: $json['message']['usage']['input_tokens'] ?? 0,
-                        completionTokens: 0,
-                        totalTokens: $json['message']['usage']['input_tokens'] ?? 0,
-                    ),
+                return;
+            } elseif ($eventType === 'error') {
+                throw ProviderException::streamError(
+                    (string) ($json['error']['type'] ?? 'error'),
+                    (string) ($json['error']['message'] ?? 'unknown stream error'),
                 );
             }
         }
+
+        // EOF before message_stop: the message is incomplete, whatever arrived.
+        yield $this->streamTerminal(null, [], $model, $promptTokens, $completionTokens);
+    }
+
+    /**
+     * The single chunk that ends a stream. No stop reason means the message
+     * did not finish (Error). Tool calls are emitted only for ToolUse, and only
+     * when every tool's arguments decode to a JSON object; otherwise Error.
+     *
+     * @param array<int, array{type: string, id: string, name: string, json: string}> $blocks
+     */
+    private function streamTerminal(?string $stopReason, array $blocks, string $model, ?int $promptTokens, ?int $completionTokens): Response
+    {
+        $finishReason = $stopReason === null ? ProviderFinishReason::Error : $this->mapStopReason($stopReason);
+        $toolCalls = [];
+
+        if ($finishReason === ProviderFinishReason::ToolUse) {
+            foreach ($blocks as $block) {
+                if ($block['type'] !== 'tool_use') {
+                    continue;
+                }
+
+                $arguments = $this->decodeToolArguments($block['json']);
+                if ($arguments === null) {
+                    $finishReason = ProviderFinishReason::Error;
+                    $toolCalls = [];
+                    break;
+                }
+
+                $toolCalls[] = new ToolCall(id: $block['id'], name: $block['name'], arguments: $arguments);
+            }
+        }
+
+        $usage = null;
+        if ($promptTokens !== null || $completionTokens !== null) {
+            $usage = new Usage(
+                promptTokens: $promptTokens ?? 0,
+                completionTokens: $completionTokens ?? 0,
+                totalTokens: ($promptTokens ?? 0) + ($completionTokens ?? 0),
+            );
+        }
+
+        return new Response(
+            content: '',
+            finishReason: $finishReason,
+            toolCalls: $toolCalls,
+            model: $model,
+            usage: $usage,
+        );
+    }
+
+    /**
+     * Decode a tool's accumulated `partial_json`. An empty string is `{}`;
+     * anything that is not a JSON object (truncated, array, scalar) is null.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function decodeToolArguments(string $json): ?array
+    {
+        if ($json === '') {
+            return [];
+        }
+
+        if (!json_decode($json) instanceof \stdClass) {
+            return null;
+        }
+
+        /** @var array<string, mixed> */
+        return json_decode($json, true);
+    }
+
+    private function mapStopReason(?string $stopReason): ProviderFinishReason
+    {
+        return match ($stopReason) {
+            'end_turn', 'stop_sequence' => ProviderFinishReason::Stop,
+            'tool_use' => ProviderFinishReason::ToolUse,
+            'max_tokens' => ProviderFinishReason::MaxTokens,
+            'refusal' => ProviderFinishReason::Refusal,
+            'pause_turn' => ProviderFinishReason::PauseTurn,
+            'model_context_window_exceeded' => ProviderFinishReason::ContextWindowExceeded,
+            default => $this->unknownStopReason($stopReason),
+        };
+    }
+
+    private function unknownStopReason(?string $stopReason): ProviderFinishReason
+    {
+        if ($stopReason !== null) {
+            $this->logger?->debug('Unknown Anthropic stop_reason {stop_reason}; treating it as stop', ['stop_reason' => $stopReason]);
+        }
+
+        return ProviderFinishReason::Stop;
     }
 
     public function structured(array $messages, string $schema, array $options = []): mixed
@@ -511,12 +562,7 @@ final class AnthropicProvider extends AbstractProvider
             }
         }
 
-        $finishReason = match ($data['stop_reason'] ?? 'end_turn') {
-            'end_turn' => ProviderFinishReason::Stop,
-            'tool_use' => ProviderFinishReason::ToolUse,
-            'max_tokens' => ProviderFinishReason::MaxTokens,
-            default => ProviderFinishReason::Stop,
-        };
+        $finishReason = $this->mapStopReason($data['stop_reason'] ?? null);
 
         $usage = null;
         if (isset($data['usage'])) {

@@ -479,6 +479,7 @@ test('stream yields reasoning Response chunks for thinking_delta events', functi
         "data: " . json_encode(['type' => 'content_block_delta', 'index' => 1, 'delta' => ['type' => 'text_delta', 'text' => 'Answer.']]) . "\n\n",
         "data: " . json_encode(['type' => 'content_block_stop', 'index' => 1]) . "\n\n",
         "data: " . json_encode(['type' => 'message_delta', 'delta' => ['stop_reason' => 'end_turn'], 'usage' => ['output_tokens' => 20]]) . "\n\n",
+        "data: " . json_encode(['type' => 'message_stop']) . "\n\n",
     ]);
 
     $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
@@ -498,6 +499,7 @@ test('stream thinking_delta chunks have empty content', function () {
     $sseData = implode('', [
         "data: " . json_encode(['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'thinking_delta', 'thinking' => 'thinking...']]) . "\n\n",
         "data: " . json_encode(['type' => 'message_delta', 'delta' => ['stop_reason' => 'end_turn'], 'usage' => ['output_tokens' => 5]]) . "\n\n",
+        "data: " . json_encode(['type' => 'message_stop']) . "\n\n",
     ]);
 
     $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
@@ -516,7 +518,8 @@ test('stream keeps stream true and the conversation when options try to override
     $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
         $requestPayload = json_decode($options['body'], true);
         return new MockResponse(
-            'data: ' . json_encode(['type' => 'message_delta', 'delta' => ['stop_reason' => 'end_turn']]) . "\n\n",
+            'data: ' . json_encode(['type' => 'message_delta', 'delta' => ['stop_reason' => 'end_turn']]) . "\n\n"
+            . 'data: ' . json_encode(['type' => 'message_stop']) . "\n\n",
             ['http_code' => 200],
         );
     });
@@ -533,7 +536,8 @@ test('stream merges options into the payload', function () {
     $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
         $requestPayload = json_decode($options['body'], true);
         return new MockResponse(
-            'data: ' . json_encode(['type' => 'message_delta', 'delta' => ['stop_reason' => 'end_turn']]) . "\n\n",
+            'data: ' . json_encode(['type' => 'message_delta', 'delta' => ['stop_reason' => 'end_turn']]) . "\n\n"
+            . 'data: ' . json_encode(['type' => 'message_stop']) . "\n\n",
             ['http_code' => 200],
         );
     });
@@ -565,4 +569,252 @@ test('chat keeps the conversation and stays non-streaming when options try to ov
 
     expect($requestPayload)->not->toHaveKey('stream')
         ->and($requestPayload['messages'])->toBe([['role' => 'user', 'content' => 'Hi']]);
+});
+
+/**
+ * Helper: build a mock Anthropic SSE response from event payloads.
+ *
+ * @param array<string, mixed> ...$events
+ */
+function anthropicSse(array ...$events): MockResponse
+{
+    $body = '';
+    foreach ($events as $event) {
+        $body .= 'event: ' . $event['type'] . "\n" . 'data: ' . json_encode($event) . "\n\n";
+    }
+
+    return new MockResponse($body, ['http_code' => 200]);
+}
+
+/**
+ * @param array<string, mixed> ...$events
+ * @return CarmeloSantana\PHPAgents\Provider\Response[]
+ */
+function streamAnthropic(array ...$events): array
+{
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: new MockHttpClient([anthropicSse(...$events)]));
+
+    return array_values(iterator_to_array($provider->stream([new UserMessage('hi')]), false));
+}
+
+function anthropicMessageStart(int $inputTokens = 12): array
+{
+    return ['type' => 'message_start', 'message' => ['model' => 'claude-test', 'usage' => ['input_tokens' => $inputTokens, 'output_tokens' => 1]]];
+}
+
+function anthropicText(string $text, int $index = 0): array
+{
+    return ['type' => 'content_block_delta', 'index' => $index, 'delta' => ['type' => 'text_delta', 'text' => $text]];
+}
+
+function anthropicStopDelta(?string $stopReason, ?int $outputTokens = null): array
+{
+    $event = ['type' => 'message_delta', 'delta' => ['stop_reason' => $stopReason]];
+    if ($outputTokens !== null) {
+        $event['usage'] = ['output_tokens' => $outputTokens];
+    }
+
+    return $event;
+}
+
+function anthropicToolStart(int $index, string $id = 'toolu_1', string $name = 'lookup'): array
+{
+    return ['type' => 'content_block_start', 'index' => $index, 'content_block' => ['type' => 'tool_use', 'id' => $id, 'name' => $name, 'input' => []]];
+}
+
+function anthropicToolJson(int $index, string $partialJson): array
+{
+    return ['type' => 'content_block_delta', 'index' => $index, 'delta' => ['type' => 'input_json_delta', 'partial_json' => $partialJson]];
+}
+
+const ANTHROPIC_MESSAGE_STOP = ['type' => 'message_stop'];
+
+test('chat maps stop_reason', function (?string $stopReason, ProviderFinishReason $expected) {
+    $mockClient = new MockHttpClient([mockAnthropicResponse(['stop_reason' => $stopReason])]);
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    expect($provider->chat([new UserMessage('hi')])->finishReason)->toBe($expected);
+})->with(fn() => [
+    'end_turn' => ['end_turn', ProviderFinishReason::Stop],
+    'stop_sequence' => ['stop_sequence', ProviderFinishReason::Stop],
+    'tool_use' => ['tool_use', ProviderFinishReason::ToolUse],
+    'max_tokens' => ['max_tokens', ProviderFinishReason::MaxTokens],
+    'refusal' => ['refusal', ProviderFinishReason::Refusal],
+    'pause_turn' => ['pause_turn', ProviderFinishReason::PauseTurn],
+    'model_context_window_exceeded' => ['model_context_window_exceeded', ProviderFinishReason::ContextWindowExceeded],
+    'unknown value' => ['something_new', ProviderFinishReason::Stop],
+]);
+
+test('chat logs an unknown stop_reason at debug', function () {
+    $logger = new class extends Psr\Log\AbstractLogger {
+        /** @var array<int, array{0: mixed, 1: string, 2: array<mixed>}> */
+        public array $records = [];
+
+        public function log($level, string|\Stringable $message, array $context = []): void
+        {
+            $this->records[] = [$level, (string) $message, $context];
+        }
+    };
+    $mockClient = new MockHttpClient([mockAnthropicResponse(['stop_reason' => 'something_new'])]);
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient, logger: $logger);
+
+    $provider->chat([new UserMessage('hi')]);
+
+    expect($logger->records)->toHaveCount(1)
+        ->and($logger->records[0][0])->toBe(Psr\Log\LogLevel::DEBUG)
+        ->and($logger->records[0][2])->toBe(['stop_reason' => 'something_new']);
+});
+
+test('stream yields one terminal chunk at message_stop for a refusal, with output usage', function () {
+    $chunks = streamAnthropic(
+        anthropicMessageStart(12),
+        anthropicText('Sorry'),
+        anthropicStopDelta('refusal', 7),
+        ANTHROPIC_MESSAGE_STOP,
+    );
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[0]->content)->toBe('Sorry')
+        ->and($chunks[0]->finishReason)->toBe(ProviderFinishReason::Stop)
+        ->and($chunks[0]->usage)->toBeNull()
+        ->and($chunks[1]->content)->toBe('')
+        ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::Refusal)
+        ->and($chunks[1]->toolCalls)->toBe([])
+        ->and($chunks[1]->model)->toBe('claude-test')
+        ->and($chunks[1]->usage->promptTokens)->toBe(12)
+        ->and($chunks[1]->usage->completionTokens)->toBe(7)
+        ->and($chunks[1]->usage->totalTokens)->toBe(19);
+});
+
+test('stream accumulates repeated message_delta events', function () {
+    $chunks = streamAnthropic(
+        anthropicMessageStart(3),
+        anthropicText('Hi'),
+        anthropicStopDelta(null, 4),
+        anthropicStopDelta('end_turn', 9),
+        ANTHROPIC_MESSAGE_STOP,
+    );
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::Stop)
+        ->and($chunks[1]->usage->promptTokens)->toBe(3)
+        ->and($chunks[1]->usage->completionTokens)->toBe(9);
+});
+
+test('stream keeps the last non-null stop_reason when a later delta has none', function () {
+    $chunks = streamAnthropic(
+        anthropicMessageStart(3),
+        anthropicStopDelta('max_tokens', 4),
+        anthropicStopDelta(null, 5),
+        ANTHROPIC_MESSAGE_STOP,
+    );
+
+    expect($chunks)->toHaveCount(1)
+        ->and($chunks[0]->finishReason)->toBe(ProviderFinishReason::MaxTokens)
+        ->and($chunks[0]->usage->completionTokens)->toBe(5);
+});
+
+test('stream yields the mapped reason at message_stop', function (string $stopReason, ProviderFinishReason $expected) {
+    $chunks = streamAnthropic(anthropicMessageStart(), anthropicText('x'), anthropicStopDelta($stopReason, 2), ANTHROPIC_MESSAGE_STOP);
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[1]->finishReason)->toBe($expected)
+        ->and($chunks[1]->toolCalls)->toBe([]);
+})->with(fn() => [
+    'pause_turn' => ['pause_turn', ProviderFinishReason::PauseTurn],
+    'stop_sequence' => ['stop_sequence', ProviderFinishReason::Stop],
+    'model_context_window_exceeded' => ['model_context_window_exceeded', ProviderFinishReason::ContextWindowExceeded],
+]);
+
+test('stream with message_stop and no stop_reason yields a terminal Error chunk', function () {
+    $chunks = streamAnthropic(anthropicMessageStart(), anthropicText('x'), ANTHROPIC_MESSAGE_STOP);
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::Error)
+        ->and($chunks[1]->toolCalls)->toBe([]);
+});
+
+test('stream that ends before message_stop yields a terminal Error chunk', function (array $events) {
+    $chunks = streamAnthropic(...$events);
+    $terminal = end($chunks);
+
+    expect(array_filter($chunks, fn($c) => $c->finishReason !== ProviderFinishReason::Stop))->toHaveCount(1)
+        ->and($terminal->finishReason)->toBe(ProviderFinishReason::Error)
+        ->and($terminal->toolCalls)->toBe([]);
+})->with(fn() => [
+    'EOF after text' => [[anthropicMessageStart(), anthropicText('partial')]],
+    'EOF after a tool_use start' => [[anthropicMessageStart(), anthropicToolStart(0), anthropicToolJson(0, '{"q":"a"}'), anthropicStopDelta('tool_use', 5)]],
+]);
+
+test('stream error event throws ProviderException with the API message', function (array $before) {
+    $events = [...$before, ['type' => 'error', 'error' => ['type' => 'overloaded_error', 'message' => 'Overloaded']]];
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: new MockHttpClient([anthropicSse(...$events)]));
+
+    $seen = [];
+    expect(function () use ($provider, &$seen) {
+        foreach ($provider->stream([new UserMessage('hi')]) as $chunk) {
+            $seen[] = $chunk;
+        }
+    })->toThrow(CarmeloSantana\PHPAgents\Exception\ProviderException::class, 'overloaded_error: Overloaded');
+
+    expect(array_filter($seen, fn($c) => $c->finishReason !== ProviderFinishReason::Stop))->toBe([]);
+})->with(fn() => [
+    'before text' => [[anthropicMessageStart()]],
+    'after text' => [[anthropicMessageStart(), anthropicText('Hello')]],
+]);
+
+test('stream with stop tool_use yields the tool calls on the terminal chunk', function () {
+    $chunks = streamAnthropic(
+        anthropicMessageStart(5),
+        anthropicToolStart(0, 'toolu_a', 'lookup'),
+        anthropicToolJson(0, '{"q":'),
+        anthropicToolJson(0, '"php"}'),
+        ['type' => 'content_block_stop', 'index' => 0],
+        anthropicToolStart(1, 'toolu_b', 'now'),
+        ['type' => 'content_block_stop', 'index' => 1],
+        anthropicStopDelta('tool_use', 11),
+        ANTHROPIC_MESSAGE_STOP,
+    );
+
+    expect($chunks)->toHaveCount(1)
+        ->and($chunks[0]->finishReason)->toBe(ProviderFinishReason::ToolUse)
+        ->and($chunks[0]->usage->completionTokens)->toBe(11)
+        ->and($chunks[0]->toolCalls)->toHaveCount(2)
+        ->and($chunks[0]->toolCalls[0]->id)->toBe('toolu_a')
+        ->and($chunks[0]->toolCalls[0]->arguments)->toBe(['q' => 'php'])
+        ->and($chunks[0]->toolCalls[1]->name)->toBe('now')
+        ->and($chunks[0]->toolCalls[1]->arguments)->toBe([]);
+});
+
+test('stream with truncated tool JSON and stop tool_use yields Error and no tool calls', function (string $json) {
+    $chunks = streamAnthropic(
+        anthropicMessageStart(),
+        anthropicToolStart(0),
+        anthropicToolJson(0, $json),
+        anthropicStopDelta('tool_use', 4),
+        ANTHROPIC_MESSAGE_STOP,
+    );
+
+    expect($chunks)->toHaveCount(1)
+        ->and($chunks[0]->finishReason)->toBe(ProviderFinishReason::Error)
+        ->and($chunks[0]->toolCalls)->toBe([]);
+})->with(fn() => [
+    'truncated object' => ['{"q": "ph'],
+    'JSON array, not an object' => ['[1, 2]'],
+    'JSON scalar' => ['"text"'],
+]);
+
+test('stream that stops on max_tokens mid tool JSON yields MaxTokens and no tool calls', function () {
+    $chunks = streamAnthropic(
+        anthropicMessageStart(),
+        anthropicText('Let me look'),
+        anthropicToolStart(1),
+        anthropicToolJson(1, '{"q": "ph'),
+        anthropicStopDelta('max_tokens', 4),
+        ANTHROPIC_MESSAGE_STOP,
+    );
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::MaxTokens)
+        ->and($chunks[1]->toolCalls)->toBe([]);
 });
