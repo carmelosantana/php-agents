@@ -320,13 +320,81 @@ test('finish reason mapping: MAX_TOKENS', function () {
     expect($response->finishReason)->toBe(ProviderFinishReason::MaxTokens);
 });
 
-test('finish reason mapping: SAFETY', function () {
+dataset('gemini finish reasons', [
+    'STOP' => ['STOP', ProviderFinishReason::Stop],
+    'MAX_TOKENS' => ['MAX_TOKENS', ProviderFinishReason::MaxTokens],
+    'SAFETY' => ['SAFETY', ProviderFinishReason::ContentFilter],
+    'RECITATION' => ['RECITATION', ProviderFinishReason::ContentFilter],
+    'PROHIBITED_CONTENT' => ['PROHIBITED_CONTENT', ProviderFinishReason::ContentFilter],
+    'BLOCKLIST' => ['BLOCKLIST', ProviderFinishReason::ContentFilter],
+    'SPII' => ['SPII', ProviderFinishReason::ContentFilter],
+    'IMAGE_SAFETY' => ['IMAGE_SAFETY', ProviderFinishReason::ContentFilter],
+    'MALFORMED_FUNCTION_CALL' => ['MALFORMED_FUNCTION_CALL', ProviderFinishReason::Error],
+    'UNEXPECTED_TOOL_CALL' => ['UNEXPECTED_TOOL_CALL', ProviderFinishReason::Error],
+    'TOO_MANY_TOOL_CALLS' => ['TOO_MANY_TOOL_CALLS', ProviderFinishReason::Error],
+    'MISSING_THOUGHT_SIGNATURE' => ['MISSING_THOUGHT_SIGNATURE', ProviderFinishReason::Error],
+    'null' => [null, ProviderFinishReason::Stop],
+    'unknown' => ['OTHER', ProviderFinishReason::Stop],
+]);
+
+test('finish reason mapping covers every finishReason', function (?string $raw, ProviderFinishReason $expected) {
     $mockClient = new MockHttpClient([
-        mockGeminiResponse(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => '']]], 'finishReason' => 'SAFETY']]]),
+        mockGeminiResponse(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => '']]], 'finishReason' => $raw]]]),
     ]);
 
     $response = (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat([new UserMessage('hi')]);
-    expect($response->finishReason)->toBe(ProviderFinishReason::Error);
+    expect($response->finishReason)->toBe($expected);
+})->with('gemini finish reasons');
+
+test('a blocked prompt with no candidates maps to ContentFilter', function () {
+    $mockClient = new MockHttpClient([
+        mockGeminiResponse(['candidates' => [], 'promptFeedback' => ['blockReason' => 'OTHER']]),
+    ]);
+
+    $response = (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat([new UserMessage('hi')]);
+    expect($response->finishReason)->toBe(ProviderFinishReason::ContentFilter)
+        ->and($response->content)->toBe('');
+});
+
+test('ContentFilter and Error are not overwritten by ToolUse and emit no tool calls', function (string $raw, ProviderFinishReason $expected) {
+    $mockClient = new MockHttpClient([
+        mockGeminiResponse(['candidates' => [[
+            'content' => ['role' => 'model', 'parts' => [['functionCall' => ['name' => 'get_weather', 'args' => ['city' => 'NYC']]]]],
+            'finishReason' => $raw,
+        ]]]),
+    ]);
+
+    $response = (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat([new UserMessage('hi')]);
+    expect($response->finishReason)->toBe($expected)
+        ->and($response->toolCalls)->toBe([]);
+})->with([
+    'MALFORMED_FUNCTION_CALL' => ['MALFORMED_FUNCTION_CALL', ProviderFinishReason::Error],
+    'SAFETY' => ['SAFETY', ProviderFinishReason::ContentFilter],
+]);
+
+test('stream yields ContentFilter for a blocked prompt with no candidates', function () {
+    $sseData = 'data: ' . json_encode(['promptFeedback' => ['blockReason' => 'SAFETY'], 'usageMetadata' => ['promptTokenCount' => 3, 'totalTokenCount' => 3]]) . "\n\n";
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $chunks = iterator_to_array((new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->stream([new UserMessage('hi')]), false);
+
+    expect($chunks)->toHaveCount(1)
+        ->and($chunks[0]->finishReason)->toBe(ProviderFinishReason::ContentFilter)
+        ->and($chunks[0]->toolCalls)->toBe([]);
+});
+
+test('stream MALFORMED_FUNCTION_CALL alongside a functionCall part yields Error and no tool calls', function () {
+    $sseData = 'data: ' . json_encode(['candidates' => [[
+        'content' => ['role' => 'model', 'parts' => [['functionCall' => ['name' => 'get_weather', 'args' => ['city' => 'NYC']]]]],
+        'finishReason' => 'MALFORMED_FUNCTION_CALL',
+    ]]]) . "\n\n";
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $chunks = iterator_to_array((new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->stream([new UserMessage('hi')]), false);
+
+    expect($chunks)->toHaveCount(1)
+        ->and($chunks[0]->finishReason)->toBe(ProviderFinishReason::Error)
+        ->and($chunks[0]->toolCalls)->toBe([]);
 });
 
 test('usage metadata is parsed correctly', function () {

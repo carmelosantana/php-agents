@@ -124,7 +124,7 @@ final class GeminiProvider extends AbstractProvider
         foreach ($parser->events() as $json) {
             $candidate = $json['candidates'][0] ?? [];
             $parts = $candidate['content']['parts'] ?? [];
-            $finishReason = $this->mapGeminiFinishReason($candidate['finishReason'] ?? null);
+            $finishReason = $this->finishReasonOf($json);
 
             $text = '';
             $reasoning = '';
@@ -162,6 +162,11 @@ final class GeminiProvider extends AbstractProvider
                     model: $this->model,
                     reasoning: $reasoning,
                 );
+            }
+
+            // A blocked or failed candidate emits no tool calls.
+            if ($this->isBlockedOrFailed($finishReason)) {
+                $toolCalls = [];
             }
 
             if (!empty($toolCalls)) {
@@ -952,10 +957,13 @@ final class GeminiProvider extends AbstractProvider
             }
         }
 
-        $finishReason = $this->mapGeminiFinishReason($candidate['finishReason'] ?? null);
+        $finishReason = $this->finishReasonOf($data);
 
-        // Override finish reason if tool calls are present
-        if (!empty($toolCalls)) {
+        // Tool calls make it ToolUse, unless the candidate was blocked or
+        // failed: then no tool calls are emitted.
+        if ($this->isBlockedOrFailed($finishReason)) {
+            $toolCalls = [];
+        } elseif (!empty($toolCalls)) {
             $finishReason = ProviderFinishReason::ToolUse;
         }
 
@@ -970,6 +978,26 @@ final class GeminiProvider extends AbstractProvider
     }
 
     /**
+     * The finish reason of a response (or stream chunk): a prompt blocked by
+     * `promptFeedback.blockReason` has no candidates and is ContentFilter.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function finishReasonOf(array $data): ProviderFinishReason
+    {
+        if (empty($data['candidates']) && isset($data['promptFeedback']['blockReason'])) {
+            return ProviderFinishReason::ContentFilter;
+        }
+
+        return $this->mapGeminiFinishReason($data['candidates'][0]['finishReason'] ?? null);
+    }
+
+    private function isBlockedOrFailed(ProviderFinishReason $reason): bool
+    {
+        return $reason === ProviderFinishReason::ContentFilter || $reason === ProviderFinishReason::Error;
+    }
+
+    /**
      * Map Gemini finish reasons to ProviderFinishReason enum.
      */
     private function mapGeminiFinishReason(?string $reason): ProviderFinishReason
@@ -977,8 +1005,8 @@ final class GeminiProvider extends AbstractProvider
         return match ($reason) {
             'STOP' => ProviderFinishReason::Stop,
             'MAX_TOKENS' => ProviderFinishReason::MaxTokens,
-            'SAFETY' => ProviderFinishReason::Error,
-            'RECITATION' => ProviderFinishReason::Error,
+            'SAFETY', 'RECITATION', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'SPII', 'IMAGE_SAFETY' => ProviderFinishReason::ContentFilter,
+            'MALFORMED_FUNCTION_CALL', 'UNEXPECTED_TOOL_CALL', 'TOO_MANY_TOOL_CALLS', 'MISSING_THOUGHT_SIGNATURE' => ProviderFinishReason::Error,
             default => ProviderFinishReason::Stop,
         };
     }
