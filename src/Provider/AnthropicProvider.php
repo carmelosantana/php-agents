@@ -345,47 +345,53 @@ final class AnthropicProvider extends AbstractProvider
 
     public function structured(array $messages, string $schema, array $options = []): mixed
     {
-        // Use Anthropic's tool_use trick: define the schema as a tool,
-        // force the model to call it, then extract the structured data.
+        // Native structured outputs: the model answers with one text block of
+        // JSON matching the schema. A forced tool_choice returns a 400 on
+        // current models, so none is sent, not even the caller's.
         $schemaData = json_decode($schema, true);
-        if ($schemaData === null) {
+        if (!is_array($schemaData)) {
             return $this->chat($messages, [], $options);
         }
 
-        $toolName = $schemaData['name'] ?? 'structured_output';
-        $description = $schemaData['description'] ?? 'Generate structured output matching the schema.';
-        $inputSchema = $schemaData['schema'] ?? $schemaData['parameters'] ?? $schemaData;
+        $outputSchema = $schemaData['schema'] ?? $schemaData['parameters'] ?? $schemaData;
 
-        // Ensure the schema has type: object at root
-        if (!isset($inputSchema['type'])) {
-            $inputSchema['type'] = 'object';
+        if (!isset($outputSchema['type'])) {
+            $outputSchema['type'] = 'object';
         }
 
-        $payload = $this->buildPayload($messages, [], $options);
-        $payload['tools'] = [
-            [
-                'name' => $toolName,
-                'description' => $description,
-                'input_schema' => $inputSchema,
-            ],
+        // Structured outputs need every object closed and fully required.
+        // Normalize when that does not change what the schema accepts;
+        // otherwise send it as written.
+        if (StrictSchemaNormalizer::qualifies($outputSchema)) {
+            $outputSchema = StrictSchemaNormalizer::normalize($outputSchema);
+        }
+
+        unset($options['tool_choice']);
+        $outputConfig = is_array($options['output_config'] ?? null) ? $options['output_config'] : [];
+        $options['output_config'] = [
+            ...$outputConfig,
+            'format' => ['type' => 'json_schema', 'schema' => $outputSchema],
         ];
-        $payload['tool_choice'] = ['type' => 'tool', 'name' => $toolName];
 
         $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->requestLimits->apply([
             'headers' => $this->headers(),
-            'json' => $payload,
+            'json' => $this->buildPayload($messages, [], $options),
         ]));
 
         $data = $this->decodeResponse($response);
 
-        // Extract the structured data from the tool_use content block
-        foreach ($data['content'] ?? [] as $block) {
-            if (($block['type'] ?? '') === 'tool_use' && ($block['name'] ?? '') === $toolName) {
-                return $block['input'] ?? [];
+        if ($this->mapStopReason($data['stop_reason'] ?? null) === ProviderFinishReason::Stop) {
+            foreach ($data['content'] ?? [] as $block) {
+                if (($block['type'] ?? '') === 'text') {
+                    $decoded = json_decode($block['text'] ?? '', true);
+                    if (is_array($decoded)) {
+                        return $decoded;
+                    }
+                    break;
+                }
             }
         }
 
-        // Fallback: return the full parsed response
         return $this->parseResponse($data);
     }
 

@@ -54,3 +54,18 @@ test('the documented default model is the constructor default', function () {
     expect($model->getName())->toBe('model')
         ->and($doc)->toContain(sprintf("| `model` | `string` | `'%s'` |", $model->getDefaultValue()));
 });
+
+// structured() uses native structured outputs: a forced tool_choice returns a 400 on current models.
+
+test('the Anthropic structured output section describes native structured outputs', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../docs/PROVIDERS.md');
+    $anthropic = substr($doc, (int) strpos($doc, '## AnthropicProvider'));
+    $start = (int) strpos($anthropic, '### Structured Output');
+    $section = substr($anthropic, $start, (int) strpos($anthropic, '### Model List') - $start);
+
+    expect($section)->toContain('native structured outputs')
+        ->and($section)->toContain("`output_config: {format: {type: 'json_schema', schema: ...}}`")
+        ->and($section)->toContain('`additionalProperties: false`')
+        ->and($section)->not->toContain('tool_choice')
+        ->and($section)->not->toContain('tool-use trick');
+});

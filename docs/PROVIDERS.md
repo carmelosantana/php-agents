@@ -309,7 +309,7 @@ Other providers ignore content blocks: `AssistantMessage::toArray()` does not in
 
 ### Structured Output
 
-Uses Anthropic's tool-use trick: defines the schema as a tool, forces the model to use it, and extracts the structured result:
+Uses Anthropic's native structured outputs: the request sends `output_config: {format: {type: 'json_schema', schema: ...}}`, and the model answers with one text block of JSON that matches the schema. `structured()` decodes that block and returns the array. Structured outputs need every object closed with `additionalProperties: false` and every property listed in `required`, so a schema that can be closed without changing what it accepts is rewritten that way (optional properties become nullable); any other schema is sent as written. Other `output_config` keys you pass in `$options`, such as `effort`, are kept. No tools are forced: a forced tool choice returns a 400 on current models, so one passed in `$options` is dropped. If the finish reason is not `Stop` (for example a refusal or `max_tokens`), or the text is not a JSON object, `structured()` returns the `Response` instead:
 
 ```php
 $result = $provider->structured(

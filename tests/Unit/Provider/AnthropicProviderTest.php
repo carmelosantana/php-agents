@@ -10,6 +10,8 @@ use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
+use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\StrictSchemaNormalizer;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Symfony\Component\HttpClient\MockHttpClient;
@@ -363,31 +365,119 @@ test('finish reason mapping: max_tokens', function () {
     expect($response->finishReason)->toBe(ProviderFinishReason::MaxTokens);
 });
 
-test('structured output uses tool_use trick', function () {
-    $requestPayload = null;
-    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
-        $requestPayload = json_decode($options['body'], true);
-        return mockAnthropicResponse([
-            'content' => [
-                ['type' => 'tool_use', 'id' => 'toolu_1', 'name' => 'extract_data', 'input' => ['name' => 'Alice']],
-            ],
-            'stop_reason' => 'tool_use',
-        ]);
+/**
+ * Helper: a MockHttpClient that records the request payload and answers with the given body overrides.
+ *
+ * @param array<string, mixed> $overrides
+ */
+function structuredClient(?array &$payload, array $overrides): MockHttpClient
+{
+    return new MockHttpClient(function (string $method, string $url, array $options) use (&$payload, $overrides): MockResponse {
+        $payload = json_decode($options['body'], true);
+        return mockAnthropicResponse($overrides);
     });
+}
 
-    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: $mockClient);
+test('structured sends output_config.format and no forced tool_choice', function () {
+    $payload = null;
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
+        'content' => [['type' => 'text', 'text' => '{"name":"Alice"}']],
+    ]));
+    $inner = ['type' => 'object', 'properties' => ['name' => ['type' => 'string']]];
     $schema = json_encode([
         'name' => 'extract_data',
         'description' => 'Extract structured data',
-        'schema' => ['type' => 'object', 'properties' => ['name' => ['type' => 'string']]],
+        'schema' => $inner,
     ]);
 
-    $result = $provider->structured([new UserMessage('My name is Alice')], $schema);
+    $provider->structured([new UserMessage('My name is Alice')], $schema);
 
-    expect($requestPayload['tools'])->toHaveCount(1)
-        ->and($requestPayload['tools'][0]['name'])->toBe('extract_data')
-        ->and($requestPayload['tool_choice'])->toBe(['type' => 'tool', 'name' => 'extract_data'])
-        ->and($result)->toBe(['name' => 'Alice']);
+    expect($payload)->not->toHaveKey('tools')
+        ->and($payload)->not->toHaveKey('tool_choice')
+        ->and($payload['output_config'])->toBe(['format' => [
+            'type' => 'json_schema',
+            'schema' => StrictSchemaNormalizer::normalize($inner),
+        ]])
+        ->and($payload['output_config']['format']['schema']['additionalProperties'])->toBeFalse()
+        ->and($payload['output_config']['format']['schema']['required'])->toBe(['name']);
+});
+
+test('structured sends a schema that does not qualify unchanged, with root type object', function () {
+    $payload = null;
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
+        'content' => [['type' => 'text', 'text' => '{}']],
+    ]));
+    $schema = ['properties' => ['tags' => ['type' => 'object', 'additionalProperties' => ['type' => 'string']]]];
+
+    $provider->structured([new UserMessage('hi')], json_encode($schema));
+
+    expect($payload['output_config']['format']['schema'])->toBe([...$schema, 'type' => 'object']);
+});
+
+test('structured drops a caller tool_choice and keeps caller tools', function () {
+    $payload = null;
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
+        'content' => [['type' => 'text', 'text' => '{}']],
+    ]));
+    $tools = [['name' => 'lookup', 'input_schema' => ['type' => 'object']]];
+
+    $provider->structured([new UserMessage('hi')], '{"type":"object"}', [
+        'tools' => $tools,
+        'tool_choice' => ['type' => 'any'],
+    ]);
+
+    expect($payload)->not->toHaveKey('tool_choice')
+        ->and($payload['tools'])->toBe($tools);
+});
+
+test('structured returns the decoded JSON object', function () {
+    $payload = null;
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
+        'content' => [['type' => 'text', 'text' => '{"name":"Alice","age":30}']],
+    ]));
+
+    $result = $provider->structured([new UserMessage('My name is Alice')], '{"type":"object"}');
+
+    expect($result)->toBe(['name' => 'Alice', 'age' => 30]);
+});
+
+test('structured keeps caller output_config.effort', function () {
+    $payload = null;
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
+        'content' => [['type' => 'text', 'text' => '{}']],
+    ]));
+
+    $provider->structured([new UserMessage('hi')], '{"type":"object"}', [
+        'output_config' => ['effort' => 'low', 'format' => ['type' => 'text']],
+    ]);
+
+    expect($payload['output_config']['effort'])->toBe('low')
+        ->and($payload['output_config']['format']['type'])->toBe('json_schema');
+});
+
+test('structured falls back to Response on refusal', function () {
+    $payload = null;
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
+        'content' => [['type' => 'text', 'text' => '{"partial":true}']],
+        'stop_reason' => 'refusal',
+    ]));
+
+    $result = $provider->structured([new UserMessage('hi')], '{"type":"object"}');
+
+    expect($result)->toBeInstanceOf(Response::class)
+        ->and($result->finishReason)->toBe(ProviderFinishReason::Refusal);
+});
+
+test('structured falls back to Response when the text is not a JSON object', function () {
+    $payload = null;
+    $provider = new AnthropicProvider(apiKey: 'test-key', httpClient: structuredClient($payload, [
+        'content' => [['type' => 'text', 'text' => 'not json']],
+    ]));
+
+    $result = $provider->structured([new UserMessage('hi')], '{"type":"object"}');
+
+    expect($result)->toBeInstanceOf(Response::class)
+        ->and($result->content)->toBe('not json');
 });
 
 test('tool result messages serialize as tool_result blocks and ignore tool result metadata', function () {
