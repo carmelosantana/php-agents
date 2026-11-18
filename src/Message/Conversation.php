@@ -77,18 +77,23 @@ final class Conversation
 
     /**
      * Estimate total tokens (rough: 1 token ≈ 4 chars).
+     *
+     * Structured content and tool calls are measured as JSON; invalid UTF-8 is substituted
+     * rather than dropping the whole message from the estimate.
      */
     public function estimateTokens(): int
     {
+        $flags = \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR;
         $chars = 0;
         foreach ($this->messages as $msg) {
             $content = $msg->content();
-            $chars += is_string($content) ? strlen($content) : strlen(json_encode($content) ?: '');
+            $chars += is_string($content) ? strlen($content) : strlen(json_encode($content, $flags) ?: '');
 
             // Account for tool call schemas in assistant messages
             if (!empty($msg->toolCalls())) {
                 $chars += strlen(json_encode(
                     array_map(fn($tc) => ['id' => $tc->id, 'name' => $tc->name, 'arguments' => $tc->arguments], $msg->toolCalls()),
+                    $flags,
                 ) ?: '');
             }
         }

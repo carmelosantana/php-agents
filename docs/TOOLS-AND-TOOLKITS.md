@@ -422,6 +422,27 @@ A returned string denies the call, and the agent turns it into an error tool res
 is `Denied by policy: ` followed by that string, so the model reads it (`src/Agent/AbstractAgent.php`;
 `grep -rn 'Denied by policy' src/` finds the one site). Returning `true` lets the call through.
 
+The policy also sees the built-in `done` call, as `shouldExecute('done', $arguments)`, before it
+can finish the run. Only the first `done` in a response is put to the policy; any later `done` in
+that response gets `Only one done call is allowed per response.` without a policy call. An allowed
+`done` is then validated: unknown keys are refused as for any tool (`Unknown parameters: …`) and
+`Parameter "response" must be a string.` is returned for a missing or non-string `response`. An
+allowed, valid `done` finishes the run with `AgentFinishReason::Done` and the other calls in that
+response are not run. A denied or malformed `done` gets its error result, the other calls run as
+usual, and the loop continues. This authorizes the `done` call; it is not output moderation: a
+plain-text completion and the reasoning fallback finish the run without going through the policy.
+
+### Limiting the tools a model sees
+
+`$agent->setMaxTools(n)` caps the tools sent to the provider at `n`, `done` included; tools from
+`tools()` come before toolkit tools. A tool that `maxTools` hides is not executed either: if the
+model names it anyway, the agent answers `Unknown tool: <name>`, the same as for a tool that does
+not exist, after the execution policy has seen the call. A discovery tool in your host (a tool
+search) can make a hidden tool executable for the rest of the run by implementing
+`ToolGrantInterface`; its `grantedToolNames()` is read after a successful call. To execute every
+registered tool regardless of the cap, pass `runLimits: new RunLimits(executeUnadvertisedTools: true)`.
+See [Run Limits](AGENTS.md#run-limits) for the tool-call caps.
+
 ## MCP servers
 
 `CarmeloSantana\PHPAgents\Mcp` is a client for remote [Model Context Protocol](https://modelcontextprotocol.io)
@@ -678,6 +699,15 @@ sends, so the metadata is for your code and your logs, not for the model.
 
 A result the server marked `isError` comes back as an error `ToolResult` with the error code
 `mcp_tool_error`, not as an exception — the model is meant to read it and try something else.
+
+Results are redacted too. Before the parts are joined and cut, `callTool()` replaces every
+configured `McpServer::$headers` value and every session id it has held with `[redacted]`, as it
+does for exception messages, and then credential-shaped strings
+(`UntrustedText::redactSecrets()`), so a server that echoes the `Authorization` header back does
+not hand the token to the model. The same runs over every string key and value in
+`$result->metadata['mcp']`, the blocks in `content` and `structuredContent` included, and
+`bytes` is the size of the redacted text. An opaque credential that the server transforms, or
+that is neither configured nor credential-shaped, cannot be redacted.
 A JSON-RPC error is the other case, and that throws `McpRpcException`.
 
 ### Asking a person before a destructive call

@@ -44,7 +44,7 @@ final class ResearchAgent extends AbstractAgent
 ```php
 $agent = new ResearchAgent(
     provider: $provider,                    // Required: ProviderInterface
-    maxIterations: 25,                      // Max tool-use loops (default: 25)
+    maxIter: 25,                            // Max tool-use loops (default: 25)
     executionPolicy: new MyPolicy(),        // Optional: tool gating
     cancellationToken: $token,              // Optional: cooperative cancellation
     pendingInputProvider: $inputProvider,   // Optional: external input injection
@@ -52,13 +52,15 @@ $agent = new ResearchAgent(
     safetyMarginPercent: 20,                // Optional: pruning safety margin
     budgetExitThreshold: 0.85,              // Optional: graceful wrap-up threshold
     budgetExitWrapUpIterations: 2,          // Optional: extra iterations after warning
+    providerOptions: ['max_tokens' => 8192], // Optional: provider-specific request options
+    runLimits: new RunLimits(maxToolCallsPerRun: 50), // Optional: tool-call caps per turn and per run
 );
 ```
 
 | Parameter | Type | Default | Purpose |
 |-----------|------|---------|---------|
 | `provider` | `ProviderInterface` | — | LLM to use for reasoning |
-| `maxIterations` | `int` | `25` | Safety limit on tool-use loops |
+| `maxIter` | `int` | `25` | Safety limit on tool-use loops |
 | `executionPolicy` | `?ToolExecutionPolicyInterface` | `null` | Pre-execution tool gating |
 | `cancellationToken` | `?CancellationTokenInterface` | `null` | Cooperative cancellation |
 | `pendingInputProvider` | `?PendingInputProviderInterface` | `null` | Inject messages mid-loop |
@@ -66,6 +68,112 @@ $agent = new ResearchAgent(
 | `safetyMarginPercent` | `int` | `20` | Headroom applied before pruning to absorb token-estimation drift |
 | `budgetExitThreshold` | `float` | `0.0` | Optional ratio `0.0`-`1.0`; emits `agent.budget_warning` once when the current iteration crosses the threshold |
 | `budgetExitWrapUpIterations` | `int` | `2` | Extra iterations allowed after a budget warning before the loop returns `BudgetExhausted` |
+| `providerOptions` | `array` | `[]` | Provider-specific request options passed to `stream()` on every iteration |
+| `runLimits` | `?RunLimits` | `null` | Tool-call caps per turn and per run, which tools may execute, and cumulative wall-time, response-size, token and input-size limits; `null` means `new RunLimits()` (see [Run Limits](#run-limits)) |
+
+`providerOptions` are specific to the provider you pass in: use the keys that provider's API takes
+(for example `max_tokens` or `thinking` for Anthropic). The agent sends the same options with every
+iteration of the loop, not only the first. They add to the request; they cannot replace the transport
+or history fields the provider builds itself (such as `stream`, `messages`, `input` or `contents`).
+They cannot replace the agent's instructions or its tools either: the system prompt (`system`,
+`systemInstruction`) and the `tools` list come from the agent. See
+[Caller Options](PROVIDERS.md#caller-options) for each provider's fields.
+
+Treat `providerOptions` as trusted developer configuration. Never build them from end-user input or
+tool output: they can still change the model, the output-token limit and other request settings.
+
+## Run Limits
+
+`RunLimits` (`src/Agent/RunLimits.php`) bounds what one `run()` may do with tools, and how much
+time, response data and tokens it may use whatever the provider reports:
+
+| Field | Default | Effect |
+|-------|---------|--------|
+| `maxToolCallsPerTurn` | `0` | Tool calls from one provider response sent to the policy (denied and unknown calls included); `0` means no cap |
+| `maxToolCallsPerRun` | `0` | Tool calls sent to the policy and executor across the run; `0` means no cap |
+| `executeUnadvertisedTools` | `false` | `true` lets the model execute any registered tool, even one `maxTools` left out |
+| `maxRunSeconds` | `0.0` | Wall time of the run in seconds, from the start of `run()`; `0.0` means no limit |
+| `maxResponseBytes` | `0` | Bytes received from the provider across the run; `0` means no limit |
+| `maxEstimatedTokens` | `0` | Local token estimate across the run; `0` means no limit |
+| `maxInputTokens` | `0` | Estimated tokens of the new input message; `0` means no limit |
+
+A negative value throws `\InvalidArgumentException`. The `done` tool counts toward neither tool-call cap.
+
+- **Executable tools.** The agent executes only the tools it advertised to the provider in this run
+  (`setMaxTools()` caps that list, and `done` is always in it). A call to any other name is answered
+  with the same error as a name that does not exist, `Unknown tool: <name>`, after the execution
+  policy has seen it. `executeUnadvertisedTools: true` restores the older behaviour, where every
+  registered tool can run.
+- **Granted tools.** A host tool that discovers tools (a tool search, for example) implements
+  `ToolGrantInterface`. After a call to it runs and returns a successful result, the agent adds every
+  name from `grantedToolNames()` that is a registered tool to the executable set for the rest of
+  that run. `grantedToolNames()` should return the names granted by the tool's most recent call. Unknown names are ignored, a call the policy denied or a cap refused grants nothing, and
+  the next `run()` starts without the grants. Implement it only on trusted host code.
+- **Per turn.** Calls beyond `maxToolCallsPerTurn` in one response are not shown to the policy and
+  not run. Each gets the error result `Tool call limit reached: at most N calls per turn.` with its
+  call id, so every tool call still has a result, and `agent.warning` fires once for the turn.
+- **Per run.** Calls beyond `maxToolCallsPerRun` get `Tool call limit reached: at most N calls per run.`
+  After that round the run ends with `AgentFinishReason::BudgetExhausted` and the content
+  `Tool call limit reached for this run.`
+
+```php
+use CarmeloSantana\PHPAgents\Agent\RunLimits;
+
+$agent = new ResearchAgent(
+    provider: $provider,
+    runLimits: new RunLimits(maxToolCallsPerTurn: 8, maxToolCallsPerRun: 50),
+);
+$agent->setMaxTools(20);
+```
+
+### Cumulative limits
+
+The provider, or a proxy in front of it, controls the usage it reports, how much it streams and how
+long it takes. These four limits do not depend on any of that. Each one ends the run with
+`AgentFinishReason::BudgetExhausted`, emits `agent.error` with the same text as the content, and
+returns that fixed content:
+
+| Limit | Checked | Content |
+|-------|---------|---------|
+| `maxRunSeconds` | At the top of each iteration, between stream chunks, before each serial tool call and before a batch call | `Run time limit reached.` |
+| `maxResponseBytes` | After each stream chunk; the stream is abandoned | `Response size limit reached.` |
+| `maxEstimatedTokens` | Before each provider call, between stream chunks and after each response | `Token limit reached.` |
+| `maxInputTokens` | Before the first provider call, and on each pending input before it is added | `Input is too large.` |
+
+- **Response bytes** count each chunk's `content` and `reasoning` plus the JSON of its tool calls and
+  content blocks. The total runs across every provider call of the run.
+- **Estimated tokens.** Before each provider call the request estimate is
+  `Conversation::estimateTokens()` plus one token per 4 bytes of the tool schemas' JSON. If the
+  tokens spent so far plus that estimate exceed the limit, the run ends before the request is sent.
+  While the response streams, the bytes received so far count one token per 4 bytes, and the
+  stream is abandoned once the total passes the limit. After the response, the run adds
+  `max(reported completion tokens, response bytes / 4)`, so a provider that reports zero or no
+  usage still counts. A response that crosses the limit
+  ends `BudgetExhausted` even when it carried a final answer.
+- **Input size.** Only new input is measured: the `$input` message and each message a
+  `PendingInputProviderInterface` hands in between iterations, with the same 4-characters-per-token
+  heuristic; history is covered by `maxEstimatedTokens`. A larger input never reaches the provider.
+- **Tools stopped by time.** A tool call that `maxRunSeconds` stops gets the error result
+  `Run time limit reached.` with its call id, so every tool call still has a result.
+
+The limits are cooperative: the agent checks them between chunks, before each tool and around batch
+calls. A provider that blocks before yielding its first chunk is bounded only by the provider's
+`RequestLimits` (see [PROVIDERS.md](PROVIDERS.md)), and a single slow tool only by the tool itself.
+One oversized chunk is a transport concern too: `RequestLimits::$maxResponseBytes` caps the
+downloaded body. An endless stream of empty chunks is bounded only by `maxRunSeconds`: it adds no
+response bytes and no tokens.
+
+```php
+$agent = new ResearchAgent(
+    provider: $provider,
+    runLimits: new RunLimits(
+        maxRunSeconds: 120.0,
+        maxResponseBytes: 4_000_000,
+        maxEstimatedTokens: 500_000,
+        maxInputTokens: 32_000,
+    ),
+);
+```
 
 ## The Run Loop in Detail
 
@@ -184,7 +292,17 @@ echo $metrics->summary();
 | `agent.tool_error` | `string` | When a tool throws an exception |
 | `agent.done` | `array` | Agent completed (contains response data) |
 | `agent.budget_warning` | `array{usagePercent: float, threshold: float, wrapUpIterations: int}` | Budget threshold was crossed for the current iteration |
+| `agent.warning` | `string` | Non-fatal notice, such as a tool-call limit reached |
 | `agent.error` | `string` | Unrecoverable error in agent loop |
+
+### Error text is redacted and bounded
+
+Error text from providers and tools is untrusted: it can carry a credential or terminal control bytes. Before it reaches `Output`, an event, the conversation or the model, the agent passes it through `CarmeloSantana\PHPAgents\Security\UntrustedText::forDisplay()`, which replaces credential-shaped strings with `[redacted]` (Bearer and Basic credentials, `sk-`, `AIza`, `xai-`, GitHub and AWS key shapes, and the value after keys such as `api_key=`, `Authorization:`, `token`, `secret` or `password`, a quoted value whole, escapes included, or to the end of the text when it is never closed; the Bearer and Basic scheme words match in any case), turns control and format characters into spaces, collapses whitespace and cuts the text with `…`.
+
+- A provider failure: `Output::$content` is `Provider error: ` plus the exception message cut to 300 characters, and `agent.error` carries the same text without the prefix. For a 4xx, at most the first 64 KiB of the body are read, and only a string `error.message` or `message` from a JSON body is appended as `\n\nAPI response: …`, also cut to 300. A body without one, or one that is not JSON, is never echoed.
+- A tool failure: every error or timeout `ToolResult` (a thrown exception, a returned error, a policy denial, an unknown tool, a batch executor's error or timeout) is cut to 500 characters, and so is every string in its metadata, keys included (an object in the metadata is first turned into arrays through JSON), with its `errorCode` cut to 64 characters, in `Output::$toolResults`, the conversation, `agent.tool_result` and `agent.tool_error`. Successful tool content and metadata are the tool's own data and are not rewritten.
+
+Redaction is a pattern match. An opaque credential that matches none of these shapes cannot be redacted, so keep secrets out of exception messages your own tools throw.
 
 ## Cooperative Cancellation
 
@@ -278,7 +396,7 @@ When the conversation approaches the token budget, the agent loop automatically:
 4. Repairs orphaned tool-result/assistant-message pairs
 5. Merges consecutive same-role messages
 
-If `budgetExitThreshold` is configured and a `ContextWindow` is present, the agent also emits `agent.budget_warning` once when the latest provider-reported usage for the current iteration crosses the configured threshold. The loop then allows `budgetExitWrapUpIterations` additional iterations before returning `AgentFinishReason::BudgetExhausted`.
+If `budgetExitThreshold` is configured and a `ContextWindow` is present, the agent also emits `agent.budget_warning` once when the current iteration's usage crosses the configured threshold. Usage is the higher of the window's `usagePercent()` and the agent's local estimate (request estimate plus response bytes / 4), so a provider or a custom `ContextWindowInterface` that under-reports cannot hide it. Before every provider call the agent passes its request estimate to `estimate()`, and after the response the request-plus-response estimate, then `report()`. `ContextWindow::report()` keeps the higher of the reported total and that estimate. The loop then allows `budgetExitWrapUpIterations` additional iterations before returning `AgentFinishReason::BudgetExhausted`.
 
 ## The Output Value Object
 
@@ -294,6 +412,7 @@ $output->model;        // string — model name reported by the provider
 $output->iterations;   // int — iterations consumed by the loop
 $output->conversation; // Conversation|null — full in-memory conversation
 $output->finishReason; // AgentFinishReason — why the agent stopped
+$output->providerFinishReason; // ProviderFinishReason|null — the provider's stop reason for the last response
 ```
 
 ### Finish Reasons
@@ -304,6 +423,26 @@ $output->finishReason; // AgentFinishReason — why the agent stopped
 | `AgentFinishReason::MaxIterations` | Agent loop exhausted its configured `maxIterations` budget |
 | `AgentFinishReason::Error` | An error occurred in the agent loop |
 | `AgentFinishReason::Done` | Agent completed via the built-in `done()` tool |
-| `AgentFinishReason::BudgetExhausted` | Budget wrap-up iterations were exhausted after a budget warning |
+| `AgentFinishReason::BudgetExhausted` | Budget wrap-up iterations were exhausted after a budget warning, a `RunLimits` tool-call cap for the run was reached, or a `RunLimits` cumulative limit (time, response bytes, estimated tokens, input size) was reached |
+| `AgentFinishReason::EmptyResponse` | The model kept returning empty replies after the configured empty-response retries |
+| `AgentFinishReason::Refusal` | The provider refused the request; `content` is the text received |
+| `AgentFinishReason::ContentFilter` | The provider's content filter stopped the response; `content` is the text received |
+| `AgentFinishReason::ContextWindowExceeded` | The request did not fit the model's context window |
 
-Provider responses use `ProviderFinishReason` instead. That enum represents normalized model/API stop reasons such as `Stop`, `ToolUse`, `MaxTokens`, and provider-level `Error` states.
+Provider responses use `ProviderFinishReason` instead. That enum represents normalized model/API stop reasons: `Stop`, `ToolUse`, `MaxTokens`, `Error`, `Refusal`, `ContentFilter`, `PauseTurn` and `ContextWindowExceeded`. `Output::$providerFinishReason` carries the reason for the last provider response, or `null` on an output not built from a provider response (cancellation, budget exhaustion, max iterations or a thrown provider error).
+
+The agent reads the provider reason before it looks at `done()`, tool calls or text. A failed stop ends the run whatever content or tool calls arrived first: no tool runs and no `agent.done` is emitted.
+
+| Provider reason | Agent outcome |
+|---|---|
+| `Stop` | Text is returned as `AgentFinishReason::Stop` (empty text goes to the empty-response policy) |
+| `ToolUse` | Tool calls run; the only reason that runs them. With no tool calls collected it goes to the empty-response policy |
+| `MaxTokens` | Text is returned as `AgentFinishReason::Stop`; any tool calls are dropped |
+| `MaxTokens` with no text | `AgentFinishReason::Error` with content `'Provider stopped at max_tokens before producing an answer; raise max_tokens in providerOptions.'` and an `agent.error` event; any tool calls are dropped and the model is not asked again |
+| `Refusal` | `AgentFinishReason::Refusal`; the text is added as an assistant turn without tool calls |
+| `ContentFilter` | `AgentFinishReason::ContentFilter`, the same way |
+| `ContextWindowExceeded` | `AgentFinishReason::ContextWindowExceeded` |
+| `Error` | `AgentFinishReason::Error` with content `'Provider error: the response ended without a valid finish reason.'` and an `agent.error` event |
+| `PauseTurn` | `AgentFinishReason::Error` with content `'Provider paused the turn (pause_turn); server-tool continuation is not supported.'` and an `agent.error` event |
+
+The first failure reason a chunk carries (`Error`, `Refusal`, `ContentFilter`, `ContextWindowExceeded`, `PauseTurn` or `MaxTokens`) is the turn's reason: no later chunk changes it to `ToolUse` or `Stop`, and every tool call of the turn is dropped. Without a failure the reason is the last chunk reason that is not `Stop`; when every chunk says `Stop` it is `ToolUse` if tool calls were collected, otherwise `Stop`. Usage on a failed chunk still counts toward `Output::$usage` and the context window.

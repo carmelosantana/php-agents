@@ -5,6 +5,7 @@ declare(strict_types=1);
 use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\RuntimeFinishReason;
+use CarmeloSantana\PHPAgents\Image\LocalImageResolver;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
@@ -18,6 +19,7 @@ use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
+use Tests\Support\Image\ImageFixtures;
 use Tests\Support\Runtime\FakeLocalModelRuntime;
 
 test('chat aggregates runtime stream chunks into a canonical response', function () {
@@ -155,7 +157,7 @@ test('data uri images are normalized with projector and token estimate metadata'
     $response = $provider->chat([
         new UserMessage([
             ['type' => 'text', 'text' => 'Look'],
-            ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . base64_encode('png-bytes')]],
+            ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . base64_encode(ImageFixtures::png())]],
             ['type' => 'text', 'text' => 'again'],
         ]),
     ]);
@@ -167,13 +169,13 @@ test('data uri images are normalized with projector and token estimate metadata'
         ]))
         ->and($runtime->lastRequest()?->images)->toHaveCount(1)
         ->and($runtime->lastRequest()?->images[0]->mimeType)->toBe('image/png')
-        ->and($runtime->lastRequest()?->images[0]->bytes)->toBe('png-bytes')
+        ->and($runtime->lastRequest()?->images[0]->bytes)->toBe(ImageFixtures::png())
         ->and($runtime->lastRequest()?->images[0]->metadata['source'])->toStartWith('data:image/png;base64,')
         ->and($runtime->lastRequest()?->options['projectorPath'])->toBe('/models/vision.mmproj')
         ->and($runtime->lastRequest()?->options['imageTokenEstimate'])->toBe(512);
 });
 
-test('local file images are loaded directly and projector can be discovered next to the model', function () {
+test('local file images are loaded through a LocalImageResolver and projector can be discovered next to the model', function () {
     $directory = sys_get_temp_dir() . '/php-agents-llama-' . bin2hex(random_bytes(4));
     mkdir($directory, 0777, true);
     $modelPath = $directory . '/vision.gguf';
@@ -181,7 +183,7 @@ test('local file images are loaded directly and projector can be discovered next
     $imagePath = $directory . '/sample.png';
     file_put_contents($modelPath, 'model');
     file_put_contents($projectorPath, 'projector');
-    file_put_contents($imagePath, 'local-image');
+    file_put_contents($imagePath, ImageFixtures::png());
 
     try {
         $runtime = new FakeLocalModelRuntime();
@@ -196,7 +198,14 @@ test('local file images are loaded directly and projector can be discovered next
             ['responses' => ['*' => [new RuntimeCompletionChunk(content: 'loaded')]]],
         );
 
-        $provider = new LlamaCppProvider('vision-local-file', $runtime);
+        $provider = new LlamaCppProvider(
+            'vision-local-file',
+            $runtime,
+            multimodalNormalizer: new LlamaCppMultimodalNormalizer(
+                new LlamaCppProjectorResolver(),
+                imageResolver: new LocalImageResolver([$directory]),
+            ),
+        );
         $response = $provider->chat([
             new UserMessage([
                 ['type' => 'text', 'text' => 'Inspect'],
@@ -206,7 +215,8 @@ test('local file images are loaded directly and projector can be discovered next
 
         expect($response->content)->toBe('loaded')
             ->and($runtime->lastRequest()?->images)->toHaveCount(1)
-            ->and($runtime->lastRequest()?->images[0]->bytes)->toBe('local-image')
+            ->and($runtime->lastRequest()?->images[0]->bytes)->toBe(ImageFixtures::png())
+            ->and($runtime->lastRequest()?->images[0]->mimeType)->toBe('image/png')
             ->and($runtime->lastRequest()?->options['projectorPath'])->toBe($projectorPath);
     } finally {
         @unlink($imagePath);
@@ -216,7 +226,7 @@ test('local file images are loaded directly and projector can be discovered next
     }
 });
 
-test('http image inputs are downloaded through the multimodal normalizer hook', function () {
+test('http image inputs are downloaded through the legacy fetcher hook and policy checked', function () {
     $runtime = new FakeLocalModelRuntime();
     $runtime->registerModel(
         new RuntimeModelMetadata(
@@ -234,7 +244,7 @@ test('http image inputs are downloaded through the multimodal normalizer hook', 
         $runtime,
         multimodalNormalizer: new LlamaCppMultimodalNormalizer(
             new LlamaCppProjectorResolver(),
-            static fn(string $url): string => $url === 'https://example.com/sample.jpg' ? 'remote-image' : '',
+            static fn(string $url): string => $url === 'https://example.com/sample.jpg' ? ImageFixtures::png() : '',
         ),
     );
 
@@ -246,8 +256,8 @@ test('http image inputs are downloaded through the multimodal normalizer hook', 
     ]);
 
     expect($response->content)->toBe('remote')
-        ->and($runtime->lastRequest()?->images[0]->bytes)->toBe('remote-image')
-        ->and($runtime->lastRequest()?->images[0]->mimeType)->toBe('image/jpeg');
+        ->and($runtime->lastRequest()?->images[0]->bytes)->toBe(ImageFixtures::png())
+        ->and($runtime->lastRequest()?->images[0]->mimeType)->toBe('image/png');
 });
 
 test('image incapable models are rejected before generation starts', function () {
@@ -309,9 +319,9 @@ test('prompt and image ordering is preserved across multiple image blocks', func
     $provider->chat([
         new UserMessage([
             ['type' => 'text', 'text' => 'First'],
-            ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . base64_encode('one')]],
+            ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . base64_encode(ImageFixtures::png())]],
             ['type' => 'text', 'text' => 'Second'],
-            ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . base64_encode('two')]],
+            ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . base64_encode(ImageFixtures::png() . "\0")]],
         ]),
     ]);
 
@@ -322,8 +332,8 @@ test('prompt and image ordering is preserved across multiple image blocks', func
         ->and($runtime->lastRequest()?->images)->toHaveCount(2)
         ->and($runtime->lastRequest()?->images[0]->metadata['imageIndex'])->toBe(0)
         ->and($runtime->lastRequest()?->images[1]->metadata['imageIndex'])->toBe(1)
-        ->and($runtime->lastRequest()?->images[0]->bytes)->toBe('one')
-        ->and($runtime->lastRequest()?->images[1]->bytes)->toBe('two');
+        ->and($runtime->lastRequest()?->images[0]->bytes)->toBe(ImageFixtures::png())
+        ->and($runtime->lastRequest()?->images[1]->bytes)->toBe(ImageFixtures::png() . "\0");
 });
 
 test('models reflects runtime metadata as model definitions', function () {

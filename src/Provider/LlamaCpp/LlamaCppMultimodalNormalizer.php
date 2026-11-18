@@ -4,20 +4,37 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Provider\LlamaCpp;
 
+use CarmeloSantana\PHPAgents\Contract\ImageResolverInterface;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
+use CarmeloSantana\PHPAgents\Image\ImageInputException;
+use CarmeloSantana\PHPAgents\Image\ImagePolicy;
+use CarmeloSantana\PHPAgents\Image\ResolvedImage;
 use CarmeloSantana\PHPAgents\Runtime\RuntimeImageInput;
 use CarmeloSantana\PHPAgents\Runtime\RuntimeModelMetadata;
 
+/**
+ * Turns `image_url` blocks into runtime image inputs.
+ *
+ * A `data:` URI is decoded and checked against the ImagePolicy. A path, `file://` or
+ * `http(s)://` reference is refused unless the host configures an ImageResolverInterface
+ * (or, for http(s), the legacy $remoteImageFetcher). Every image is checked against this
+ * normalizer's ImagePolicy, whatever supplied it: resolver results too, even when the
+ * resolver has its own policy, and the MIME type sniffed from the bytes is the one used.
+ * Vision support and the image count are checked before any image is read.
+ */
 final class LlamaCppMultimodalNormalizer
 {
     private readonly ?\Closure $remoteImageFetcher;
 
     /**
-     * @param null|callable(string):string $remoteImageFetcher
+     * @param null|callable(string):string $remoteImageFetcher Host-trusted fetcher kept for
+     *        backward compatibility; prefer an ImageResolverInterface such as RemoteImageResolver.
      */
     public function __construct(
         private readonly LlamaCppProjectorResolver $projectorResolver,
         null|callable $remoteImageFetcher = null,
+        private readonly ?ImageResolverInterface $imageResolver = null,
+        private readonly ImagePolicy $imagePolicy = new ImagePolicy(),
     ) {
         $this->remoteImageFetcher = $remoteImageFetcher === null
             ? null
@@ -30,42 +47,8 @@ final class LlamaCppMultimodalNormalizer
      */
     public function normalize(array $messages, RuntimeModelMetadata $metadata, array $options = []): LlamaCppMultimodalContext
     {
-        $images = [];
-        $imageTokenCost = $this->resolveImageTokenCost($metadata, $options);
-
-        foreach ($messages as $messageIndex => $message) {
-            $content = $message->content();
-            if (!is_array($content)) {
-                continue;
-            }
-
-            foreach ($content as $blockIndex => $block) {
-                if (($block['type'] ?? null) !== 'image_url') {
-                    continue;
-                }
-
-                $url = $this->extractImageUrl($block);
-                if ($url === null) {
-                    continue;
-                }
-
-                $resolved = $this->resolveImage($url);
-                $images[] = new RuntimeImageInput(
-                    id: 'image-' . count($images),
-                    mimeType: $resolved['mimeType'],
-                    bytes: $resolved['bytes'],
-                    metadata: [
-                        'source' => $url,
-                        'messageIndex' => $messageIndex,
-                        'blockIndex' => $blockIndex,
-                        'imageIndex' => count($images),
-                        'tokenEstimate' => $imageTokenCost,
-                    ],
-                );
-            }
-        }
-
-        if ($images === []) {
+        $references = $this->collectImageReferences($messages);
+        if ($references === []) {
             return new LlamaCppMultimodalContext([], []);
         }
 
@@ -74,9 +57,27 @@ final class LlamaCppMultimodalNormalizer
         }
 
         $maxImages = $this->resolveMaxImages($metadata, $options);
-        if (count($images) > $maxImages) {
+        if (count($references) > $maxImages) {
             throw new \InvalidArgumentException(
                 "Model {$metadata->id} supports at most {$maxImages} image(s) per request.",
+            );
+        }
+
+        $imageTokenCost = $this->resolveImageTokenCost($metadata, $options);
+        $images = [];
+        foreach ($references as $imageIndex => $reference) {
+            $resolved = $this->resolveImage($reference['url']);
+            $images[] = new RuntimeImageInput(
+                id: 'image-' . $imageIndex,
+                mimeType: $resolved->mimeType,
+                bytes: $resolved->bytes,
+                metadata: [
+                    'source' => $reference['url'],
+                    'messageIndex' => $reference['messageIndex'],
+                    'blockIndex' => $reference['blockIndex'],
+                    'imageIndex' => $imageIndex,
+                    'tokenEstimate' => $imageTokenCost,
+                ],
             );
         }
 
@@ -90,6 +91,36 @@ final class LlamaCppMultimodalNormalizer
                 'imageTokenEstimate' => count($images) * $imageTokenCost,
             ],
         );
+    }
+
+    /**
+     * Pass 1: find every image reference without reading any of them.
+     *
+     * @param MessageInterface[] $messages
+     * @return list<array{url: string, messageIndex: int|string, blockIndex: int|string}>
+     */
+    private function collectImageReferences(array $messages): array
+    {
+        $references = [];
+        foreach ($messages as $messageIndex => $message) {
+            $content = $message->content();
+            if (!is_array($content)) {
+                continue;
+            }
+
+            foreach ($content as $blockIndex => $block) {
+                if (($block['type'] ?? null) !== 'image_url') {
+                    continue;
+                }
+
+                $url = $this->extractImageUrl($block);
+                if ($url !== null) {
+                    $references[] = ['url' => $url, 'messageIndex' => $messageIndex, 'blockIndex' => $blockIndex];
+                }
+            }
+        }
+
+        return $references;
     }
 
     /**
@@ -108,49 +139,61 @@ final class LlamaCppMultimodalNormalizer
     }
 
     /**
-     * @return array{mimeType: string, bytes: string}
+     * Pass 2: read one reference. Exception messages never carry image bytes or data URI contents.
      */
-    private function resolveImage(string $url): array
+    private function resolveImage(string $url): ResolvedImage
     {
-        if (preg_match('#^data:([^;]+);base64,(.+)$#s', $url, $matches) === 1) {
-            $bytes = base64_decode($matches[2], true);
-            if ($bytes === false) {
-                throw new \InvalidArgumentException('Invalid base64 image data.');
-            }
-
-            return [
-                'mimeType' => $matches[1],
-                'bytes' => $bytes,
-            ];
+        if (str_starts_with(strtolower($url), 'data:')) {
+            return $this->decodeDataUri($url);
         }
 
         if (preg_match('#^https?://#i', $url) === 1) {
-            $fetcher = $this->remoteImageFetcher ?? static fn(string $remoteUrl): string => (string) file_get_contents($remoteUrl);
-            $bytes = $fetcher($url);
-            if ($bytes === '') {
-                throw new \RuntimeException("Failed to download image input: {$url}");
+            if ($this->imageResolver !== null) {
+                return $this->checked($this->imageResolver->resolve($url));
+            }
+            if ($this->remoteImageFetcher !== null) {
+                $bytes = ($this->remoteImageFetcher)($url);
+                if (!is_string($bytes)) {
+                    throw new ImageInputException('The remote image fetcher did not return image bytes.');
+                }
+
+                return new ResolvedImage($this->imagePolicy->check($bytes), $bytes);
             }
 
-            $remotePath = parse_url($url, PHP_URL_PATH);
-
-            return [
-                'mimeType' => is_string($remotePath)
-                    ? $this->inferMimeTypeFromPath($remotePath)
-                    : 'application/octet-stream',
-                'bytes' => $bytes,
-            ];
+            throw new ImageInputException('Remote image URLs are disabled; pass a data: URI or configure an ImageResolverInterface.');
         }
 
-        $path = str_starts_with($url, 'file://') ? (string) parse_url($url, PHP_URL_PATH) : $url;
-        $bytes = @file_get_contents($path);
+        if ($this->imageResolver !== null) {
+            return $this->checked($this->imageResolver->resolve($url));
+        }
+
+        throw new ImageInputException('Local image paths are disabled; pass a data: URI or configure an ImageResolverInterface.');
+    }
+
+    /** A resolver's image re-checked against this normalizer's policy; the sniffed MIME type wins. */
+    private function checked(ResolvedImage $image): ResolvedImage
+    {
+        return new ResolvedImage($this->imagePolicy->check($image->bytes, $image->mimeType), $image->bytes);
+    }
+
+    private function decodeDataUri(string $url): ResolvedImage
+    {
+        if (preg_match('#^data:[^,]*;base64,#i', $url, $matches) !== 1) {
+            throw new ImageInputException('Image data URI must be base64 encoded.');
+        }
+
+        $encoded = substr($url, strlen($matches[0]));
+        $maxEncoded = (int) ceil($this->imagePolicy->maxBytes * 4 / 3) + 4;
+        if (strlen($encoded) > $maxEncoded) {
+            throw new ImageInputException(sprintf('Image data URI is larger than %d bytes.', $this->imagePolicy->maxBytes));
+        }
+
+        $bytes = base64_decode($encoded, true);
         if ($bytes === false) {
-            throw new \RuntimeException("Failed to read image input: {$url}");
+            throw new ImageInputException('Invalid base64 image data.');
         }
 
-        return [
-            'mimeType' => $this->inferMimeTypeFromPath($path),
-            'bytes' => $bytes,
-        ];
+        return new ResolvedImage($this->imagePolicy->check($bytes), $bytes);
     }
 
     /**
@@ -171,27 +214,5 @@ final class LlamaCppMultimodalNormalizer
         $imageTokenCost = $options['imageTokenCost'] ?? $metadata->extras['imageTokenCost'] ?? 1024;
 
         return max(1, (int) $imageTokenCost);
-    }
-
-    private function inferMimeTypeFromPath(null|string|int $path): string
-    {
-        if (!is_string($path) || $path === '') {
-            return 'application/octet-stream';
-        }
-
-        if (is_file($path)) {
-            $mimeType = mime_content_type($path);
-            if (is_string($mimeType) && $mimeType !== '') {
-                return $mimeType;
-            }
-        }
-
-        return match (strtolower((string) pathinfo($path, PATHINFO_EXTENSION))) {
-            'png' => 'image/png',
-            'jpg', 'jpeg' => 'image/jpeg',
-            'gif' => 'image/gif',
-            'webp' => 'image/webp',
-            default => 'application/octet-stream',
-        };
     }
 }

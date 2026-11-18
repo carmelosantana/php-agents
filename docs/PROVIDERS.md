@@ -55,6 +55,33 @@ $provider = new LlamaCppProvider(
 - Image input is supported when the model has a matching projector GGUF and `libmtmd` is available.
 - The provider still owns history formatting, tool prompt injection, and tool-call parsing so the high-level provider contract remains consistent with remote backends.
 
+### Image Inputs
+
+`LlamaCppMultimodalNormalizer` reads `image_url` blocks as follows:
+
+- A `data:` URI (base64 only) is decoded and checked by an `ImagePolicy` (20 MiB and PNG, JPEG, GIF or WebP by default). An over-size URI is refused before it is decoded, and the MIME type sniffed from the bytes replaces the declared one.
+- A local path, `file://` URL or `http(s)://` URL is refused unless the host passes an `ImageResolverInterface`: `LocalImageResolver` reads only files under the roots it is given, and `RemoteImageResolver` downloads only from public addresses with time, size and redirect limits.
+- Every image a resolver returns is checked again against the normalizer's own `ImagePolicy`, even when the resolver has a policy of its own, and the MIME type sniffed from the bytes is the one sent.
+- The older `$remoteImageFetcher` callable still works for `http(s)://` when no resolver is set; it is trusted host code, and its bytes are policy checked.
+- Vision support and the image count are checked before any image is read.
+
+A normalizer takes one `ImageResolverInterface`. To accept both local paths and remote URLs, compose your own resolver that sends each reference to a `LocalImageResolver` or a `RemoteImageResolver`.
+
+```php
+use CarmeloSantana\PHPAgents\Image\LocalImageResolver;
+use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppMultimodalNormalizer;
+use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppProjectorResolver;
+
+$provider = new LlamaCppProvider(
+    model: getenv('LLAMA_CPP_MODEL_PATH'),
+    runtime: $runtime,
+    multimodalNormalizer: new LlamaCppMultimodalNormalizer(
+        new LlamaCppProjectorResolver(),
+        imageResolver: new LocalImageResolver(['/srv/app/uploads']),
+    ),
+);
+```
+
 ## OpenAICompatibleProvider
 
 The base provider for any API that follows the OpenAI chat completions format. Works with OpenAI, OpenRouter, Together, Groq, vLLM, LM Studio, and many others.
@@ -139,14 +166,14 @@ array schema and always returns an array (`[]` when the model gave no JSON):
 $result = StructuredOutput::extract(
     $provider,
     messages: [new UserMessage('Extract the name and age from: "John is 30 years old"')],
-    schema: [
+    schema: json_encode([
         'type' => 'object',
         'properties' => [
             'name' => ['type' => 'string'],
             'age' => ['type' => 'integer'],
         ],
         'required' => ['name', 'age'],
-    ],
+    ]),
 );
 // ['name' => 'John', 'age' => 30]
 ```
@@ -156,7 +183,7 @@ $result = StructuredOutput::extract(
 ```php
 // OpenRouter
 $provider = new OpenAICompatibleProvider(
-    model: 'anthropic/claude-sonnet-4-20250514',
+    model: 'anthropic/claude-sonnet-5-5',
     apiKey: getenv('OPENROUTER_API_KEY'),
     baseUrl: 'https://openrouter.ai/api/v1',
 );
@@ -227,7 +254,7 @@ Purpose-built provider for Claude models. Handles Anthropic's unique message for
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 
 $provider = new AnthropicProvider(
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-5-5',
     apiKey: getenv('ANTHROPIC_API_KEY'),
 );
 ```
@@ -236,7 +263,7 @@ $provider = new AnthropicProvider(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `model` | `string` | — | Model identifier (required) |
+| `model` | `string` | `'claude-sonnet-5-5'` | Model identifier |
 | `apiKey` | `string` | `''` | Anthropic API key |
 | `baseUrl` | `string` | `'https://api.anthropic.com/v1'` | API base URL |
 | `httpClient` | `?HttpClientInterface` | `null` | Custom HTTP client |
@@ -279,6 +306,11 @@ sequenceDiagram
     API-->>Provider: event: message_start
     Note over Provider: Extract initial usage
 
+    API-->>Provider: event: content_block_start (type: thinking)
+    API-->>Provider: event: content_block_delta (thinking_delta, then signature_delta)
+    Provider-->>App: yield Response(reasoning: "...")
+    Note over Provider: Keep the thinking text and its signature on the block
+
     API-->>Provider: event: content_block_start (type: text)
     API-->>Provider: event: content_block_delta (text: "I'll help")
     Provider-->>App: yield Response(content: "I'll help")
@@ -290,21 +322,36 @@ sequenceDiagram
     Note over Provider: Accumulate JSON fragments
 
     API-->>Provider: event: message_delta (stop_reason: tool_use)
-    Note over Provider: Assemble all pending tools
-    Provider-->>App: yield Response(toolCalls: [ToolCall])
-
     API-->>Provider: event: message_stop
+    Note over Provider: Assemble all pending tools and rebuild the blocks
+    Provider-->>App: yield Response(toolCalls: [ToolCall], contentBlocks: [...])
 ```
+
+### Thinking Blocks
+
+Thinking blocks are kept on the AssistantMessage and sent back unchanged within a run, on the turns that call tools, which is where Anthropic requires them. Anthropic rejects a thinking block whose text or `signature` changed, so the provider rebuilds each block from the stream: `thinking_delta` events give the thinking text, `signature_delta` events give its signature, and a `redacted_thinking` block arrives complete with its `data`. The final `Response` of a stream carries them, in order with the text and `tool_use` blocks, as `$response->contentBlocks`; `chat()` fills it from the response body. The agent passes them only to the `AssistantMessage` of a tool-use turn (`$message->contentBlocks()`); text answers, empty turns and failed stops are sent as plain text, so an empty assistant turn holding only thinking is never sent. The provider sends a tool-use turn's blocks as they are. Tool inputs keep `{}` as an object, so the JSON matches what the API sent. A text block that received no text is left out, because Anthropic rejects an empty text block.
+
+The blocks are dropped, and the message is sent as plain text and tool calls without thinking:
+
+- when pruning changes the conversation (the agent calls `withoutContentBlocks()` on every `AssistantMessage`), because Anthropic rejects replayed thinking after earlier history was edited;
+- when a new `run()` starts, for every `AssistantMessage` in the history passed in, because the system prompt or tools may have changed;
+- when the stream ended with a finish reason other than `Stop` or `ToolUse` (for example `max_tokens`, `refusal`, or a stream cut off before `message_stop`), when a tool's input JSON did not decode, or when it contained a block type other than `thinking`, `redacted_thinking`, `text` and `tool_use`.
+
+Other providers ignore content blocks: `AssistantMessage::toArray()` does not include them.
 
 ### Structured Output
 
-Uses Anthropic's tool-use trick: defines the schema as a tool, forces the model to use it, and extracts the structured result:
+Uses Anthropic's native structured outputs when the schema allows it: the request sends `output_config: {format: {type: 'json_schema', schema: ...}}`, and the model answers with one text block of JSON that matches the schema. `structured()` decodes that block and returns the array. Only the schema is sent; an envelope's `name` and `description` are not. Before sending, the provider adds `additionalProperties: false` to every object that lists `properties` and has no `additionalProperties`, keeps `required` exactly as you wrote it (optional properties stay optional and no `null` type is added), and strips the keywords the API rejects: `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `minLength` and `maxLength`. It does this in nested objects, array items, `anyOf`/`allOf`/`oneOf`, `$defs` and `definitions`.
+
+A schema native structured outputs cannot take is an open object (`{"type": "object"}` with no `properties`, `additionalProperties: true`, or `additionalProperties` set to a schema), a value that is not a schema object where one is expected, a recursive schema (a `$ref` cycle between definitions, including a definition that refers to itself), a `$ref` that is not a local `#/$defs/...` or `#/definitions/...` pointer to an existing definition, or a schema that uses `not`, `if`, `then`, `else`, `dependentSchemas`, `patternProperties`, `contains`, `propertyNames`, `unevaluatedProperties`, `$dynamicRef`, `$recursiveRef`, `dependencies`, `unevaluatedItems`, `additionalItems` or `contentSchema`. For such a schema the provider falls back to best-effort JSON: it sends no `output_config.format`, adds one user message, `Respond with only a JSON value that matches this JSON Schema, with no other text:` followed by the schema, and decodes the first text block. The answer is not constrained by the API on this path.
+
+Other `output_config` keys you pass in `$options`, such as `effort`, are kept on both paths. No tools are forced: a forced tool choice returns a 400 on current models, so one passed in `$options` is dropped. If the finish reason is not `Stop` (for example a refusal or `max_tokens`), or the first text block is not JSON that decodes to an array, `structured()` returns the `Response` instead:
 
 ```php
 $result = StructuredOutput::extract(
     $provider,
     messages: [new UserMessage('Extract: "Jane, age 25, from NYC"')],
-    schema: [
+    schema: json_encode([
         'type' => 'object',
         'properties' => [
             'name' => ['type' => 'string'],
@@ -312,7 +359,7 @@ $result = StructuredOutput::extract(
             'city' => ['type' => 'string'],
         ],
         'required' => ['name', 'age', 'city'],
-    ],
+    ]),
 );
 // ['name' => 'Jane', 'age' => 25, 'city' => 'NYC']
 ```
@@ -323,19 +370,19 @@ The provider tries Anthropic's models API first, then falls back to a static lis
 
 ```php
 $models = $provider->models();
-// ModelDefinition[] — includes context windows and max output tokens
+// ModelDefinition[] — context window, max output tokens, vision and thinking support,
+// read from max_input_tokens, max_tokens and capabilities, following has_more for up to 10 pages
 ```
 
 Static fallback models:
 
 | Model | Context Window | Max Output |
 |-------|:-:|:-:|
-| `claude-sonnet-4-20250514` | 200K | 8,192 |
-| `claude-opus-4-20250514` | 200K | 32,000 |
-| `claude-3-5-haiku-20241022` | 200K | 8,192 |
-| `claude-3-5-sonnet-20241022` | 200K | 8,192 |
-| `claude-3-opus-20240229` | 200K | 4,096 |
-| `claude-3-haiku-20240307` | 200K | 4,096 |
+| `claude-opus-5-5` | 1M | 128,000 |
+| `claude-sonnet-5-5` | 1M | 128,000 |
+| `claude-haiku-5-5` | 1M | 128,000 |
+| `claude-fable-5-2` | 1M | 128,000 |
+| `claude-haiku-4-5` | 200K | 64,000 |
 
 ### Health Check
 
@@ -373,6 +420,8 @@ $provider = new GeminiProvider(
 | `apiKey` | `string` | `''` | Google AI API key |
 | `baseUrl` | `string` | `'https://generativelanguage.googleapis.com/v1beta'` | API base URL |
 | `httpClient` | `?HttpClientInterface` | `null` | Custom HTTP client |
+| `logger` | `?LoggerInterface` | `null` | PSR-3 logger |
+| `imageHttpClient` | `?HttpClientInterface` | `null` | Client for `image_url` downloads only; `null` uses a library-owned `HttpClient::create()`, never `httpClient` |
 
 ### Tool Calling
 
@@ -383,7 +432,7 @@ Gemini uses `functionCall`/`functionResponse` parts within the Content format. T
 Gemini uses `inlineData` parts with base64-encoded image data. The provider automatically converts OpenAI-format `image_url` blocks:
 
 - **Base64 data URIs** are extracted and sent as `inlineData` with the correct MIME type
-- **URL images** are auto-downloaded and converted to base64 `inlineData` (Gemini doesn't support URL references natively)
+- **URL images** are auto-downloaded and converted to base64 `inlineData` (Gemini doesn't support URL references natively), only from public addresses and only when the answer is `image/*` (see [Gemini image URLs](#gemini-image-urls))
 
 ```php
 // Both formats work transparently:
@@ -586,6 +635,69 @@ The Claude SDK JSON output reports `usage.input_tokens`, `output_tokens`,
 `cache_read_input_tokens`, `cache_creation_input_tokens`, and `total_cost_usd`. The adapter folds the
 input + cache tokens into `Usage.promptTokens` so host-side budget tracking works the same as for
 HTTP providers.
+
+## Caller Options
+
+The `$options` array of `chat()`, `stream()` and `structured()` is merged into the request body, so it can set any field the provider's API takes. It cannot replace the fields the provider builds itself. The conversation and the transport flag are always the provider's. The system prompt is the provider's when the conversation has a `SystemMessage`, and the tool list is the provider's when the `$tools` argument is not empty; without them, `$options` may still supply those fields.
+
+| Provider | Always the provider's | Provider's with a `SystemMessage` | Provider's with a non-empty `$tools` |
+|----------|-----------------------|-----------------------------------|--------------------------------------|
+| `AnthropicProvider` | `messages`, `stream` | `system` | `tools` |
+| `GeminiProvider` | `contents` | `systemInstruction` and `system_instruction` | `tools` |
+| `OpenAICompatibleProvider` and its subclasses | `messages`, `stream` | (inside `messages`) | `tools` |
+| `OpenAIResponsesProvider` | `input`, `stream` | (inside `input`) | `tools` |
+
+## Request Limits
+
+Every HTTP request a provider or embedding provider sends through its HTTP client carries a `RequestLimits` value object. `RequestLimits::apply()` turns it into per-request symfony/http-client options (`timeout`, `max_duration`, `max_redirects` and an `on_progress` byte and redirect check). The per-request `timeout` replaces an injected Symfony client's own default, and so does `max_duration` when `maxDuration` is above 0.0; with `maxDuration: 0.0` no `max_duration` is sent and the client's own `max_duration` default applies (none for `HttpClient::create()`). Use `withRequestLimits()` to change them.
+
+The limits hold for an injected client that honours symfony/http-client's `max_redirects`, `max_duration`, `on_progress` and `resolve` options. A client that ignores them does not get them; Coqui's ReactPHP adapter is the known case. The Gemini image download uses its own client (see [Gemini Image URLs](#gemini-image-urls)), so its checks always hold.
+
+Two requests are outside `RequestLimits`:
+
+- `CliProvider` runs a local command and sends no HTTP request.
+- `LlamaCppProvider` runs the model in-process. `LlamaCppMultimodalNormalizer` refuses a remote `image_url` unless the host configures an `ImageResolverInterface` (such as `RemoteImageResolver`, which applies its own limits) or the legacy `$remoteImageFetcher`; see [Image Inputs](#image-inputs).
+
+`gethostbynamel()` and `dns_get_record()`, which the Gemini image check and `RemoteImageResolver` call, block and are not covered by any of these limits.
+
+| Limit | Default | Meaning |
+|-------|---------|---------|
+| `idleTimeout` | `300.0` | Seconds to wait between two chunks (`timeout`) |
+| `maxDuration` | `600.0` | Seconds for the whole request, stream included (`max_duration`); `0.0` sends none, leaving the client's default |
+| `maxResponseBytes` | `33_554_432` | Bytes of response body (32 MiB); `0` means no cap |
+| `maxRedirects` | `0` | Redirects followed; any caller `max_redirects` is replaced |
+
+Embedding providers (`OpenAIEmbeddingProvider`, `OllamaEmbeddingProvider`) use the same defaults with `idleTimeout` `60.0`. Some requests keep a shorter idle timeout of their own: `isAvailable()` waits 5 s, and `models()` on Anthropic and Gemini and Ollama's `/api/show` model lookup wait 10 s. Ollama `pull()` keeps the provider's idle timeout and refuses redirects, but has no total limit and no byte cap, because a model download can run far longer than 600 s.
+
+`withRequestLimits()` returns a copy with new limits, like `withModel()`; the original keeps its own. `requestLimits()` returns the current ones:
+
+```php
+use CarmeloSantana\PHPAgents\Provider\RequestLimits;
+
+$provider = $provider->withRequestLimits(new RequestLimits(maxDuration: 45.0));
+
+$provider->requestLimits()->maxDuration; // 45.0
+```
+
+A response over the byte cap is aborted with a `ProviderException` whose message contains `exceeded`. symfony/http-client wraps it in its own `TransportExceptionInterface`, so look for the `ProviderException` as the previous exception. `SseStreamParser` also caps a stream line that has no newline yet at 1_048_576 bytes.
+
+### No Redirects
+
+Providers follow no redirect. A base URL that answers 3xx to `chat()`, `stream()` or `structured()`, including a same-host `http://` to `https://` redirect, fails with `ProviderException` and the message `Provider request refused: redirect not followed (...)`, instead of re-sending the API key header and the conversation to the host the `Location` names. A streamed request refuses a 3xx before reading any data, and lets a 4xx or 5xx propagate unchanged so the API error body still reaches the agent. Embedding providers do not follow a 3xx either: `embedText()` and `OllamaEmbeddingProvider::embedDocuments()` report it as `ProviderException::embeddingFailed()`, and `OpenAIEmbeddingProvider::embedDocuments()` lets symfony/http-client's `RedirectionExceptionInterface` through. `isAvailable()` and `models()` treat a 3xx like any failed request: `isAvailable()` returns `false`, and `models()` returns its fallback (an empty list, or Anthropic's built-in list). Point the base URL at the final address.
+
+### Gemini Image URLs
+
+`GeminiProvider` downloads `image_url` URLs on the server to send them as `inlineData`. The download goes through the `imageHttpClient` constructor argument, or a library-owned `HttpClient::create()` when it is `null`; it never uses the provider's `httpClient`, so a host client that ignores `resolve`, `max_redirects` or `on_progress` cannot weaken it, and the host client's proxy settings do not apply to it (the library-owned client still reads `HTTP_PROXY` and `HTTPS_PROXY`). The download:
+
+- accepts only `http` and `https` URLs;
+- resolves the host and refuses it unless every resolved address passes `FILTER_FLAG_GLOBAL_RANGE`, so loopback, private, link-local and reserved addresses (such as `127.0.0.1`, `10.0.0.5`, `169.254.169.254` and `::1`) are never fetched;
+- also refuses IPv6 addresses PHP's filter accepts but that can reach a private or non-unicast address: `64:ff9b::/96` and `64:ff9b:1::/48` (NAT64), `fec0::/10` (site-local), `ff00::/8` (multicast) and `::/8` (reserved). `::/8` covers IPv4-compatible `::/96` (such as `::7f00:1` and `::a00:1`), IPv4-translated `::ffff:0:0:0/96` and IPv4-mapped `::ffff:0:0/96`, which PHP's filter already refuses;
+- pins the checked address of a host name through the `resolve` option, so the connection goes to the address that was checked; an IP-literal host needs no DNS lookup and gets no pin;
+- follows up to 3 redirects by hand, checking and pinning each hop again;
+- limits each hop to 10 s idle, 30 s total and 20 MiB (20_971_520 bytes), independent of `withRequestLimits()`;
+- keeps the image only when the answer is 2xx with an `image/*` content type; a missing or other content type is refused, with no guess from the file extension.
+
+Any refusal or failure sends the existing `[Image: could not download …]` text part instead of the image.
 
 ## Shared Provider Utilities
 

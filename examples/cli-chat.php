@@ -17,16 +17,25 @@ declare(strict_types=1);
  *   - OpenAICompatibleProvider (OpenAI, OpenRouter, etc.)
  *   - AnthropicProvider (Claude)
  *
- * @see docs/PROVIDERS.md for provider examples.
+ * @see docs/GETTING-STARTED.md and docs/PROVIDERS.md for provider examples.
+ *
+ * Security notes (example only):
+ *   - The user runs this on their own machine, talking to their own provider.
+ *   - Model text is untrusted: control characters (ANSI/OSC escapes) are stripped before
+ *     printing, so a hostile model cannot drive the terminal.
  */
 
 require dirname(__DIR__) . '/vendor/autoload.php';
+require __DIR__ . '/helpers.php';
 
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\Conversation;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
+
+use function PHPAgentsExamples\providerNotice;
+use function PHPAgentsExamples\sanitizeTerminal;
 
 // --- Configuration -----------------------------------------------------------
 
@@ -75,7 +84,7 @@ while (true) {
 
     $input = trim($input);
 
-    if ($input === '' ) {
+    if ($input === '') {
         continue;
     }
 
@@ -89,13 +98,18 @@ while (true) {
     try {
         $response = $provider->chat($conversation->messages(), []);
     } catch (\Throwable $e) {
-        echo "\033[1;31mError:\033[0m {$e->getMessage()}\n\n";
+        echo "\033[1;31mError:\033[0m " . sanitizeTerminal($e->getMessage()) . "\n\n";
         continue;
     }
 
     $conversation->add(new AssistantMessage($response->content));
 
-    echo "\033[1;34mAssistant:\033[0m {$response->content}\n\n";
+    echo "\033[1;34mAssistant:\033[0m " . sanitizeTerminal($response->content) . "\n\n";
+
+    $notice = providerNotice($response->finishReason);
+    if ($notice !== null) {
+        echo "\033[1;33m{$notice}\033[0m\n\n";
+    }
 
     // Show token usage when available
     if ($response->usage !== null && $response->usage->totalTokens > 0) {

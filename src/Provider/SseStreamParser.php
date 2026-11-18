@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Provider;
 
+use CarmeloSantana\PHPAgents\Exception\ProviderException;
+use Symfony\Contracts\HttpClient\Exception\RedirectionExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
@@ -22,11 +24,15 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  */
 final class SseStreamParser
 {
+    /** Largest incomplete SSE line, in bytes, held while waiting for its newline. */
+    public const int DEFAULT_MAX_LINE_BYTES = 1_048_576;
+
     private string $lineBuffer = '';
 
     public function __construct(
         private readonly HttpClientInterface $httpClient,
         private readonly ResponseInterface $response,
+        private readonly int $maxLineBytes = self::DEFAULT_MAX_LINE_BYTES,
     ) {}
 
     /**
@@ -38,10 +44,18 @@ final class SseStreamParser
      * - Skipping the `[DONE]` sentinel
      * - JSON decode errors (silently skipped)
      *
+     * Checks the status before reading any chunk: a 3xx throws a
+     * ProviderException refusing the redirect, and a 4xx or 5xx throws
+     * Symfony's ClientException or ServerException unchanged, so callers
+     * can still read the API error body from it. Also throws a
+     * ProviderException when an incomplete line grows past the line cap.
+     *
      * @return \Generator<int, array<string, mixed>>
      */
     public function events(): \Generator
     {
+        $this->assertSuccessfulStatus();
+
         foreach ($this->httpClient->stream($this->response) as $chunk) {
             $data = $this->lineBuffer . $chunk->getContent();
             $this->lineBuffer = '';
@@ -52,6 +66,10 @@ final class SseStreamParser
             // is an incomplete line — buffer it for the next chunk.
             if (!str_ends_with($data, "\n")) {
                 $this->lineBuffer = array_pop($lines);
+
+                if (strlen($this->lineBuffer) > $this->maxLineBytes) {
+                    throw ProviderException::requestRefused(sprintf('SSE line exceeded %d bytes', $this->maxLineBytes));
+                }
             }
 
             foreach ($lines as $line) {
@@ -72,6 +90,21 @@ final class SseStreamParser
 
                 yield $json;
             }
+        }
+    }
+
+    /**
+     * Wait for the status line and throw unless it is 2xx.
+     *
+     * A 3xx becomes ProviderException::redirectRefused(); a 4xx or 5xx
+     * propagates as the Symfony exception getHeaders() raised.
+     */
+    private function assertSuccessfulStatus(): void
+    {
+        try {
+            $this->response->getHeaders(true);
+        } catch (RedirectionExceptionInterface $e) {
+            throw ProviderException::redirectRefused($e);
         }
     }
 }

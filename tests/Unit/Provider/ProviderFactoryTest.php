@@ -18,6 +18,7 @@ use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\XAIProvider;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
+use Tests\Support\Image\ImageFixtures;
 use Tests\Support\Runtime\FakeLocalModelRuntime;
 
 /**
@@ -215,7 +216,7 @@ test('llama-cpp factory forwards multimodal and structured output config overrid
     $provider->chat([
         new UserMessage([
             ['type' => 'text', 'text' => 'See'],
-            ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . base64_encode('img')]],
+            ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . base64_encode(ImageFixtures::png())]],
         ]),
     ]);
 

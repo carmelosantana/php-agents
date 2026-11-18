@@ -1,0 +1,72 @@
+<?php
+
+declare(strict_types=1);
+
+use CarmeloSantana\PHPAgents\Exception\ProviderException;
+
+test('streamError keeps a short type and message as they are', function () {
+    expect(ProviderException::streamError('overloaded_error', 'Overloaded')->getMessage())
+        ->toBe('overloaded_error: Overloaded');
+});
+
+test('streamError replaces control characters and collapses whitespace in the message', function () {
+    $e = ProviderException::streamError('api_error', "Line one\r\n\x1b[31mred\x1b[0m\x00\tend  ");
+
+    expect($e->getMessage())->toBe('api_error: Line one [31mred [0m end');
+});
+
+test('streamError truncates the message to 300 characters with an ellipsis', function () {
+    $message = ProviderException::streamError('api_error', str_repeat('é', 1000))->getMessage();
+    $shown = substr($message, strlen('api_error: '));
+
+    expect(mb_strlen($shown))->toBe(301)
+        ->and(mb_substr($shown, -1))->toBe('…')
+        ->and(mb_substr($shown, 0, 300))->toBe(str_repeat('é', 300));
+});
+
+test('streamError keeps a 300-character message whole', function () {
+    expect(ProviderException::streamError('api_error', str_repeat('a', 300))->getMessage())
+        ->toBe('api_error: ' . str_repeat('a', 300));
+});
+
+test('streamError replaces a type that is not a short snake_case word with error', function (string $type) {
+    expect(ProviderException::streamError($type, 'Boom')->getMessage())->toBe('error: Boom');
+})->with([
+    'with a newline' => ["api_error\nInjected: yes"],
+    'with a trailing newline' => ["api_error\n"],
+    'with a space' => ['api error'],
+    'upper case' => ['API_ERROR'],
+    'dotted' => ['response.failed'],
+    'empty' => [''],
+    'too long' => [str_repeat('a', 65)],
+]);
+
+test('streamError keeps a 64-character type', function () {
+    $type = str_repeat('a', 64);
+
+    expect(ProviderException::streamError($type, 'Boom')->getMessage())->toBe($type . ': Boom');
+});
+
+test('streamError survives a message that is not valid UTF-8', function () {
+    $message = ProviderException::streamError('api_error', "bad \xff\xfe bytes")->getMessage();
+
+    expect(mb_check_encoding($message, 'UTF-8'))->toBeTrue()
+        ->and($message)->toStartWith('api_error: bad ')
+        ->and($message)->toEndWith(' bytes');
+});
+
+test('streamError replaces format characters used for Trojan-Source spoofing', function () {
+    $message = ProviderException::streamError('api_error', "safe\u{202E}txt.exe\u{200B}x\u{2066}a\u{2067}b\u{2068}c\u{2069}d\u{FEFF}")->getMessage();
+
+    expect(preg_match('/[\p{Cc}\p{Cf}]/u', $message))->toBe(0)
+        ->and($message)->toBe('api_error: safe txt.exe x a b c d');
+});
+
+test('streamError redacts before it cuts, so a key on the boundary leaves no readable prefix', function () {
+    $message = ProviderException::streamError('api_error', str_repeat('a', 290) . ' sk-ant-' . str_repeat('Z', 40))->getMessage();
+
+    expect($message)->not->toContain('sk-ant')
+        ->and($message)->not->toContain('ZZ')
+        // 290 + ' [redacted]' passes 300, so the cut lands inside the marker, never the key.
+        ->and($message)->toEndWith(' [redacted…');
+});

@@ -12,6 +12,9 @@ final class ContextWindow implements ContextWindowInterface
 {
     private int $usedTokens = 0;
 
+    /** The last local estimate; a lower provider report never replaces it. */
+    private int $estimatedTokens = 0;
+
     public function __construct(
         private readonly int $maxTok = 128000,
         private readonly int $reservedTok = 4096,
@@ -56,12 +59,17 @@ final class ContextWindow implements ContextWindowInterface
 
     public function estimate(int $tokens): void
     {
+        $this->estimatedTokens = $tokens;
         $this->usedTokens = $tokens;
     }
 
+    /**
+     * Uses the higher of the reported total and the last local estimate, so a provider that
+     * under-reports (or reports zero) cannot hide how full the window is.
+     */
     public function report(Usage $usage): void
     {
-        $this->usedTokens = $usage->totalTokens;
+        $this->usedTokens = max($usage->totalTokens, $this->estimatedTokens);
     }
 
     public function exceeds(float $thresholdPercent): bool
@@ -72,6 +80,7 @@ final class ContextWindow implements ContextWindowInterface
     public function reset(): void
     {
         $this->usedTokens = 0;
+        $this->estimatedTokens = 0;
     }
 
     public function toArray(): array

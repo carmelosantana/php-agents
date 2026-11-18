@@ -10,4 +10,8 @@ enum ProviderFinishReason: string
     case ToolUse = 'tool_use';
     case MaxTokens = 'max_tokens';
     case Error = 'error';
+    case Refusal = 'refusal';
+    case ContentFilter = 'content_filter';
+    case PauseTurn = 'pause_turn';
+    case ContextWindowExceeded = 'context_window_exceeded';
 }

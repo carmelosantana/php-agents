@@ -9,6 +9,7 @@ use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
+use CarmeloSantana\PHPAgents\Image\Internal\PublicImageDownloader;
 use CarmeloSantana\PHPAgents\Schema\JsonSchemaRepair;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
@@ -54,12 +55,22 @@ final class GeminiProvider extends AbstractProvider
         'dependentRequired',
     ];
 
+    /**
+     * Test seam for the image guard's DNS lookup, passed to PublicImageDownloader: host name
+     * to its addresses. Null uses real DNS. Private and set only by reflection in tests;
+     * not public API.
+     *
+     * @var (\Closure(string): list<string>)|null
+     */
+    private ?\Closure $hostResolver = null;
+
     public function __construct(
         string $model = 'gemini-2.5-flash',
         string $baseUrl = 'https://generativelanguage.googleapis.com/v1beta',
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
         ?LoggerInterface $logger = null,
+        private readonly ?HttpClientInterface $imageHttpClient = null,
     ) {
         parent::__construct(
             model: $model,
@@ -86,13 +97,13 @@ final class GeminiProvider extends AbstractProvider
         $response = $this->httpClient->request(
             'POST',
             "{$this->baseUrl}/models/{$this->model}:generateContent",
-            [
+            $this->requestLimits->apply([
                 'headers' => $this->headers(),
                 'json' => $payload,
-            ],
+            ]),
         );
 
-        return $this->parseResponse($response->toArray());
+        return $this->parseResponse($this->decodeResponse($response));
     }
 
     public function stream(array $messages, array $tools = [], array $options = []): iterable
@@ -102,19 +113,30 @@ final class GeminiProvider extends AbstractProvider
         $response = $this->httpClient->request(
             'POST',
             "{$this->baseUrl}/models/{$this->model}:streamGenerateContent?alt=sse",
-            [
+            $this->requestLimits->apply([
                 'headers' => $this->headers(),
                 'json' => $payload,
-            ],
+            ]),
         );
 
         $parser = new SseStreamParser($this->httpClient, $response);
         $toolCallCounter = 0;
+        $finished = false;
 
         foreach ($parser->events() as $json) {
+            // A terminal candidate ended the answer: later parts and tool calls are ignored.
+            if ($finished) {
+                $usage = $this->parseUsageMetadata($json);
+                if ($usage !== null) {
+                    yield new Response(content: '', finishReason: ProviderFinishReason::Stop, toolCalls: [], model: $this->model, usage: $usage);
+                }
+                continue;
+            }
+
             $candidate = $json['candidates'][0] ?? [];
             $parts = $candidate['content']['parts'] ?? [];
-            $finishReason = $this->mapGeminiFinishReason($candidate['finishReason'] ?? null);
+            $finishReason = $this->finishReasonOf($json);
+            $finished = isset($candidate['finishReason']) || isset($json['promptFeedback']['blockReason']);
 
             $text = '';
             $reasoning = '';
@@ -154,6 +176,11 @@ final class GeminiProvider extends AbstractProvider
                 );
             }
 
+            // A blocked, failed or truncated (MAX_TOKENS) candidate emits no tool calls.
+            if ($this->dropsToolCalls($finishReason)) {
+                $toolCalls = [];
+            }
+
             if (!empty($toolCalls)) {
                 yield new Response(
                     content: $text,
@@ -174,6 +201,11 @@ final class GeminiProvider extends AbstractProvider
                     usage: $this->parseUsageMetadata($json),
                 );
             }
+        }
+
+        // EOF without a finishReason or a blocked prompt: the answer is incomplete.
+        if (!$finished) {
+            yield new Response(content: '', finishReason: ProviderFinishReason::Error, toolCalls: [], model: $this->model);
         }
     }
 
@@ -223,12 +255,11 @@ final class GeminiProvider extends AbstractProvider
     public function models(): array
     {
         try {
-            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [
+            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->requestLimits->apply([
                 'headers' => $this->headers(),
-                'timeout' => 10,
-            ]);
+            ]), 'timeout' => 10.0]);
 
-            $data = $response->toArray();
+            $data = $this->decodeResponse($response);
             $models = [];
 
             foreach ($data['models'] ?? [] as $model) {
@@ -274,10 +305,9 @@ final class GeminiProvider extends AbstractProvider
         }
 
         try {
-            $this->httpClient->request('GET', "{$this->baseUrl}/models", [
+            $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->requestLimits->apply([
                 'headers' => $this->headers(),
-                'timeout' => 5,
-            ]);
+            ]), 'timeout' => 5.0]);
 
             return true;
         } catch (\Throwable $e) {
@@ -305,8 +335,17 @@ final class GeminiProvider extends AbstractProvider
             $payload['systemInstruction'] = $systemInstruction;
         }
 
+        // The conversation's system message and the $tools argument are the
+        // provider's: options cannot replace them, in either JSON spelling.
+        foreach ($messages as $message) {
+            if ($message->role() === Role::System) {
+                unset($options['systemInstruction'], $options['system_instruction']);
+            }
+        }
+
         if (!empty($tools)) {
             $payload['tools'] = $this->formatTools($tools);
+            unset($options['tools']);
         }
 
         // Merge generationConfig from options
@@ -324,8 +363,8 @@ final class GeminiProvider extends AbstractProvider
             }
         }
 
-        // Merge any remaining options at top level
-        return array_merge($payload, $options);
+        // Merge any remaining options at top level; the conversation stays ours.
+        return [...$payload, ...$options, 'contents' => $contents];
     }
 
     /**
@@ -531,72 +570,37 @@ final class GeminiProvider extends AbstractProvider
         ];
     }
 
+    /** Most redirects followed while downloading an image for inlineData. */
+    private const int IMAGE_MAX_REDIRECTS = 3;
+
     /**
      * Download an image URL and return a Gemini inlineData part.
+     *
+     * The fetch goes through PublicImageDownloader, which only requests public addresses
+     * (each hop checked and pinned, redirects followed by hand up to IMAGE_MAX_REDIRECTS),
+     * with 10s idle, 30s total and 20 MiB per hop. It uses $imageHttpClient, or a
+     * library-owned HttpClient::create() when none was given, never the provider's API
+     * client: an injected host client may ignore `resolve`, `max_redirects`, `no_proxy`
+     * or `on_progress`, and the guard needs them all.
+     *
+     * Anything the downloader refuses returns null.
      *
      * @return array{inlineData: array{mimeType: string, data: string}}|null
      */
     private function downloadImageForInlineData(string $url): ?array
     {
-        try {
-            $response = $this->httpClient->request('GET', $url, [
-                'timeout' => 30,
-                'max_redirects' => 5,
-                'headers' => [
-                    'Accept' => 'image/*',
-                ],
-            ]);
-
-            $statusCode = $response->getStatusCode();
-            if ($statusCode < 200 || $statusCode >= 300) {
-                return null;
-            }
-
-            $headers = $response->getHeaders();
-            $contentType = $headers['content-type'][0] ?? 'image/jpeg';
-            $mime = trim(explode(';', $contentType)[0]);
-
-            // Validate it looks like an image
-            if (!str_starts_with($mime, 'image/')) {
-                $mime = $this->guessMimeFromUrl($url) ?? 'image/jpeg';
-            }
-
-            $body = $response->getContent();
-            if ($body === '') {
-                return null;
-            }
-
-            return [
-                'inlineData' => [
-                    'mimeType' => $mime,
-                    'data' => base64_encode($body),
-                ],
-            ];
-        } catch (\Throwable $e) {
-            $this->logger?->debug('Failed to download image from URL: {error}', ['error' => $e->getMessage()]);
-
-            return null;
-        }
-    }
-
-    private function guessMimeFromUrl(string $url): ?string
-    {
-        $path = parse_url($url, PHP_URL_PATH);
-        if (!is_string($path)) {
+        $downloader = new PublicImageDownloader($this->imageHttpClient, $this->logger, $this->hostResolver, self::IMAGE_MAX_REDIRECTS);
+        $image = $downloader->download($url, new RequestLimits(idleTimeout: 10.0, maxDuration: 30.0, maxResponseBytes: 20_971_520));
+        if ($image === null) {
             return null;
         }
 
-        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-
-        return match ($ext) {
-            'jpg', 'jpeg' => 'image/jpeg',
-            'png' => 'image/png',
-            'gif' => 'image/gif',
-            'webp' => 'image/webp',
-            'bmp' => 'image/bmp',
-            'svg' => 'image/svg+xml',
-            default => null,
-        };
+        return [
+            'inlineData' => [
+                'mimeType' => $image['mimeType'],
+                'data' => base64_encode($image['bytes']),
+            ],
+        ];
     }
 
     /**
@@ -784,10 +788,13 @@ final class GeminiProvider extends AbstractProvider
             }
         }
 
-        $finishReason = $this->mapGeminiFinishReason($candidate['finishReason'] ?? null);
+        $finishReason = $this->finishReasonOf($data);
 
-        // Override finish reason if tool calls are present
-        if (!empty($toolCalls)) {
+        // Tool calls make it ToolUse, unless the candidate was blocked,
+        // failed or cut off at MAX_TOKENS: then no tool calls are emitted.
+        if ($this->dropsToolCalls($finishReason)) {
+            $toolCalls = [];
+        } elseif (!empty($toolCalls)) {
             $finishReason = ProviderFinishReason::ToolUse;
         }
 
@@ -802,6 +809,28 @@ final class GeminiProvider extends AbstractProvider
     }
 
     /**
+     * The finish reason of a response (or stream chunk): a prompt blocked by
+     * `promptFeedback.blockReason` has no candidates and is ContentFilter.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function finishReasonOf(array $data): ProviderFinishReason
+    {
+        if (empty($data['candidates']) && isset($data['promptFeedback']['blockReason'])) {
+            return ProviderFinishReason::ContentFilter;
+        }
+
+        return $this->mapGeminiFinishReason($data['candidates'][0]['finishReason'] ?? null);
+    }
+
+    private function dropsToolCalls(ProviderFinishReason $reason): bool
+    {
+        return $reason === ProviderFinishReason::ContentFilter
+            || $reason === ProviderFinishReason::Error
+            || $reason === ProviderFinishReason::MaxTokens;
+    }
+
+    /**
      * Map Gemini finish reasons to ProviderFinishReason enum.
      */
     private function mapGeminiFinishReason(?string $reason): ProviderFinishReason
@@ -809,8 +838,8 @@ final class GeminiProvider extends AbstractProvider
         return match ($reason) {
             'STOP' => ProviderFinishReason::Stop,
             'MAX_TOKENS' => ProviderFinishReason::MaxTokens,
-            'SAFETY' => ProviderFinishReason::Error,
-            'RECITATION' => ProviderFinishReason::Error,
+            'SAFETY', 'RECITATION', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'SPII', 'IMAGE_SAFETY' => ProviderFinishReason::ContentFilter,
+            'MALFORMED_FUNCTION_CALL', 'UNEXPECTED_TOOL_CALL', 'TOO_MANY_TOOL_CALLS', 'MISSING_THOUGHT_SIGNATURE' => ProviderFinishReason::Error,
             default => ProviderFinishReason::Stop,
         };
     }
