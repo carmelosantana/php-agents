@@ -769,7 +769,6 @@ test('stream yields separate reasoning Response for thought:true parts', functio
         "data: " . json_encode([
             'candidates' => [[
                 'content' => ['role' => 'model', 'parts' => [['text' => 'thinking chunk', 'thought' => true]]],
-                'finishReason' => 'STOP',
             ]],
         ]) . "\n\n" .
         "data: " . json_encode([
@@ -1187,3 +1186,39 @@ test('stream that ends with STOP yields no extra Error chunk', function () {
     expect($chunks)->toHaveCount(2)
         ->and(array_map(fn($r) => $r->finishReason, $chunks))->toBe([ProviderFinishReason::Stop, ProviderFinishReason::Stop]);
 });
+
+test('stream ignores parts and tool calls after a terminal candidate but still reads later usage', function (array $terminal, ProviderFinishReason $expected) {
+    $sseData = 'data: ' . json_encode($terminal) . "\n\n"
+        . 'data: ' . json_encode([
+            'candidates' => [[
+                'content' => ['role' => 'model', 'parts' => [['text' => 'Late text'], ['functionCall' => ['name' => 'get_weather', 'args' => ['city' => 'NYC']]]]],
+                'finishReason' => 'STOP',
+            ]],
+            'usageMetadata' => ['promptTokenCount' => 7, 'candidatesTokenCount' => 2, 'totalTokenCount' => 9],
+        ]) . "\n\n";
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $chunks = iterator_to_array((new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->stream([new UserMessage('hi')]), false);
+
+    $toolCalls = array_merge(...array_map(fn($r) => $r->toolCalls, $chunks));
+    $reasons = array_map(fn($r) => $r->finishReason, $chunks);
+
+    expect($toolCalls)->toBe([])
+        ->and(implode('', array_map(fn($r) => $r->content, $chunks)))->not->toContain('Late text')
+        ->and($reasons)->not->toContain(ProviderFinishReason::ToolUse)
+        ->and($reasons[0])->toBe($expected)
+        ->and($chunks[array_key_last($chunks)]->usage?->totalTokens)->toBe(9);
+})->with([
+    'SAFETY candidate' => [
+        ['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'Part']]], 'finishReason' => 'SAFETY']]],
+        ProviderFinishReason::ContentFilter,
+    ],
+    'blocked prompt' => [
+        ['promptFeedback' => ['blockReason' => 'SAFETY']],
+        ProviderFinishReason::ContentFilter,
+    ],
+    'STOP candidate' => [
+        ['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'Done.']]], 'finishReason' => 'STOP']]],
+        ProviderFinishReason::Stop,
+    ],
+]);

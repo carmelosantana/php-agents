@@ -123,10 +123,19 @@ final class GeminiProvider extends AbstractProvider
         $finished = false;
 
         foreach ($parser->events() as $json) {
+            // A terminal candidate ended the answer: later parts and tool calls are ignored.
+            if ($finished) {
+                $usage = $this->parseUsageMetadata($json);
+                if ($usage !== null) {
+                    yield new Response(content: '', finishReason: ProviderFinishReason::Stop, toolCalls: [], model: $this->model, usage: $usage);
+                }
+                continue;
+            }
+
             $candidate = $json['candidates'][0] ?? [];
             $parts = $candidate['content']['parts'] ?? [];
             $finishReason = $this->finishReasonOf($json);
-            $finished = $finished || isset($candidate['finishReason']) || isset($json['promptFeedback']['blockReason']);
+            $finished = isset($candidate['finishReason']) || isset($json['promptFeedback']['blockReason']);
 
             $text = '';
             $reasoning = '';
