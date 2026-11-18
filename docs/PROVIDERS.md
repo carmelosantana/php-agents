@@ -151,7 +151,7 @@ $result = $provider->structured(
 ```php
 // OpenRouter
 $provider = new OpenAICompatibleProvider(
-    model: 'anthropic/claude-sonnet-4-20250514',
+    model: 'anthropic/claude-sonnet-5-5',
     apiKey: getenv('OPENROUTER_API_KEY'),
     baseUrl: 'https://openrouter.ai/api/v1',
 );
@@ -222,7 +222,7 @@ Purpose-built provider for Claude models. Handles Anthropic's unique message for
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 
 $provider = new AnthropicProvider(
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-5-5',
     apiKey: getenv('ANTHROPIC_API_KEY'),
 );
 ```
@@ -231,7 +231,7 @@ $provider = new AnthropicProvider(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `model` | `string` | — | Model identifier (required) |
+| `model` | `string` | `'claude-sonnet-5-5'` | Model identifier |
 | `apiKey` | `string` | `''` | Anthropic API key |
 | `baseUrl` | `string` | `'https://api.anthropic.com/v1'` | API base URL |
 | `httpClient` | `?HttpClientInterface` | `null` | Custom HTTP client |
@@ -297,7 +297,7 @@ sequenceDiagram
 
 ### Thinking Blocks
 
-Thinking blocks are kept on the AssistantMessage and sent back unchanged within a run, on the turns that call tools, which is where Anthropic requires them. Anthropic rejects a thinking block whose text or `signature` changed, so the provider rebuilds each block from the stream: `thinking_delta` events give the thinking text, `signature_delta` events give its signature, and a `redacted_thinking` block arrives complete with its `data`. The final `Response` of a stream carries them, in order with the text and `tool_use` blocks, as `$response->contentBlocks`; `chat()` fills it from the response body. The agent passes them only to the `AssistantMessage` of a tool-use turn (`$message->contentBlocks()`); text answers, empty turns and failed stops are sent as plain text, so an empty assistant turn holding only thinking is never sent. The provider sends a tool-use turn's blocks as they are, and the provider sends that message's blocks as they are. Tool inputs keep `{}` as an object, so the JSON matches what the API sent.
+Thinking blocks are kept on the AssistantMessage and sent back unchanged within a run, on the turns that call tools, which is where Anthropic requires them. Anthropic rejects a thinking block whose text or `signature` changed, so the provider rebuilds each block from the stream: `thinking_delta` events give the thinking text, `signature_delta` events give its signature, and a `redacted_thinking` block arrives complete with its `data`. The final `Response` of a stream carries them, in order with the text and `tool_use` blocks, as `$response->contentBlocks`; `chat()` fills it from the response body. The agent passes them only to the `AssistantMessage` of a tool-use turn (`$message->contentBlocks()`); text answers, empty turns and failed stops are sent as plain text, so an empty assistant turn holding only thinking is never sent. The provider sends a tool-use turn's blocks as they are. Tool inputs keep `{}` as an object, so the JSON matches what the API sent.
 
 The blocks are dropped, and the message is sent as plain text and tool calls without thinking:
 
@@ -333,19 +333,19 @@ The provider tries Anthropic's models API first, then falls back to a static lis
 
 ```php
 $models = $provider->models();
-// ModelDefinition[] — includes context windows and max output tokens
+// ModelDefinition[] — context window, max output tokens, vision and thinking support,
+// read from max_input_tokens, max_tokens and capabilities, following has_more for up to 10 pages
 ```
 
 Static fallback models:
 
 | Model | Context Window | Max Output |
 |-------|:-:|:-:|
-| `claude-sonnet-4-20250514` | 200K | 8,192 |
-| `claude-opus-4-20250514` | 200K | 32,000 |
-| `claude-3-5-haiku-20241022` | 200K | 8,192 |
-| `claude-3-5-sonnet-20241022` | 200K | 8,192 |
-| `claude-3-opus-20240229` | 200K | 4,096 |
-| `claude-3-haiku-20240307` | 200K | 4,096 |
+| `claude-opus-5-5` | 1M | 128,000 |
+| `claude-sonnet-5-5` | 1M | 128,000 |
+| `claude-haiku-5-5` | 1M | 128,000 |
+| `claude-fable-5-2` | 1M | 128,000 |
+| `claude-haiku-4-5` | 200K | 64,000 |
 
 ### Health Check
 

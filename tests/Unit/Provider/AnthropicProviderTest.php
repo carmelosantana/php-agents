@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use CarmeloSantana\PHPAgents\Enum\ModelCapability;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
@@ -1022,4 +1023,169 @@ test('stream logs the tool name and argument length when tool JSON does not deco
         ->and($logger->records[0][0])->toBe(Psr\Log\LogLevel::DEBUG)
         ->and($logger->records[0][2])->toBe(['tool' => 'lookup', 'length' => 13])
         ->and($logger->records[0][1])->not->toContain('secret');
+});
+
+// --- Models API ---
+
+/**
+ * @param list<array<string, mixed>> $pages
+ * @param list<string> $urls
+ */
+function anthropicModelsClient(array $pages, array &$urls): MockHttpClient
+{
+    return new MockHttpClient(function (string $method, string $url, array $options) use ($pages, &$urls): MockResponse {
+        $urls[] = $url;
+        $page = $pages[min(count($urls), count($pages)) - 1];
+
+        return new MockResponse(json_encode($page), ['http_code' => 200]);
+    });
+}
+
+test('default model is claude-sonnet-5-5', function () {
+    expect((new AnthropicProvider(apiKey: 'test'))->getModel())->toBe('claude-sonnet-5-5');
+});
+
+test('models maps max_input_tokens, max_tokens and capabilities', function () {
+    $urls = [];
+    $client = anthropicModelsClient([[
+        'data' => [[
+            'id' => 'claude-opus-5-5',
+            'display_name' => 'Claude Opus 5.5',
+            'created_at' => '2026-09-01T00:00:00Z',
+            'max_input_tokens' => 1000000,
+            'max_tokens' => 128000,
+            'lifecycle' => ['status' => 'active'],
+            'capabilities' => [
+                'image_input' => ['supported' => true],
+                'thinking' => ['supported' => true, 'types' => ['adaptive' => ['supported' => true]]],
+            ],
+        ], ['display_name' => 'no id']],
+        'has_more' => false,
+    ]], $urls);
+
+    $models = (new AnthropicProvider(apiKey: 'test', httpClient: $client))->models();
+
+    expect($models)->toHaveCount(1);
+    $model = $models[0];
+    expect($model->id)->toBe('claude-opus-5-5')
+        ->and($model->name)->toBe('Claude Opus 5.5')
+        ->and($model->contextWindow)->toBe(1000000)
+        ->and($model->maxTokens)->toBe(128000)
+        ->and($model->vision)->toBeTrue()
+        ->and($model->thinking)->toBeTrue()
+        ->and($model->reasoning)->toBeTrue()
+        ->and($model->toolCalls)->toBeTrue()
+        ->and($model->capabilities)->toBe([ModelCapability::Text, ModelCapability::Image, ModelCapability::Tools, ModelCapability::Reasoning])
+        ->and($model->metadataSource)->toBe('provider-api')
+        ->and($model->fieldSources)->toBe(['contextWindow' => 'provider-api', 'maxTokens' => 'provider-api'])
+        ->and($model->extras)->toBe([
+            'capabilities' => [
+                'image_input' => ['supported' => true],
+                'thinking' => ['supported' => true, 'types' => ['adaptive' => ['supported' => true]]],
+            ],
+            'lifecycle' => ['status' => 'active'],
+            'created_at' => '2026-09-01T00:00:00Z',
+        ])
+        ->and($urls)->toBe(['https://api.anthropic.com/v1/models?limit=1000']);
+});
+
+test('models treats null limits and null capabilities as defaults', function () {
+    $urls = [];
+    $client = anthropicModelsClient([[
+        'data' => [
+            ['id' => 'm-null', 'display_name' => null, 'max_input_tokens' => null, 'max_tokens' => null, 'capabilities' => null, 'lifecycle' => null, 'created_at' => null],
+            ['id' => 'm-missing'],
+        ],
+        'has_more' => false,
+    ]], $urls);
+
+    $models = (new AnthropicProvider(apiKey: 'test', httpClient: $client))->models();
+
+    expect($models)->toHaveCount(2);
+    foreach ($models as $model) {
+        expect($model->name)->toBe($model->id)
+            ->and($model->contextWindow)->toBe(200000)
+            ->and($model->maxTokens)->toBe(4096)
+            ->and($model->fieldSources)->toBe(['contextWindow' => 'default', 'maxTokens' => 'default'])
+            ->and($model->vision)->toBeFalse()
+            ->and($model->thinking)->toBeFalse()
+            ->and($model->reasoning)->toBeFalse()
+            ->and($model->capabilities)->toBe([ModelCapability::Text, ModelCapability::Tools])
+            ->and($model->extras)->toBe([]);
+    }
+});
+
+test('models follows has_more with after_id', function () {
+    $urls = [];
+    $client = anthropicModelsClient([
+        ['data' => [['id' => 'm1']], 'has_more' => true, 'first_id' => 'm1', 'last_id' => 'm1'],
+        ['data' => [['id' => 'm2']], 'has_more' => false, 'first_id' => 'm2', 'last_id' => 'm2'],
+    ], $urls);
+
+    $models = (new AnthropicProvider(apiKey: 'test', httpClient: $client))->models();
+
+    expect(array_map(fn($m) => $m->id, $models))->toBe(['m1', 'm2'])
+        ->and($urls)->toHaveCount(2)
+        ->and($urls[1])->toBe('https://api.anthropic.com/v1/models?after_id=m1&limit=1000');
+});
+
+test('models stops when last_id repeats', function () {
+    $urls = [];
+    $client = anthropicModelsClient([
+        ['data' => [['id' => 'm1']], 'has_more' => true, 'last_id' => 'm1'],
+        ['data' => [['id' => 'm2']], 'has_more' => true, 'last_id' => 'm1'],
+    ], $urls);
+
+    $models = (new AnthropicProvider(apiKey: 'test', httpClient: $client))->models();
+
+    expect($urls)->toHaveCount(2)
+        ->and(array_map(fn($m) => $m->id, $models))->toBe(['m1', 'm2']);
+});
+
+test('models stops after 10 pages', function () {
+    $urls = [];
+    $client = new MockHttpClient(function (string $method, string $url) use (&$urls): MockResponse {
+        $urls[] = $url;
+        $id = 'm' . count($urls);
+
+        return new MockResponse(json_encode(['data' => [['id' => $id]], 'has_more' => true, 'last_id' => $id]), ['http_code' => 200]);
+    });
+
+    $models = (new AnthropicProvider(apiKey: 'test', httpClient: $client))->models();
+
+    expect($urls)->toHaveCount(10)
+        ->and($models)->toHaveCount(10);
+});
+
+test('models falls back to the static list when a later page fails', function () {
+    $client = new MockHttpClient([
+        new MockResponse(json_encode(['data' => [['id' => 'm1']], 'has_more' => true, 'last_id' => 'm1']), ['http_code' => 200]),
+        new MockResponse('{"error":{"message":"boom"}}', ['http_code' => 500]),
+    ]);
+
+    $models = (new AnthropicProvider(apiKey: 'test', httpClient: $client))->models();
+
+    expect($models[0]->metadataSource)->toBe('static-fallback');
+});
+
+test('static fallback lists only current models', function () {
+    $client = new MockHttpClient(fn() => throw new \RuntimeException('offline'));
+
+    $models = (new AnthropicProvider(apiKey: 'test', httpClient: $client))->models();
+
+    expect(array_map(fn($m) => [$m->id, $m->name, $m->contextWindow, $m->maxTokens], $models))->toBe([
+        ['claude-opus-5-5', 'Claude Opus 5.5', 1_000_000, 128_000],
+        ['claude-sonnet-5-5', 'Claude Sonnet 5.5', 1_000_000, 128_000],
+        ['claude-haiku-5-5', 'Claude Haiku 5.5', 1_000_000, 128_000],
+        ['claude-fable-5-2', 'Claude Fable 5.2', 1_000_000, 128_000],
+        ['claude-haiku-4-5', 'Claude Haiku 4.5', 200_000, 64_000],
+    ]);
+    foreach ($models as $model) {
+        expect($model->toolCalls)->toBeTrue()
+            ->and($model->vision)->toBeTrue()
+            ->and($model->thinking)->toBeTrue()
+            ->and($model->reasoning)->toBeTrue()
+            ->and($model->capabilities)->toBe([ModelCapability::Text, ModelCapability::Image, ModelCapability::Tools, ModelCapability::Reasoning])
+            ->and($model->metadataSource)->toBe('static-fallback');
+    }
 });

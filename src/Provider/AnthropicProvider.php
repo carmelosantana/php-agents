@@ -7,6 +7,7 @@ namespace CarmeloSantana\PHPAgents\Provider;
 use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
+use CarmeloSantana\PHPAgents\Enum\ModelCapability;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
@@ -18,10 +19,12 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 
 final class AnthropicProvider extends AbstractProvider
 {
+    private const MODELS_MAX_PAGES = 10;
+
     private string $apiVersion = '2023-06-01';
 
     public function __construct(
-        string $model = 'claude-sonnet-4-20250514',
+        string $model = 'claude-sonnet-5-5',
         string $baseUrl = 'https://api.anthropic.com/v1',
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
@@ -419,30 +422,31 @@ final class AnthropicProvider extends AbstractProvider
 
     public function models(): array
     {
-        // Attempt to fetch from Anthropic's models API (available since 2024)
         try {
-            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->requestLimits->apply([
-                'headers' => $this->headers(),
-            ]), 'timeout' => 10.0]);
-
-            $data = $this->decodeResponse($response);
             $models = [];
+            $afterId = null;
 
-            foreach ($data['data'] ?? [] as $model) {
-                $models[] = new ModelDefinition(
-                    id: $model['id'] ?? '',
-                    name: $model['display_name'] ?? $model['id'] ?? '',
-                    provider: 'anthropic',
-                    contextWindow: $model['context_window'] ?? 200000,
-                    maxTokens: $model['max_output'] ?? 4096,
-                    family: 'claude',
-                    toolCalls: true,
-                    metadataSource: 'provider-api',
-                    fieldSources: [
-                        'contextWindow' => 'provider-api',
-                        'maxTokens' => 'provider-api',
-                    ],
-                );
+            for ($page = 0; $page < self::MODELS_MAX_PAGES; $page++) {
+                $query = $afterId === null ? ['limit' => 1000] : ['after_id' => $afterId, 'limit' => 1000];
+
+                $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->requestLimits->apply([
+                    'headers' => $this->headers(),
+                    'query' => $query,
+                ]), 'timeout' => 10.0]);
+
+                $data = $this->decodeResponse($response);
+
+                foreach ($data['data'] ?? [] as $model) {
+                    if (is_array($model) && is_string($model['id'] ?? null) && $model['id'] !== '') {
+                        $models[] = $this->mapApiModel($model);
+                    }
+                }
+
+                $lastId = $data['last_id'] ?? null;
+                if (($data['has_more'] ?? false) !== true || !is_string($lastId) || $lastId === '' || $lastId === $afterId) {
+                    break;
+                }
+                $afterId = $lastId;
             }
 
             if (!empty($models)) {
@@ -454,14 +458,82 @@ final class AnthropicProvider extends AbstractProvider
         }
 
         // Static fallback — kept up-to-date with major releases
-        return [
-            new ModelDefinition(id: 'claude-opus-4-20250514', name: 'Claude Opus 4', provider: 'anthropic', contextWindow: 200000, maxTokens: 32000, family: 'claude', toolCalls: true, metadataSource: 'static-fallback', fieldSources: ['contextWindow' => 'static-fallback', 'maxTokens' => 'static-fallback']),
-            new ModelDefinition(id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', provider: 'anthropic', contextWindow: 200000, maxTokens: 16000, family: 'claude', toolCalls: true, metadataSource: 'static-fallback', fieldSources: ['contextWindow' => 'static-fallback', 'maxTokens' => 'static-fallback']),
-            new ModelDefinition(id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', provider: 'anthropic', contextWindow: 200000, maxTokens: 8192, family: 'claude', toolCalls: true, metadataSource: 'static-fallback', fieldSources: ['contextWindow' => 'static-fallback', 'maxTokens' => 'static-fallback']),
-            new ModelDefinition(id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', provider: 'anthropic', contextWindow: 200000, maxTokens: 8192, family: 'claude', toolCalls: true, metadataSource: 'static-fallback', fieldSources: ['contextWindow' => 'static-fallback', 'maxTokens' => 'static-fallback']),
-            new ModelDefinition(id: 'claude-3-opus-20240229', name: 'Claude 3 Opus', provider: 'anthropic', contextWindow: 200000, maxTokens: 4096, family: 'claude', toolCalls: true, metadataSource: 'static-fallback', fieldSources: ['contextWindow' => 'static-fallback', 'maxTokens' => 'static-fallback']),
-            new ModelDefinition(id: 'claude-3-haiku-20240307', name: 'Claude 3 Haiku', provider: 'anthropic', contextWindow: 200000, maxTokens: 4096, family: 'claude', toolCalls: true, metadataSource: 'static-fallback', fieldSources: ['contextWindow' => 'static-fallback', 'maxTokens' => 'static-fallback']),
-        ];
+        return array_map(
+            static fn(array $model): ModelDefinition => new ModelDefinition(
+                id: $model[0],
+                name: $model[1],
+                provider: 'anthropic',
+                capabilities: [ModelCapability::Text, ModelCapability::Image, ModelCapability::Tools, ModelCapability::Reasoning],
+                reasoning: true,
+                contextWindow: $model[2],
+                maxTokens: $model[3],
+                family: 'claude',
+                toolCalls: true,
+                vision: true,
+                thinking: true,
+                metadataSource: 'static-fallback',
+                fieldSources: ['contextWindow' => 'static-fallback', 'maxTokens' => 'static-fallback'],
+            ),
+            [
+                ['claude-opus-5-5', 'Claude Opus 5.5', 1_000_000, 128_000],
+                ['claude-sonnet-5-5', 'Claude Sonnet 5.5', 1_000_000, 128_000],
+                ['claude-haiku-5-5', 'Claude Haiku 5.5', 1_000_000, 128_000],
+                ['claude-fable-5-2', 'Claude Fable 5.2', 1_000_000, 128_000],
+                ['claude-haiku-4-5', 'Claude Haiku 4.5', 200_000, 64_000],
+            ],
+        );
+    }
+
+    /**
+     * Map one entry of the Models API. Limits and capabilities may be null or missing.
+     *
+     * @param array<string, mixed> $model
+     */
+    private function mapApiModel(array $model): ModelDefinition
+    {
+        $id = (string) $model['id'];
+        $contextWindow = $model['max_input_tokens'] ?? null;
+        $maxTokens = $model['max_tokens'] ?? null;
+        $hasContextWindow = is_int($contextWindow) && $contextWindow > 0;
+        $hasMaxTokens = is_int($maxTokens) && $maxTokens > 0;
+
+        $capabilities = is_array($model['capabilities'] ?? null) ? $model['capabilities'] : [];
+        $vision = ($capabilities['image_input']['supported'] ?? null) === true;
+        $thinking = ($capabilities['thinking']['supported'] ?? null) === true;
+
+        $name = $model['display_name'] ?? null;
+
+        return new ModelDefinition(
+            id: $id,
+            name: is_string($name) && $name !== '' ? $name : $id,
+            provider: 'anthropic',
+            capabilities: array_values(array_filter([
+                ModelCapability::Text,
+                $vision ? ModelCapability::Image : null,
+                ModelCapability::Tools,
+                $thinking ? ModelCapability::Reasoning : null,
+            ])),
+            reasoning: $thinking,
+            contextWindow: $hasContextWindow ? $contextWindow : 200000,
+            maxTokens: $hasMaxTokens ? $maxTokens : 4096,
+            family: 'claude',
+            toolCalls: true,
+            vision: $vision,
+            thinking: $thinking,
+            metadataSource: 'provider-api',
+            fieldSources: [
+                'contextWindow' => $hasContextWindow ? 'provider-api' : 'default',
+                'maxTokens' => $hasMaxTokens ? 'provider-api' : 'default',
+            ],
+            extras: array_filter(
+                [
+                    'capabilities' => $model['capabilities'] ?? null,
+                    'lifecycle' => $model['lifecycle'] ?? null,
+                    'created_at' => $model['created_at'] ?? null,
+                ],
+                static fn(mixed $value): bool => $value !== null,
+            ),
+        );
     }
 
     public function isAvailable(): bool

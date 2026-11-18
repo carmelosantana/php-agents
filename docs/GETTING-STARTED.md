@@ -84,7 +84,7 @@ $provider = new OpenAICompatibleProvider(
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 
 $provider = new AnthropicProvider(
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-5-5',
     apiKey: getenv('ANTHROPIC_API_KEY'),
 );
 ```
