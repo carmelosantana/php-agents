@@ -594,7 +594,8 @@ abstract class AbstractAgent implements AgentInterface
 
     /**
      * End the run when the provider stopped for a reason other than Stop,
-     * ToolUse or MaxTokens. Runs before done, tools and text, so no tool is
+     * ToolUse or MaxTokens, or at MaxTokens with no text (its tool calls are
+     * already dropped). Runs before done, tools and text, so no tool is
      * executed and no agent.done is emitted whatever arrived before the stop.
      *
      * Refusal and ContentFilter keep the text received as an assistant turn,
@@ -615,7 +616,10 @@ abstract class AbstractAgent implements AgentInterface
             ProviderFinishReason::ContextWindowExceeded => [AgentFinishReason::ContextWindowExceeded, $response->content],
             ProviderFinishReason::Error => [AgentFinishReason::Error, 'Provider error: the response ended without a valid finish reason.'],
             ProviderFinishReason::PauseTurn => [AgentFinishReason::Error, 'Provider paused the turn (pause_turn); server-tool continuation is not supported.'],
-            ProviderFinishReason::Stop, ProviderFinishReason::ToolUse, ProviderFinishReason::MaxTokens => [null, ''],
+            ProviderFinishReason::MaxTokens => $response->content === ''
+                ? [AgentFinishReason::Error, 'Provider stopped at max_tokens before producing an answer; raise max_tokens in providerOptions.']
+                : [null, ''],
+            ProviderFinishReason::Stop, ProviderFinishReason::ToolUse => [null, ''],
         };
 
         if ($finishReason === null) {

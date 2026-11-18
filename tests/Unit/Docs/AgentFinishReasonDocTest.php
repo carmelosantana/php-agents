@@ -22,5 +22,6 @@ test('the Output section documents providerFinishReason', function () {
     expect(property_exists(Output::class, 'providerFinishReason'))->toBeTrue()
         ->and($doc)->toContain('$output->providerFinishReason;')
         ->and($doc)->toContain("'Provider error: the response ended without a valid finish reason.'")
-        ->and($doc)->toContain("'Provider paused the turn (pause_turn); server-tool continuation is not supported.'");
+        ->and($doc)->toContain("'Provider paused the turn (pause_turn); server-tool continuation is not supported.'")
+        ->and($doc)->toContain("| `MaxTokens` with no text | `AgentFinishReason::Error` with content `'Provider stopped at max_tokens before producing an answer; raise max_tokens in providerOptions.'`");
 });

@@ -327,6 +327,7 @@ The agent reads the provider reason before it looks at `done()`, tool calls or t
 | `Stop` | Text is returned as `AgentFinishReason::Stop` (empty text goes to the empty-response policy) |
 | `ToolUse` | Tool calls run; the only reason that runs them. With no tool calls collected it goes to the empty-response policy |
 | `MaxTokens` | Text is returned as `AgentFinishReason::Stop`; any tool calls are dropped |
+| `MaxTokens` with no text | `AgentFinishReason::Error` with content `'Provider stopped at max_tokens before producing an answer; raise max_tokens in providerOptions.'` and an `agent.error` event; any tool calls are dropped and the model is not asked again |
 | `Refusal` | `AgentFinishReason::Refusal`; the text is added as an assistant turn without tool calls |
 | `ContentFilter` | `AgentFinishReason::ContentFilter`, the same way |
 | `ContextWindowExceeded` | `AgentFinishReason::ContextWindowExceeded` |

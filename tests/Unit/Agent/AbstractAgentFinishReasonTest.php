@@ -306,3 +306,28 @@ test('tool calls on Stop chunks with no terminal reason still run as ToolUse', f
         ->and($output->providerFinishReason)->toBe(ProviderFinishReason::Stop)
         ->and($executor->calls)->toBe(1);
 });
+
+dataset('max tokens with no text', [
+    'no tool calls' => [[finishReasonChunk(ProviderFinishReason::MaxTokens)]],
+    'dropped tool calls' => [[finishReasonChunk(ProviderFinishReason::MaxTokens, '', [finishReasonPingCall()])]],
+    'dropped done call' => [[finishReasonChunk(ProviderFinishReason::MaxTokens, '', [finishReasonDoneCall()])]],
+]);
+
+test('max tokens with no text ends the run as Error instead of nudging', function (array $chunks) {
+    [$output, $provider, $executor, $recorder] = runFinishReasonAgent([
+        $chunks,
+        [finishReasonChunk(ProviderFinishReason::Stop, 'A confident unfinished answer.')],
+    ]);
+
+    $message = 'Provider stopped at max_tokens before producing an answer; raise max_tokens in providerOptions.';
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Error)
+        ->and($output->providerFinishReason)->toBe(ProviderFinishReason::MaxTokens)
+        ->and($output->content)->toBe($message)
+        ->and($executor->calls)->toBe(0)
+        ->and($provider->streamCalls)->toHaveCount(1)
+        ->and($recorder->dataFor('agent.error'))->toBe([$message])
+        ->and($recorder->dataFor('agent.done'))->toBe([])
+        ->and($recorder->dataFor('agent.empty_response'))->toBe([])
+        ->and(finishReasonUserMessages($output))->toHaveCount(1);
+})->with('max tokens with no text');
