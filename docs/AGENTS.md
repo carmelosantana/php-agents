@@ -301,6 +301,7 @@ $output->model;        // string — model name reported by the provider
 $output->iterations;   // int — iterations consumed by the loop
 $output->conversation; // Conversation|null — full in-memory conversation
 $output->finishReason; // AgentFinishReason — why the agent stopped
+$output->providerFinishReason; // ProviderFinishReason|null — the provider's stop reason for the last response
 ```
 
 ### Finish Reasons
@@ -312,5 +313,24 @@ $output->finishReason; // AgentFinishReason — why the agent stopped
 | `AgentFinishReason::Error` | An error occurred in the agent loop |
 | `AgentFinishReason::Done` | Agent completed via the built-in `done()` tool |
 | `AgentFinishReason::BudgetExhausted` | Budget wrap-up iterations were exhausted after a budget warning |
+| `AgentFinishReason::EmptyResponse` | The model kept returning empty replies after the configured empty-response retries |
+| `AgentFinishReason::Refusal` | The provider refused the request; `content` is the text received |
+| `AgentFinishReason::ContentFilter` | The provider's content filter stopped the response; `content` is the text received |
+| `AgentFinishReason::ContextWindowExceeded` | The request did not fit the model's context window |
 
-Provider responses use `ProviderFinishReason` instead. That enum represents normalized model/API stop reasons such as `Stop`, `ToolUse`, `MaxTokens`, and provider-level `Error` states.
+Provider responses use `ProviderFinishReason` instead. That enum represents normalized model/API stop reasons: `Stop`, `ToolUse`, `MaxTokens`, `Error`, `Refusal`, `ContentFilter`, `PauseTurn` and `ContextWindowExceeded`. `Output::$providerFinishReason` carries the reason for the last provider response, or `null` on an output not built from a provider response (cancellation, budget exhaustion, max iterations or a thrown provider error).
+
+The agent reads the provider reason before it looks at `done()`, tool calls or text. A failed stop ends the run whatever content or tool calls arrived first: no tool runs and no `agent.done` is emitted.
+
+| Provider reason | Agent outcome |
+|---|---|
+| `Stop` | Text is returned as `AgentFinishReason::Stop` (empty text goes to the empty-response policy) |
+| `ToolUse` | Tool calls run; the only reason that runs them. With no tool calls collected it goes to the empty-response policy |
+| `MaxTokens` | Text is returned as `AgentFinishReason::Stop`; any tool calls are dropped |
+| `Refusal` | `AgentFinishReason::Refusal`; the text is added as an assistant turn without tool calls |
+| `ContentFilter` | `AgentFinishReason::ContentFilter`, the same way |
+| `ContextWindowExceeded` | `AgentFinishReason::ContextWindowExceeded` |
+| `Error` | `AgentFinishReason::Error` with content `'Provider error: the response ended without a valid finish reason.'` and an `agent.error` event |
+| `PauseTurn` | `AgentFinishReason::Error` with content `'Provider paused the turn (pause_turn); server-tool continuation is not supported.'` and an `agent.error` event |
+
+The run's accumulated reason is the last chunk reason that is not `Stop`; when every chunk says `Stop` it is `ToolUse` if tool calls were collected, otherwise `Stop`. Usage on a failed chunk still counts toward `Output::$usage` and the context window.
