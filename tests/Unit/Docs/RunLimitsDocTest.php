@@ -29,3 +29,28 @@ test('the tools guide says hidden tools are not executed', function () {
         ->and($doc)->toContain('ToolGrantInterface')
         ->and($doc)->not->toContain('can still be executed');
 });
+
+test('the run limits section documents the cumulative limits and that they are cooperative', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../docs/AGENTS.md');
+    $fields = array_map(
+        fn(ReflectionParameter $p): string => $p->getName(),
+        (new ReflectionMethod(\CarmeloSantana\PHPAgents\Agent\RunLimits::class, '__construct'))->getParameters(),
+    );
+
+    foreach ($fields as $field) {
+        expect($doc)->toContain("| `{$field}` |");
+    }
+
+    expect($fields)->toBe([
+        'maxToolCallsPerTurn', 'maxToolCallsPerRun', 'executeUnadvertisedTools',
+        'maxRunSeconds', 'maxResponseBytes', 'maxEstimatedTokens', 'maxInputTokens',
+    ])
+        ->and($doc)->toContain('### Cumulative limits')
+        ->and($doc)->toContain('`Run time limit reached.`')
+        ->and($doc)->toContain('`Response size limit reached.`')
+        ->and($doc)->toContain('`Token limit reached.`')
+        ->and($doc)->toContain('`Input is too large.`')
+        ->and($doc)->toContain('The limits are cooperative')
+        ->and($doc)->toContain('`RequestLimits::$maxResponseBytes`')
+        ->and($doc)->toContain('`ContextWindow::report()` keeps the higher of the reported total and that estimate.');
+});

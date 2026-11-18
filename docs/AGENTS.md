@@ -69,7 +69,7 @@ $agent = new ResearchAgent(
 | `budgetExitThreshold` | `float` | `0.0` | Optional ratio `0.0`-`1.0`; emits `agent.budget_warning` once when the current iteration crosses the threshold |
 | `budgetExitWrapUpIterations` | `int` | `2` | Extra iterations allowed after a budget warning before the loop returns `BudgetExhausted` |
 | `providerOptions` | `array` | `[]` | Provider-specific request options passed to `stream()` on every iteration |
-| `runLimits` | `?RunLimits` | `null` | Tool-call caps per turn and per run, and which tools may execute; `null` means `new RunLimits()` (see [Run Limits](#run-limits)) |
+| `runLimits` | `?RunLimits` | `null` | Tool-call caps per turn and per run, which tools may execute, and cumulative wall-time, response-size, token and input-size limits; `null` means `new RunLimits()` (see [Run Limits](#run-limits)) |
 
 `providerOptions` are specific to the provider you pass in: use the keys that provider's API takes
 (for example `max_tokens` or `thinking` for Anthropic). The agent sends the same options with every
@@ -84,15 +84,20 @@ tool output: they can still change the model, the output-token limit and other r
 
 ## Run Limits
 
-`RunLimits` (`src/Agent/RunLimits.php`) bounds what one `run()` may do with tools:
+`RunLimits` (`src/Agent/RunLimits.php`) bounds what one `run()` may do with tools, and how much
+time, response data and tokens it may use whatever the provider reports:
 
 | Field | Default | Effect |
 |-------|---------|--------|
 | `maxToolCallsPerTurn` | `0` | Tool calls run from one provider response; `0` means no cap |
 | `maxToolCallsPerRun` | `0` | Tool calls sent to the policy and executor across the run; `0` means no cap |
 | `executeUnadvertisedTools` | `false` | `true` lets the model execute any registered tool, even one `maxTools` left out |
+| `maxRunSeconds` | `0.0` | Wall time of the run in seconds, from the start of `run()`; `0.0` means no limit |
+| `maxResponseBytes` | `0` | Bytes received from the provider across the run; `0` means no limit |
+| `maxEstimatedTokens` | `0` | Local token estimate across the run; `0` means no limit |
+| `maxInputTokens` | `0` | Estimated tokens of the new input message; `0` means no limit |
 
-A negative cap throws `\InvalidArgumentException`. The `done` tool counts toward neither cap.
+A negative value throws `\InvalidArgumentException`. The `done` tool counts toward neither tool-call cap.
 
 - **Executable tools.** The agent executes only the tools it advertised to the provider in this run
   (`setMaxTools()` caps that list, and `done` is always in it). A call to any other name is answered
@@ -119,6 +124,50 @@ $agent = new ResearchAgent(
     runLimits: new RunLimits(maxToolCallsPerTurn: 8, maxToolCallsPerRun: 50),
 );
 $agent->setMaxTools(20);
+```
+
+### Cumulative limits
+
+The provider, or a proxy in front of it, controls the usage it reports, how much it streams and how
+long it takes. These four limits do not depend on any of that. Each one ends the run with
+`AgentFinishReason::BudgetExhausted`, emits `agent.error` with the same text as the content, and
+returns that fixed content:
+
+| Limit | Checked | Content |
+|-------|---------|---------|
+| `maxRunSeconds` | At the top of each iteration, between stream chunks, before each serial tool call and before a batch call | `Run time limit reached.` |
+| `maxResponseBytes` | After each stream chunk; the stream is abandoned | `Response size limit reached.` |
+| `maxEstimatedTokens` | Before each provider call and after each response | `Token limit reached.` |
+| `maxInputTokens` | Once, before the first provider call | `Input is too large.` |
+
+- **Response bytes** count each chunk's `content` and `reasoning` plus the JSON of its tool calls and
+  content blocks. The total runs across every provider call of the run.
+- **Estimated tokens.** Before each provider call the request estimate is
+  `Conversation::estimateTokens()` plus one token per 4 bytes of the tool schemas' JSON. If the
+  tokens spent so far plus that estimate exceed the limit, the run ends before the request is sent.
+  After the response, the run adds `max(reported completion tokens, response bytes / 4)`, so a
+  provider that reports zero or no usage still counts.
+- **Input size.** Only the new `$input` message is measured, with the same 4-characters-per-token
+  heuristic; history is covered by `maxEstimatedTokens`. A larger input never reaches the provider.
+- **Tools stopped by time.** A tool call that `maxRunSeconds` stops gets the error result
+  `Run time limit reached.` with its call id, so every tool call still has a result.
+
+The limits are cooperative: the agent checks them between chunks, before each tool and around batch
+calls. A provider that blocks before yielding its first chunk is bounded only by the provider's
+`RequestLimits` (see [PROVIDERS.md](PROVIDERS.md)), and a single slow tool only by the tool itself.
+One oversized chunk is a transport concern too: `RequestLimits::$maxResponseBytes` caps the
+downloaded body.
+
+```php
+$agent = new ResearchAgent(
+    provider: $provider,
+    runLimits: new RunLimits(
+        maxRunSeconds: 120.0,
+        maxResponseBytes: 4_000_000,
+        maxEstimatedTokens: 500_000,
+        maxInputTokens: 32_000,
+    ),
+);
 ```
 
 ## The Run Loop in Detail
@@ -342,7 +391,7 @@ When the conversation approaches the token budget, the agent loop automatically:
 4. Repairs orphaned tool-result/assistant-message pairs
 5. Merges consecutive same-role messages
 
-If `budgetExitThreshold` is configured and a `ContextWindow` is present, the agent also emits `agent.budget_warning` once when the latest provider-reported usage for the current iteration crosses the configured threshold. The loop then allows `budgetExitWrapUpIterations` additional iterations before returning `AgentFinishReason::BudgetExhausted`.
+If `budgetExitThreshold` is configured and a `ContextWindow` is present, the agent also emits `agent.budget_warning` once when the current iteration's usage crosses the configured threshold. Usage is the higher of the window's `usagePercent()` and the agent's local estimate (request estimate plus response bytes / 4), so a provider or a custom `ContextWindowInterface` that under-reports cannot hide it. Before every provider call the agent passes its request estimate to `estimate()`, and after the response the request-plus-response estimate, then `report()`. `ContextWindow::report()` keeps the higher of the reported total and that estimate. The loop then allows `budgetExitWrapUpIterations` additional iterations before returning `AgentFinishReason::BudgetExhausted`.
 
 ## The Output Value Object
 
@@ -369,7 +418,7 @@ $output->providerFinishReason; // ProviderFinishReason|null — the provider's s
 | `AgentFinishReason::MaxIterations` | Agent loop exhausted its configured `maxIterations` budget |
 | `AgentFinishReason::Error` | An error occurred in the agent loop |
 | `AgentFinishReason::Done` | Agent completed via the built-in `done()` tool |
-| `AgentFinishReason::BudgetExhausted` | Budget wrap-up iterations were exhausted after a budget warning, or a `RunLimits` tool-call cap for the run was reached |
+| `AgentFinishReason::BudgetExhausted` | Budget wrap-up iterations were exhausted after a budget warning, a `RunLimits` tool-call cap for the run was reached, or a `RunLimits` cumulative limit (time, response bytes, estimated tokens, input size) was reached |
 | `AgentFinishReason::EmptyResponse` | The model kept returning empty replies after the configured empty-response retries |
 | `AgentFinishReason::Refusal` | The provider refused the request; `content` is the text received |
 | `AgentFinishReason::ContentFilter` | The provider's content filter stopped the response; `content` is the text received |
