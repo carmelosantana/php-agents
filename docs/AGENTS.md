@@ -53,6 +53,7 @@ $agent = new ResearchAgent(
     budgetExitThreshold: 0.85,              // Optional: graceful wrap-up threshold
     budgetExitWrapUpIterations: 2,          // Optional: extra iterations after warning
     providerOptions: ['max_tokens' => 8192], // Optional: provider-specific request options
+    runLimits: new RunLimits(maxToolCallsPerRun: 50), // Optional: tool-call caps per turn and per run
 );
 ```
 
@@ -68,6 +69,7 @@ $agent = new ResearchAgent(
 | `budgetExitThreshold` | `float` | `0.0` | Optional ratio `0.0`-`1.0`; emits `agent.budget_warning` once when the current iteration crosses the threshold |
 | `budgetExitWrapUpIterations` | `int` | `2` | Extra iterations allowed after a budget warning before the loop returns `BudgetExhausted` |
 | `providerOptions` | `array` | `[]` | Provider-specific request options passed to `stream()` on every iteration |
+| `runLimits` | `?RunLimits` | `null` | Tool-call caps per turn and per run, and which tools may execute; `null` means `new RunLimits()` (see [Run Limits](#run-limits)) |
 
 `providerOptions` are specific to the provider you pass in: use the keys that provider's API takes
 (for example `max_tokens` or `thinking` for Anthropic). The agent sends the same options with every
@@ -79,6 +81,45 @@ They cannot replace the agent's instructions or its tools either: the system pro
 
 Treat `providerOptions` as trusted developer configuration. Never build them from end-user input or
 tool output: they can still change the model, the output-token limit and other request settings.
+
+## Run Limits
+
+`RunLimits` (`src/Agent/RunLimits.php`) bounds what one `run()` may do with tools:
+
+| Field | Default | Effect |
+|-------|---------|--------|
+| `maxToolCallsPerTurn` | `0` | Tool calls run from one provider response; `0` means no cap |
+| `maxToolCallsPerRun` | `0` | Tool calls sent to the policy and executor across the run; `0` means no cap |
+| `executeUnadvertisedTools` | `false` | `true` lets the model execute any registered tool, even one `maxTools` left out |
+
+A negative cap throws `\InvalidArgumentException`. The `done` tool counts toward neither cap.
+
+- **Executable tools.** The agent executes only the tools it advertised to the provider in this run
+  (`setMaxTools()` caps that list, and `done` is always in it). A call to any other name is answered
+  with the same error as a name that does not exist, `Unknown tool: <name>`, after the execution
+  policy has seen it. `executeUnadvertisedTools: true` restores the older behaviour, where every
+  registered tool can run.
+- **Granted tools.** A host tool that discovers tools (a tool search, for example) implements
+  `ToolGrantInterface`. After a call to it runs and returns a non-error result, the agent adds every
+  name from `grantedToolNames()` that is a registered tool to the executable set for the rest of
+  that run. Unknown names are ignored, a call the policy denied or a cap refused grants nothing, and
+  the next `run()` starts without the grants. Implement it only on trusted host code.
+- **Per turn.** Calls beyond `maxToolCallsPerTurn` in one response are not shown to the policy and
+  not run. Each gets the error result `Tool call limit reached: at most N calls per turn.` with its
+  call id, so every tool call still has a result, and `agent.warning` fires once for the turn.
+- **Per run.** Calls beyond `maxToolCallsPerRun` get `Tool call limit reached: at most N calls per run.`
+  After that round the run ends with `AgentFinishReason::BudgetExhausted` and the content
+  `Tool call limit reached for this run.`
+
+```php
+use CarmeloSantana\PHPAgents\Agent\RunLimits;
+
+$agent = new ResearchAgent(
+    provider: $provider,
+    runLimits: new RunLimits(maxToolCallsPerTurn: 8, maxToolCallsPerRun: 50),
+);
+$agent->setMaxTools(20);
+```
 
 ## The Run Loop in Detail
 
@@ -197,6 +238,7 @@ echo $metrics->summary();
 | `agent.tool_error` | `string` | When a tool throws an exception |
 | `agent.done` | `array` | Agent completed (contains response data) |
 | `agent.budget_warning` | `array{usagePercent: float, threshold: float, wrapUpIterations: int}` | Budget threshold was crossed for the current iteration |
+| `agent.warning` | `string` | Non-fatal notice, such as a tool-call limit reached |
 | `agent.error` | `string` | Unrecoverable error in agent loop |
 
 ## Cooperative Cancellation
@@ -318,7 +360,7 @@ $output->providerFinishReason; // ProviderFinishReason|null — the provider's s
 | `AgentFinishReason::MaxIterations` | Agent loop exhausted its configured `maxIterations` budget |
 | `AgentFinishReason::Error` | An error occurred in the agent loop |
 | `AgentFinishReason::Done` | Agent completed via the built-in `done()` tool |
-| `AgentFinishReason::BudgetExhausted` | Budget wrap-up iterations were exhausted after a budget warning |
+| `AgentFinishReason::BudgetExhausted` | Budget wrap-up iterations were exhausted after a budget warning, or a `RunLimits` tool-call cap for the run was reached |
 | `AgentFinishReason::EmptyResponse` | The model kept returning empty replies after the configured empty-response retries |
 | `AgentFinishReason::Refusal` | The provider refused the request; `content` is the text received |
 | `AgentFinishReason::ContentFilter` | The provider's content filter stopped the response; `content` is the text received |

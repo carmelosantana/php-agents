@@ -422,6 +422,17 @@ A returned string denies the call, and the agent turns it into an error tool res
 is `Denied by policy: ` followed by that string, so the model reads it (`src/Agent/AbstractAgent.php`;
 `grep -rn 'Denied by policy' src/` finds the one site). Returning `true` lets the call through.
 
+### Limiting the tools a model sees
+
+`$agent->setMaxTools(n)` caps the tools sent to the provider at `n`, `done` included; tools from
+`tools()` come before toolkit tools. A tool that `maxTools` hides is not executed either: if the
+model names it anyway, the agent answers `Unknown tool: <name>`, the same as for a tool that does
+not exist, after the execution policy has seen the call. A discovery tool in your host (a tool
+search) can make a hidden tool executable for the rest of the run by implementing
+`ToolGrantInterface`; its `grantedToolNames()` is read after a successful call. To execute every
+registered tool regardless of the cap, pass `runLimits: new RunLimits(executeUnadvertisedTools: true)`.
+See [Run Limits](AGENTS.md#run-limits) for the tool-call caps.
+
 ## MCP servers
 
 `CarmeloSantana\PHPAgents\Mcp` is a client for remote [Model Context Protocol](https://modelcontextprotocol.io)

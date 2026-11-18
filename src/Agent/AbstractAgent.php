@@ -13,6 +13,7 @@ use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\PendingInputProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\TickCallbackInterface;
+use CarmeloSantana\PHPAgents\Contract\ToolGrantInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolExecutorInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
@@ -21,6 +22,7 @@ use CarmeloSantana\PHPAgents\Enum\AgentFinishReason;
 use CarmeloSantana\PHPAgents\Enum\EmptyResponseHandling;
 use CarmeloSantana\PHPAgents\Enum\ModelCapability;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Enum\ToolResultStatus;
 use CarmeloSantana\PHPAgents\Exception\TerminationException;
 use CarmeloSantana\PHPAgents\Exception\ToolNotFoundException;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
@@ -62,6 +64,8 @@ abstract class AbstractAgent implements AgentInterface
 
     private readonly TickCallbackInterface $tickCallback;
 
+    private readonly RunLimits $runLimits;
+
     public function setMaxTools(int $max): void
     {
         $this->maxTools = $max;
@@ -70,6 +74,8 @@ abstract class AbstractAgent implements AgentInterface
     /**
      * @param array<string, mixed> $providerOptions Provider-specific request options (e.g. max_tokens,
      *                                              thinking) sent with every stream() call in the loop.
+     * @param ?RunLimits $runLimits Tool-call caps and the execution boundary for each run();
+     *                              null means new RunLimits() (no caps, advertised tools only).
      */
     public function __construct(
         private readonly ProviderInterface $provider,
@@ -87,9 +93,11 @@ abstract class AbstractAgent implements AgentInterface
         private readonly EmptyResponseHandling $emptyResponseHandling = EmptyResponseHandling::Nudge,
         private readonly int $maxEmptyResponseRetries = 2,
         private readonly array $providerOptions = [],
+        ?RunLimits $runLimits = null,
     ) {
         $this->toolExecutor = $toolExecutor ?? new SynchronousToolExecutor();
         $this->tickCallback = $tickCallback ?? new NullTickCallback();
+        $this->runLimits = $runLimits ?? new RunLimits();
     }
 
     abstract public function instructions(): string;
@@ -140,12 +148,20 @@ abstract class AbstractAgent implements AgentInterface
         $this->notify('agent.start', $input);
 
         // Advertised tools are capped by maxTools and sent to the provider.
-        // Executable tools are the full uncapped set — used by findTool() so
-        // that tools discovered via tool_search can still be executed even
-        // when not in the provider's tool schema payload.
-        // executableToolIndex is name-keyed for O(1) lookup in findTool().
+        // Only they are executable, plus any tool a ToolGrantInterface tool
+        // grants during this run (added to executableToolIndex from the full
+        // index). RunLimits::executeUnadvertisedTools makes the full index
+        // executable instead. Both indexes are name-keyed and local to this
+        // run, so grants never outlive it.
         $advertisedTools = $this->allTools();
-        $executableToolIndex = $this->collectAllToolsIndexed();
+        $fullToolIndex = $this->collectAllToolsIndexed();
+        $executableToolIndex = $this->runLimits->executeUnadvertisedTools
+            ? $fullToolIndex
+            : array_combine(
+                array_map(fn(ToolInterface $tool): string => $tool->name(), $advertisedTools),
+                $advertisedTools,
+            );
+        $runToolCalls = 0;
         $systemPrompt = $this->buildSystemPrompt($advertisedTools);
 
         $conversation = new Conversation();
@@ -436,9 +452,13 @@ abstract class AbstractAgent implements AgentInterface
                 // turn is never replayed.
                 $conversation->add(new AssistantMessage($response->content, $response->toolCalls, $response->contentBlocks));
 
+                $runLimitReached = false;
                 $executionResult = $this->executeToolCalls(
                     $response->toolCalls,
                     $executableToolIndex,
+                    $fullToolIndex,
+                    $runToolCalls,
+                    $runLimitReached,
                     $conversation,
                     $allToolResults,
                 );
@@ -451,6 +471,21 @@ abstract class AbstractAgent implements AgentInterface
                         iterations: $i + 1,
                         conversation: $conversation,
                         finishReason: AgentFinishReason::Error,
+                        providerFinishReason: $response->finishReason,
+                    );
+                }
+
+                if ($runLimitReached) {
+                    $this->notify('agent.warning', sprintf('Tool call limit reached: at most %d calls per run.', $this->runLimits->maxToolCallsPerRun));
+
+                    return new Output(
+                        content: 'Tool call limit reached for this run.',
+                        toolResults: $allToolResults,
+                        usage: $totalUsage,
+                        model: $response->model,
+                        iterations: $i + 1,
+                        conversation: $conversation,
+                        finishReason: AgentFinishReason::BudgetExhausted,
                         providerFinishReason: $response->finishReason,
                     );
                 }
@@ -654,24 +689,34 @@ abstract class AbstractAgent implements AgentInterface
      * Execute tool calls from a provider response in three phases:
      *
      * 1. Pre-flight (serial): tick, cancellation check, emit agent.tool_call,
-     *    check execution policy, resolve tool. Collects approved tools into
-     *    a batch and immediately handles denied/missing tools.
+     *    apply the RunLimits per-turn and per-run caps, check execution policy,
+     *    resolve tool. Collects approved tools into a batch and immediately
+     *    handles capped/denied/missing tools. A capped call never reaches the
+     *    policy or executor. A tool outside $executableToolIndex resolves as
+     *    unknown, with the same text as a name that does not exist.
      * 2. Execution (batch or serial): if the executor supports batch execution
      *    and multiple approved tools exist, delegates to executeBatch().
      *    Otherwise executes each tool serially.
      * 3. Post-flight (serial): adds ToolResultMessages to conversation in call
-     *    order, emits agent.tool_result events.
+     *    order, emits agent.tool_result events, then adds the names granted by
+     *    ToolGrantInterface tools that ran and succeeded to $executableToolIndex.
      *
      * Returns null on normal completion, or TerminationException if a tool
      * requested immediate loop termination (e.g. restart_coqui).
      *
      * @param ToolCall[] $toolCalls
-     * @param array<string, ToolInterface> $executableToolIndex
+     * @param array<string, ToolInterface> $executableToolIndex Tools the model may run (grants are added by reference)
+     * @param array<string, ToolInterface> $fullToolIndex Every registered tool; a grant must name one
+     * @param int $runToolCalls Calls sent to the policy/executor so far this run (modified by reference)
+     * @param bool $runLimitReached Set when a call was refused by the per-run cap
      * @param ToolResult[] $allToolResults Accumulated results (modified by reference)
      */
     private function executeToolCalls(
         array $toolCalls,
-        array $executableToolIndex,
+        array &$executableToolIndex,
+        array $fullToolIndex,
+        int &$runToolCalls,
+        bool &$runLimitReached,
         Conversation $conversation,
         array &$allToolResults,
     ): ?TerminationException {
@@ -683,8 +728,13 @@ abstract class AbstractAgent implements AgentInterface
         /** @var array<int, array{toolCall: ToolCall, tool: ToolInterface}> */
         $approved = [];
 
-        /** @var array<int, ToolResult> Pre-resolved results (denied, not found) keyed by position */
+        /** @var array<int, ToolResult> Pre-resolved results (capped, denied, not found) keyed by position */
         $preResolved = [];
+
+        $turnToolCalls = 0;
+        $turnLimitReached = false;
+        $perTurn = $this->runLimits->maxToolCallsPerTurn;
+        $perRun = $this->runLimits->maxToolCallsPerRun;
 
         foreach ($toolCalls as $position => $toolCall) {
             $this->tickCallback->tick();
@@ -694,6 +744,27 @@ abstract class AbstractAgent implements AgentInterface
             }
 
             $this->notify('agent.tool_call', $toolCall);
+
+            // Tool-call caps: a refused call is answered here and never
+            // reaches the policy or the executor.
+            if ($perTurn > 0 && $turnToolCalls >= $perTurn) {
+                $turnLimitReached = true;
+                $preResolved[$position] = ToolResult::error(
+                    sprintf('Tool call limit reached: at most %d calls per turn.', $perTurn),
+                )->withCallId($toolCall->id);
+                continue;
+            }
+
+            if ($perRun > 0 && $runToolCalls >= $perRun) {
+                $runLimitReached = true;
+                $preResolved[$position] = ToolResult::error(
+                    sprintf('Tool call limit reached: at most %d calls per run.', $perRun),
+                )->withCallId($toolCall->id);
+                continue;
+            }
+
+            $turnToolCalls++;
+            $runToolCalls++;
 
             // Check execution policy
             if ($this->executionPolicy !== null) {
@@ -809,7 +880,46 @@ abstract class AbstractAgent implements AgentInterface
             $this->notify('agent.tool_result', $result);
         }
 
+        if ($turnLimitReached) {
+            $this->notify('agent.warning', sprintf('Tool call limit reached: at most %d calls per turn.', $perTurn));
+        }
+
+        $this->applyToolGrants($approved, $executedResults, $executableToolIndex, $fullToolIndex);
+
         return $terminationException;
+    }
+
+    /**
+     * Add the names granted by ToolGrantInterface tools to the executable index.
+     *
+     * Only a tool whose call executed this round and returned a success result
+     * is read, and only names present in the full index are added.
+     *
+     * @param array<int, array{toolCall: ToolCall, tool: ToolInterface}> $approved
+     * @param array<int, ToolResult> $executedResults
+     * @param array<string, ToolInterface> $executableToolIndex
+     * @param array<string, ToolInterface> $fullToolIndex
+     */
+    private function applyToolGrants(
+        array $approved,
+        array $executedResults,
+        array &$executableToolIndex,
+        array $fullToolIndex,
+    ): void {
+        foreach ($approved as $position => $entry) {
+            $tool = $entry['tool'];
+            $result = $executedResults[$position] ?? null;
+
+            if (!$tool instanceof ToolGrantInterface || $result?->status !== ToolResultStatus::Success) {
+                continue;
+            }
+
+            foreach ($tool->grantedToolNames() as $name) {
+                if (isset($fullToolIndex[$name])) {
+                    $executableToolIndex[$name] = $fullToolIndex[$name];
+                }
+            }
+        }
     }
 
     /**
