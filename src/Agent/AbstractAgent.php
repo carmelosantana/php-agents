@@ -250,6 +250,9 @@ abstract class AbstractAgent implements AgentInterface
                 $toolCalls = [];
                 $streamUsage = null;
                 $streamModel = '';
+                // The last reason that is not Stop wins (a later failing chunk
+                // overrides an earlier ToolUse).
+                $streamFinishReason = null;
 
                 foreach ($this->provider->stream($conversation->messages(), $advertisedTools, $this->providerOptions) as $chunk) {
                     $this->tickCallback->tick();
@@ -298,16 +301,24 @@ abstract class AbstractAgent implements AgentInterface
                     if ($chunk->model !== '') {
                         $streamModel = $chunk->model;
                     }
+
+                    if ($chunk->finishReason !== ProviderFinishReason::Stop) {
+                        $streamFinishReason = $chunk->finishReason;
+                    }
                 }
 
                 $this->tickCallback->tick();
 
                 $content = implode('', $contentParts);
+                $finishReason = $streamFinishReason
+                    ?? (!empty($toolCalls) ? ProviderFinishReason::ToolUse : ProviderFinishReason::Stop);
 
+                // Tool calls run only on a ToolUse stop. A MaxTokens stop keeps
+                // its text and drops any (possibly truncated) tool calls.
                 $response = new Response(
                     content: $content,
-                    finishReason: !empty($toolCalls) ? ProviderFinishReason::ToolUse : ProviderFinishReason::Stop,
-                    toolCalls: $toolCalls,
+                    finishReason: $finishReason,
+                    toolCalls: $finishReason === ProviderFinishReason::ToolUse ? $toolCalls : [],
                     model: $streamModel,
                     usage: $streamUsage,
                     reasoning: implode('', $reasoningParts),
@@ -376,6 +387,11 @@ abstract class AbstractAgent implements AgentInterface
                 ]);
             }
 
+            $failedStop = $this->failedStopOutput($response, $conversation, $allToolResults, $totalUsage, $i + 1);
+            if ($failedStop !== null) {
+                return $failedStop;
+            }
+
             foreach ($response->toolCalls as $toolCall) {
                 if ($toolCall->name === DoneTool::NAME) {
                     $this->notify('agent.done', $toolCall->arguments);
@@ -389,6 +405,7 @@ abstract class AbstractAgent implements AgentInterface
                         conversation: $conversation,
                         finishReason: AgentFinishReason::Done,
                         reasoning: $response->reasoning,
+                        providerFinishReason: $response->finishReason,
                     );
                 }
             }
@@ -412,6 +429,7 @@ abstract class AbstractAgent implements AgentInterface
                         iterations: $i + 1,
                         conversation: $conversation,
                         finishReason: AgentFinishReason::Error,
+                        providerFinishReason: $response->finishReason,
                     );
                 }
 
@@ -433,6 +451,7 @@ abstract class AbstractAgent implements AgentInterface
                     conversation: $conversation,
                     finishReason: AgentFinishReason::Stop,
                     reasoning: $response->reasoning,
+                    providerFinishReason: $response->finishReason,
                 );
             }
 
@@ -488,6 +507,7 @@ abstract class AbstractAgent implements AgentInterface
                 conversation: $conversation,
                 finishReason: AgentFinishReason::EmptyResponse,
                 reasoning: $response->reasoning,
+                providerFinishReason: $response->finishReason,
             );
         }
 
@@ -535,6 +555,58 @@ abstract class AbstractAgent implements AgentInterface
             conversation: $conversation,
             finishReason: AgentFinishReason::Stop,
             reasoning: $response->reasoning,
+            providerFinishReason: $response->finishReason,
+        );
+    }
+
+    /**
+     * End the run when the provider stopped for a reason other than Stop,
+     * ToolUse or MaxTokens. Runs before done, tools and text, so no tool is
+     * executed and no agent.done is emitted whatever arrived before the stop.
+     *
+     * Refusal and ContentFilter keep the text received as an assistant turn,
+     * without tool calls. Returns null when the run should go on.
+     *
+     * @param ToolResult[] $allToolResults
+     */
+    private function failedStopOutput(
+        Response $response,
+        Conversation $conversation,
+        array $allToolResults,
+        Usage $totalUsage,
+        int $iterations,
+    ): ?Output {
+        [$finishReason, $content] = match ($response->finishReason) {
+            ProviderFinishReason::Refusal => [AgentFinishReason::Refusal, $response->content],
+            ProviderFinishReason::ContentFilter => [AgentFinishReason::ContentFilter, $response->content],
+            ProviderFinishReason::ContextWindowExceeded => [AgentFinishReason::ContextWindowExceeded, $response->content],
+            ProviderFinishReason::Error => [AgentFinishReason::Error, 'Provider error: the response ended without a valid finish reason.'],
+            ProviderFinishReason::PauseTurn => [AgentFinishReason::Error, 'Provider paused the turn (pause_turn); server-tool continuation is not supported.'],
+            ProviderFinishReason::Stop, ProviderFinishReason::ToolUse, ProviderFinishReason::MaxTokens => [null, ''],
+        };
+
+        if ($finishReason === null) {
+            return null;
+        }
+
+        if ($finishReason === AgentFinishReason::Refusal || $finishReason === AgentFinishReason::ContentFilter) {
+            $conversation->add(new AssistantMessage($content));
+        }
+
+        if ($finishReason === AgentFinishReason::Error) {
+            $this->notify('agent.error', $content);
+        }
+
+        return new Output(
+            content: $content,
+            toolResults: $allToolResults,
+            usage: $totalUsage,
+            model: $response->model,
+            iterations: $iterations,
+            conversation: $conversation,
+            finishReason: $finishReason,
+            reasoning: $response->reasoning,
+            providerFinishReason: $response->finishReason,
         );
     }
 

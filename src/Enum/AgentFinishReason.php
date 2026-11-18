@@ -12,4 +12,7 @@ enum AgentFinishReason: string
     case Done = 'done';
     case BudgetExhausted = 'budget_exhausted';
     case EmptyResponse = 'empty_response';
+    case Refusal = 'refusal';
+    case ContentFilter = 'content_filter';
+    case ContextWindowExceeded = 'context_window_exceeded';
 }
