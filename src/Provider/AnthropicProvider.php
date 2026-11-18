@@ -63,7 +63,7 @@ final class AnthropicProvider extends AbstractProvider
         unset($options['max_tokens']);
         $payload = [...$payload, ...$options];
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->limits->apply([
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
         ]));
@@ -90,7 +90,7 @@ final class AnthropicProvider extends AbstractProvider
             $payload['tools'] = $this->formatTools($tools);
         }
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->limits->apply([
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
         ]));
@@ -239,7 +239,7 @@ final class AnthropicProvider extends AbstractProvider
         ];
         $payload['tool_choice'] = ['type' => 'tool', 'name' => $toolName];
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->limits->apply([
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
         ]));
@@ -286,7 +286,7 @@ final class AnthropicProvider extends AbstractProvider
     {
         // Attempt to fetch from Anthropic's models API (available since 2024)
         try {
-            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->limits->apply([
+            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->requestLimits->apply([
                 'headers' => $this->headers(),
             ]), 'timeout' => 10.0]);
 
@@ -336,7 +336,7 @@ final class AnthropicProvider extends AbstractProvider
         }
 
         try {
-            $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->limits->apply([
+            $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->requestLimits->apply([
                 'headers' => $this->headers(),
             ]), 'timeout' => 5.0]);
 

@@ -25,7 +25,7 @@ abstract class AbstractProvider implements ProviderInterface
     protected ?LoggerInterface $logger;
 
     /** Time, size and redirect limits that every request of this provider passes through apply(). */
-    protected RequestLimits $limits;
+    protected RequestLimits $requestLimits;
 
     public function __construct(
         string $model,
@@ -39,7 +39,7 @@ abstract class AbstractProvider implements ProviderInterface
         $this->apiKey = $apiKey;
         $this->httpClient = $httpClient ?? HttpClient::create();
         $this->logger = $logger;
-        $this->limits = new RequestLimits();
+        $this->requestLimits = new RequestLimits();
     }
 
     public function getModel(): string
@@ -61,14 +61,14 @@ abstract class AbstractProvider implements ProviderInterface
     public function withRequestLimits(RequestLimits $limits): static
     {
         $clone = clone $this;
-        $clone->limits = $limits;
+        $clone->requestLimits = $limits;
 
         return $clone;
     }
 
     public function requestLimits(): RequestLimits
     {
-        return $this->limits;
+        return $this->requestLimits;
     }
 
     /**

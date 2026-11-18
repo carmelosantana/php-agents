@@ -16,7 +16,7 @@ final class OllamaEmbeddingProvider implements EmbeddingProviderInterface
     private HttpClientInterface $httpClient;
 
     /** Time, size and redirect limits that every embedding request passes through apply(). */
-    private RequestLimits $limits;
+    private RequestLimits $requestLimits;
 
     public function __construct(
         private readonly string $modelName = 'nomic-embed-text',
@@ -24,7 +24,7 @@ final class OllamaEmbeddingProvider implements EmbeddingProviderInterface
         ?HttpClientInterface $httpClient = null,
     ) {
         $this->httpClient = $httpClient ?? HttpClient::create();
-        $this->limits = new RequestLimits(idleTimeout: 60.0);
+        $this->requestLimits = new RequestLimits(idleTimeout: 60.0);
     }
 
     /**
@@ -33,20 +33,20 @@ final class OllamaEmbeddingProvider implements EmbeddingProviderInterface
     public function withRequestLimits(RequestLimits $limits): static
     {
         $clone = clone $this;
-        $clone->limits = $limits;
+        $clone->requestLimits = $limits;
 
         return $clone;
     }
 
     public function requestLimits(): RequestLimits
     {
-        return $this->limits;
+        return $this->requestLimits;
     }
 
     public function embedText(string $text): array
     {
         try {
-            $response = $this->httpClient->request('POST', "{$this->baseUrl}/api/embeddings", $this->limits->apply([
+            $response = $this->httpClient->request('POST', "{$this->baseUrl}/api/embeddings", $this->requestLimits->apply([
                 'json' => [
                     'model' => $this->modelName,
                     'prompt' => $text,

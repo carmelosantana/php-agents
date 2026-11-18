@@ -117,3 +117,14 @@ test('zero limits are accepted', function () {
 
     expect($limits->maxResponseBytes)->toBe(0);
 });
+
+test('providers keep their limits in a property named requestLimits', function (string $class) {
+    $reflection = new ReflectionClass($class);
+
+    expect($reflection->hasProperty('requestLimits'))->toBeTrue()
+        ->and($reflection->hasProperty('limits'))->toBeFalse();
+})->with([
+    CarmeloSantana\PHPAgents\Provider\AbstractProvider::class,
+    CarmeloSantana\PHPAgents\Embedding\OpenAIEmbeddingProvider::class,
+    CarmeloSantana\PHPAgents\Embedding\OllamaEmbeddingProvider::class,
+]);

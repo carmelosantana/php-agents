@@ -88,7 +88,7 @@ final class GeminiProvider extends AbstractProvider
         $response = $this->httpClient->request(
             'POST',
             "{$this->baseUrl}/models/{$this->model}:generateContent",
-            $this->limits->apply([
+            $this->requestLimits->apply([
                 'headers' => $this->headers(),
                 'json' => $payload,
             ]),
@@ -104,7 +104,7 @@ final class GeminiProvider extends AbstractProvider
         $response = $this->httpClient->request(
             'POST',
             "{$this->baseUrl}/models/{$this->model}:streamGenerateContent?alt=sse",
-            $this->limits->apply([
+            $this->requestLimits->apply([
                 'headers' => $this->headers(),
                 'json' => $payload,
             ]),
@@ -225,7 +225,7 @@ final class GeminiProvider extends AbstractProvider
     public function models(): array
     {
         try {
-            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->limits->apply([
+            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->requestLimits->apply([
                 'headers' => $this->headers(),
             ]), 'timeout' => 10.0]);
 
@@ -275,7 +275,7 @@ final class GeminiProvider extends AbstractProvider
         }
 
         try {
-            $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->limits->apply([
+            $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->requestLimits->apply([
                 'headers' => $this->headers(),
             ]), 'timeout' => 5.0]);
 

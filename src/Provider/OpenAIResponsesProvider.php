@@ -54,7 +54,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
             $payload['tools'] = $this->formatTools($tools);
         }
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $this->limits->apply([
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
         ]));
@@ -77,7 +77,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
             $payload['tools'] = $this->formatTools($tools);
         }
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $this->limits->apply([
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
         ]));
@@ -223,7 +223,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
             ...$options,
         ];
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $this->limits->apply([
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
         ]));
@@ -242,7 +242,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
     public function models(): array
     {
         try {
-            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", $this->limits->apply([
+            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", $this->requestLimits->apply([
                 'headers' => $this->headers(),
             ]));
 
@@ -271,7 +271,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
     public function isAvailable(): bool
     {
         try {
-            $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->limits->apply([
+            $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->requestLimits->apply([
                 'headers' => $this->headers(),
             ]), 'timeout' => 5.0]);
 

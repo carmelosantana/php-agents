@@ -45,7 +45,7 @@ class OpenAICompatibleProvider extends AbstractProvider
             $payload['tools'] = $this->formatTools($tools);
         }
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/chat/completions", $this->limits->apply([
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/chat/completions", $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
         ]));
@@ -79,7 +79,7 @@ class OpenAICompatibleProvider extends AbstractProvider
             $payload['tools'] = $this->formatTools($tools);
         }
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/chat/completions", $this->limits->apply([
+        $response = $this->httpClient->request('POST', "{$this->baseUrl}/chat/completions", $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
         ]));
@@ -268,7 +268,7 @@ class OpenAICompatibleProvider extends AbstractProvider
     public function models(): array
     {
         try {
-            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", $this->limits->apply([
+            $response = $this->httpClient->request('GET', "{$this->baseUrl}/models", $this->requestLimits->apply([
                 'headers' => $this->headers(),
             ]));
 
@@ -312,7 +312,7 @@ class OpenAICompatibleProvider extends AbstractProvider
     public function isAvailable(): bool
     {
         try {
-            $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->limits->apply([
+            $this->httpClient->request('GET', "{$this->baseUrl}/models", [...$this->requestLimits->apply([
                 'headers' => $this->headers(),
             ]), 'timeout' => 5.0]);
 

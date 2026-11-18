@@ -121,7 +121,7 @@ final class OllamaProvider extends OpenAICompatibleProvider
     {
         try {
             $ollamaBaseUrl = str_replace('/v1', '', $this->baseUrl);
-            $response = $this->httpClient->request('GET', "{$ollamaBaseUrl}/api/tags", $this->limits->apply([]));
+            $response = $this->httpClient->request('GET', "{$ollamaBaseUrl}/api/tags", $this->requestLimits->apply([]));
             $data = $this->decodeResponse($response);
 
             $models = [];
@@ -157,7 +157,7 @@ final class OllamaProvider extends OpenAICompatibleProvider
     {
         try {
             $ollamaBaseUrl = str_replace('/v1', '', $this->baseUrl);
-            $response = $this->httpClient->request('POST', "{$ollamaBaseUrl}/api/show", [...$this->limits->apply([
+            $response = $this->httpClient->request('POST', "{$ollamaBaseUrl}/api/show", [...$this->requestLimits->apply([
                 'json' => ['name' => $model],
             ]), 'timeout' => 10.0]);
 
@@ -228,7 +228,7 @@ final class OllamaProvider extends OpenAICompatibleProvider
     {
         $ollamaBaseUrl = str_replace('/v1', '', $this->baseUrl);
         $this->httpClient->request('POST', "{$ollamaBaseUrl}/api/pull", (new RequestLimits(
-            idleTimeout: $this->limits->idleTimeout,
+            idleTimeout: $this->requestLimits->idleTimeout,
             maxDuration: 0.0,
             maxResponseBytes: 0,
         ))->apply([
@@ -256,7 +256,7 @@ final class OllamaProvider extends OpenAICompatibleProvider
     {
         try {
             $ollamaBaseUrl = str_replace('/v1', '', $this->baseUrl);
-            $this->httpClient->request('GET', "{$ollamaBaseUrl}/api/tags", [...$this->limits->apply([]), 'timeout' => 5.0]);
+            $this->httpClient->request('GET', "{$ollamaBaseUrl}/api/tags", [...$this->requestLimits->apply([]), 'timeout' => 5.0]);
 
             return true;
         } catch (\Throwable $e) {
