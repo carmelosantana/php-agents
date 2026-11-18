@@ -84,7 +84,7 @@ $provider = new OpenAICompatibleProvider(
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 
 $provider = new AnthropicProvider(
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-5-5',
     apiKey: getenv('ANTHROPIC_API_KEY'),
 );
 ```
@@ -121,7 +121,7 @@ use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use CarmeloSantana\PHPAgents\Tool\Parameter\StringParameter;
 
-$agent = new class(provider: new OllamaProvider(model: 'llama3.2'), maxIterations: 15) extends AbstractAgent {
+$agent = new class(provider: new OllamaProvider(model: 'llama3.2'), maxIter: 15) extends AbstractAgent {
     public function name(): string { return 'Note Agent'; }
     public function instructions(): string { return 'You help users manage notes using tools.'; }
 };

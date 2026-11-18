@@ -67,6 +67,10 @@ abstract class AbstractAgent implements AgentInterface
         $this->maxTools = $max;
     }
 
+    /**
+     * @param array<string, mixed> $providerOptions Provider-specific request options (e.g. max_tokens,
+     *                                              thinking) sent with every stream() call in the loop.
+     */
     public function __construct(
         private readonly ProviderInterface $provider,
         private readonly int $maxIter = self::DEFAULT_MAX_ITERATIONS,
@@ -82,6 +86,7 @@ abstract class AbstractAgent implements AgentInterface
         ?TickCallbackInterface $tickCallback = null,
         private readonly EmptyResponseHandling $emptyResponseHandling = EmptyResponseHandling::Nudge,
         private readonly int $maxEmptyResponseRetries = 2,
+        private readonly array $providerOptions = [],
     ) {
         $this->toolExecutor = $toolExecutor ?? new SynchronousToolExecutor();
         $this->tickCallback = $tickCallback ?? new NullTickCallback();
@@ -149,14 +154,16 @@ abstract class AbstractAgent implements AgentInterface
         // Inject prior conversation history (skip system messages — we use our own).
         // Repair tool pairing before injection so broken history from interrupted
         // sessions (orphaned assistant tool_calls with no matching tool results)
-        // is cleaned up before reaching any provider.
+        // is cleaned up before reaching any provider. Provider-native content
+        // blocks live only within one run: the system prompt or tools may have
+        // changed since, and the provider would reject the replayed thinking.
         if ($history !== null) {
             $history = $history->repairToolPairing();
             foreach ($history->messages() as $msg) {
                 if ($msg->role() === \CarmeloSantana\PHPAgents\Enum\Role::System) {
                     continue;
                 }
-                $conversation->add($msg);
+                $conversation->add($msg instanceof AssistantMessage ? $msg->withoutContentBlocks() : $msg);
             }
         }
 
@@ -193,7 +200,14 @@ abstract class AbstractAgent implements AgentInterface
             if ($this->contextWindow !== null) {
                 $budget = $this->contextWindow->maxTokens() - $this->contextWindow->reservedTokens();
                 if ($budget > 0) {
+                    $beforePruning = $conversation->messages();
                     $conversation = $conversation->fitWithinBudget($budget, $this->safetyMarginPercent, $this->pruningStrategy);
+
+                    // Edited history invalidates replayed thinking blocks, so
+                    // every assistant turn falls back to plain formatting.
+                    if ($conversation->messages() !== $beforePruning) {
+                        $conversation = $this->withoutContentBlocks($conversation);
+                    }
                 }
             }
 
@@ -245,8 +259,13 @@ abstract class AbstractAgent implements AgentInterface
                 $toolCalls = [];
                 $streamUsage = null;
                 $streamModel = '';
+                $contentBlocks = [];
+                // A failure reason is sticky: the first one seen ends the turn
+                // and no later chunk can turn it back into ToolUse or Stop.
+                // Otherwise the last reason that is not Stop wins.
+                $streamFinishReason = null;
 
-                foreach ($this->provider->stream($conversation->messages(), $advertisedTools) as $chunk) {
+                foreach ($this->provider->stream($conversation->messages(), $advertisedTools, $this->providerOptions) as $chunk) {
                     $this->tickCallback->tick();
 
                     // Check cancellation between stream chunks so ESC/Ctrl+C returns
@@ -293,19 +312,34 @@ abstract class AbstractAgent implements AgentInterface
                     if ($chunk->model !== '') {
                         $streamModel = $chunk->model;
                     }
+
+                    if ($chunk->contentBlocks !== []) {
+                        $contentBlocks = $chunk->contentBlocks;
+                    }
+
+                    $failed = $streamFinishReason !== null
+                        && $streamFinishReason !== ProviderFinishReason::ToolUse;
+                    if (!$failed && $chunk->finishReason !== ProviderFinishReason::Stop) {
+                        $streamFinishReason = $chunk->finishReason;
+                    }
                 }
 
                 $this->tickCallback->tick();
 
                 $content = implode('', $contentParts);
+                $finishReason = $streamFinishReason
+                    ?? (!empty($toolCalls) ? ProviderFinishReason::ToolUse : ProviderFinishReason::Stop);
 
+                // Tool calls run only on a ToolUse stop. A MaxTokens stop keeps
+                // its text and drops any (possibly truncated) tool calls.
                 $response = new Response(
                     content: $content,
-                    finishReason: !empty($toolCalls) ? ProviderFinishReason::ToolUse : ProviderFinishReason::Stop,
-                    toolCalls: $toolCalls,
+                    finishReason: $finishReason,
+                    toolCalls: $finishReason === ProviderFinishReason::ToolUse ? $toolCalls : [],
                     model: $streamModel,
                     usage: $streamUsage,
                     reasoning: implode('', $reasoningParts),
+                    contentBlocks: $contentBlocks,
                 );
             } catch (\Throwable $e) {
                 $errorMessage = $e->getMessage();
@@ -371,6 +405,11 @@ abstract class AbstractAgent implements AgentInterface
                 ]);
             }
 
+            $failedStop = $this->failedStopOutput($response, $conversation, $allToolResults, $totalUsage, $i + 1);
+            if ($failedStop !== null) {
+                return $failedStop;
+            }
+
             foreach ($response->toolCalls as $toolCall) {
                 if ($toolCall->name === DoneTool::NAME) {
                     $this->notify('agent.done', $toolCall->arguments);
@@ -384,13 +423,18 @@ abstract class AbstractAgent implements AgentInterface
                         conversation: $conversation,
                         finishReason: AgentFinishReason::Done,
                         reasoning: $response->reasoning,
+                        providerFinishReason: $response->finishReason,
                     );
                 }
             }
 
             if (!empty($response->toolCalls)) {
                 $consecutiveEmptyResponses = 0;
-                $conversation->add(new AssistantMessage($response->content, $response->toolCalls));
+                // Only a tool round carries the provider's content blocks: the
+                // thinking must go back with its tool_use. Text, empty and
+                // failed turns are re-formatted, so an empty thinking-only
+                // turn is never replayed.
+                $conversation->add(new AssistantMessage($response->content, $response->toolCalls, $response->contentBlocks));
 
                 $executionResult = $this->executeToolCalls(
                     $response->toolCalls,
@@ -407,6 +451,7 @@ abstract class AbstractAgent implements AgentInterface
                         iterations: $i + 1,
                         conversation: $conversation,
                         finishReason: AgentFinishReason::Error,
+                        providerFinishReason: $response->finishReason,
                     );
                 }
 
@@ -428,6 +473,7 @@ abstract class AbstractAgent implements AgentInterface
                     conversation: $conversation,
                     finishReason: AgentFinishReason::Stop,
                     reasoning: $response->reasoning,
+                    providerFinishReason: $response->finishReason,
                 );
             }
 
@@ -483,6 +529,7 @@ abstract class AbstractAgent implements AgentInterface
                 conversation: $conversation,
                 finishReason: AgentFinishReason::EmptyResponse,
                 reasoning: $response->reasoning,
+                providerFinishReason: $response->finishReason,
             );
         }
 
@@ -496,6 +543,20 @@ abstract class AbstractAgent implements AgentInterface
             conversation: $conversation,
             finishReason: AgentFinishReason::MaxIterations,
         );
+    }
+
+    /**
+     * A copy of the conversation with every AssistantMessage stripped of its
+     * provider-native content blocks.
+     */
+    private function withoutContentBlocks(Conversation $conversation): Conversation
+    {
+        $stripped = new Conversation();
+        foreach ($conversation->messages() as $message) {
+            $stripped->add($message instanceof AssistantMessage ? $message->withoutContentBlocks() : $message);
+        }
+
+        return $stripped;
     }
 
     /**
@@ -530,6 +591,62 @@ abstract class AbstractAgent implements AgentInterface
             conversation: $conversation,
             finishReason: AgentFinishReason::Stop,
             reasoning: $response->reasoning,
+            providerFinishReason: $response->finishReason,
+        );
+    }
+
+    /**
+     * End the run when the provider stopped for a reason other than Stop,
+     * ToolUse or MaxTokens, or at MaxTokens with no text (its tool calls are
+     * already dropped). Runs before done, tools and text, so no tool is
+     * executed and no agent.done is emitted whatever arrived before the stop.
+     *
+     * Refusal and ContentFilter keep the text received as an assistant turn,
+     * without tool calls. Returns null when the run should go on.
+     *
+     * @param ToolResult[] $allToolResults
+     */
+    private function failedStopOutput(
+        Response $response,
+        Conversation $conversation,
+        array $allToolResults,
+        Usage $totalUsage,
+        int $iterations,
+    ): ?Output {
+        [$finishReason, $content] = match ($response->finishReason) {
+            ProviderFinishReason::Refusal => [AgentFinishReason::Refusal, $response->content],
+            ProviderFinishReason::ContentFilter => [AgentFinishReason::ContentFilter, $response->content],
+            ProviderFinishReason::ContextWindowExceeded => [AgentFinishReason::ContextWindowExceeded, $response->content],
+            ProviderFinishReason::Error => [AgentFinishReason::Error, 'Provider error: the response ended without a valid finish reason.'],
+            ProviderFinishReason::PauseTurn => [AgentFinishReason::Error, 'Provider paused the turn (pause_turn); server-tool continuation is not supported.'],
+            ProviderFinishReason::MaxTokens => $response->content === ''
+                ? [AgentFinishReason::Error, 'Provider stopped at max_tokens before producing an answer; raise max_tokens in providerOptions.']
+                : [null, ''],
+            ProviderFinishReason::Stop, ProviderFinishReason::ToolUse => [null, ''],
+        };
+
+        if ($finishReason === null) {
+            return null;
+        }
+
+        if ($finishReason === AgentFinishReason::Refusal || $finishReason === AgentFinishReason::ContentFilter) {
+            $conversation->add(new AssistantMessage($content));
+        }
+
+        if ($finishReason === AgentFinishReason::Error) {
+            $this->notify('agent.error', $content);
+        }
+
+        return new Output(
+            content: $content,
+            toolResults: $allToolResults,
+            usage: $totalUsage,
+            model: $response->model,
+            iterations: $iterations,
+            conversation: $conversation,
+            finishReason: $finishReason,
+            reasoning: $response->reasoning,
+            providerFinishReason: $response->finishReason,
         );
     }
 

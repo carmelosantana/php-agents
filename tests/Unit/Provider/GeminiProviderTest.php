@@ -320,13 +320,96 @@ test('finish reason mapping: MAX_TOKENS', function () {
     expect($response->finishReason)->toBe(ProviderFinishReason::MaxTokens);
 });
 
-test('finish reason mapping: SAFETY', function () {
+dataset('gemini finish reasons', [
+    'STOP' => ['STOP', ProviderFinishReason::Stop],
+    'MAX_TOKENS' => ['MAX_TOKENS', ProviderFinishReason::MaxTokens],
+    'SAFETY' => ['SAFETY', ProviderFinishReason::ContentFilter],
+    'RECITATION' => ['RECITATION', ProviderFinishReason::ContentFilter],
+    'PROHIBITED_CONTENT' => ['PROHIBITED_CONTENT', ProviderFinishReason::ContentFilter],
+    'BLOCKLIST' => ['BLOCKLIST', ProviderFinishReason::ContentFilter],
+    'SPII' => ['SPII', ProviderFinishReason::ContentFilter],
+    'IMAGE_SAFETY' => ['IMAGE_SAFETY', ProviderFinishReason::ContentFilter],
+    'MALFORMED_FUNCTION_CALL' => ['MALFORMED_FUNCTION_CALL', ProviderFinishReason::Error],
+    'UNEXPECTED_TOOL_CALL' => ['UNEXPECTED_TOOL_CALL', ProviderFinishReason::Error],
+    'TOO_MANY_TOOL_CALLS' => ['TOO_MANY_TOOL_CALLS', ProviderFinishReason::Error],
+    'MISSING_THOUGHT_SIGNATURE' => ['MISSING_THOUGHT_SIGNATURE', ProviderFinishReason::Error],
+    'null' => [null, ProviderFinishReason::Stop],
+    'unknown' => ['OTHER', ProviderFinishReason::Stop],
+]);
+
+test('finish reason mapping covers every finishReason', function (?string $raw, ProviderFinishReason $expected) {
     $mockClient = new MockHttpClient([
-        mockGeminiResponse(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => '']]], 'finishReason' => 'SAFETY']]]),
+        mockGeminiResponse(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => '']]], 'finishReason' => $raw]]]),
     ]);
 
     $response = (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat([new UserMessage('hi')]);
-    expect($response->finishReason)->toBe(ProviderFinishReason::Error);
+    expect($response->finishReason)->toBe($expected);
+})->with('gemini finish reasons');
+
+test('a blocked prompt with no candidates maps to ContentFilter', function () {
+    $mockClient = new MockHttpClient([
+        mockGeminiResponse(['candidates' => [], 'promptFeedback' => ['blockReason' => 'OTHER']]),
+    ]);
+
+    $response = (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat([new UserMessage('hi')]);
+    expect($response->finishReason)->toBe(ProviderFinishReason::ContentFilter)
+        ->and($response->content)->toBe('');
+});
+
+test('ContentFilter, Error and MaxTokens are not overwritten by ToolUse and emit no tool calls', function (string $raw, ProviderFinishReason $expected) {
+    $mockClient = new MockHttpClient([
+        mockGeminiResponse(['candidates' => [[
+            'content' => ['role' => 'model', 'parts' => [['functionCall' => ['name' => 'get_weather', 'args' => ['city' => 'NYC']]]]],
+            'finishReason' => $raw,
+        ]]]),
+    ]);
+
+    $response = (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat([new UserMessage('hi')]);
+    expect($response->finishReason)->toBe($expected)
+        ->and($response->toolCalls)->toBe([]);
+})->with([
+    'MALFORMED_FUNCTION_CALL' => ['MALFORMED_FUNCTION_CALL', ProviderFinishReason::Error],
+    'SAFETY' => ['SAFETY', ProviderFinishReason::ContentFilter],
+    'MAX_TOKENS' => ['MAX_TOKENS', ProviderFinishReason::MaxTokens],
+]);
+
+test('stream MAX_TOKENS alongside a functionCall part yields MaxTokens and no tool calls', function () {
+    $sseData = 'data: ' . json_encode(['candidates' => [[
+        'content' => ['role' => 'model', 'parts' => [['functionCall' => ['name' => 'done', 'args' => ['response' => 'Half']]]]],
+        'finishReason' => 'MAX_TOKENS',
+    ]]]) . "\n\n";
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $chunks = iterator_to_array((new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->stream([new UserMessage('hi')]), false);
+
+    expect($chunks)->toHaveCount(1)
+        ->and($chunks[0]->finishReason)->toBe(ProviderFinishReason::MaxTokens)
+        ->and($chunks[0]->toolCalls)->toBe([]);
+});
+
+test('stream yields ContentFilter for a blocked prompt with no candidates', function () {
+    $sseData = 'data: ' . json_encode(['promptFeedback' => ['blockReason' => 'SAFETY'], 'usageMetadata' => ['promptTokenCount' => 3, 'totalTokenCount' => 3]]) . "\n\n";
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $chunks = iterator_to_array((new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->stream([new UserMessage('hi')]), false);
+
+    expect($chunks)->toHaveCount(1)
+        ->and($chunks[0]->finishReason)->toBe(ProviderFinishReason::ContentFilter)
+        ->and($chunks[0]->toolCalls)->toBe([]);
+});
+
+test('stream MALFORMED_FUNCTION_CALL alongside a functionCall part yields Error and no tool calls', function () {
+    $sseData = 'data: ' . json_encode(['candidates' => [[
+        'content' => ['role' => 'model', 'parts' => [['functionCall' => ['name' => 'get_weather', 'args' => ['city' => 'NYC']]]]],
+        'finishReason' => 'MALFORMED_FUNCTION_CALL',
+    ]]]) . "\n\n";
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $chunks = iterator_to_array((new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->stream([new UserMessage('hi')]), false);
+
+    expect($chunks)->toHaveCount(1)
+        ->and($chunks[0]->finishReason)->toBe(ProviderFinishReason::Error)
+        ->and($chunks[0]->toolCalls)->toBe([]);
 });
 
 test('usage metadata is parsed correctly', function () {
@@ -686,7 +769,6 @@ test('stream yields separate reasoning Response for thought:true parts', functio
         "data: " . json_encode([
             'candidates' => [[
                 'content' => ['role' => 'model', 'parts' => [['text' => 'thinking chunk', 'thought' => true]]],
-                'finishReason' => 'STOP',
             ]],
         ]) . "\n\n" .
         "data: " . json_encode([
@@ -1058,4 +1140,159 @@ test('gemini tool formatting survives stdClass nodes inside parameters', functio
         ->and($params['properties']['blank'])->toBe([])
         ->and($params['properties']['arr'])->toBe(['type' => 'ARRAY', 'items' => []])
         ->and($params['properties']['pick']['anyOf'])->toBe([[], ['type' => 'STRING']]);
+});
+
+test('stream keeps stream true and the conversation when options try to override them', function () {
+    $requestPayload = null;
+    $requestUrl = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload, &$requestUrl): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        $requestUrl = $url;
+        return new MockResponse(
+            'data: ' . json_encode(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'ok']]], 'finishReason' => 'STOP']]]) . "\n\n",
+            ['http_code' => 200],
+        );
+    });
+    $provider = new GeminiProvider(model: 'gemini-2.5-flash', apiKey: 'test-key', httpClient: $mockClient);
+
+    iterator_to_array($provider->stream([new UserMessage('hi')], [], ['contents' => []]));
+
+    expect($requestUrl)->toContain(':streamGenerateContent?alt=sse')
+        ->and($requestPayload['contents'])->toBe([['role' => 'user', 'parts' => [['text' => 'hi']]]]);
+});
+
+test('stream ending without a finishReason yields one trailing Error chunk with no tool calls', function () {
+    $sseData = 'data: ' . json_encode(['candidates' => [[
+        'content' => ['role' => 'model', 'parts' => [['text' => 'Half an ans']]],
+    ]]]) . "\n\n";
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $chunks = iterator_to_array((new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->stream([new UserMessage('hi')]), false);
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[0]->content)->toBe('Half an ans')
+        ->and($chunks[1]->content)->toBe('')
+        ->and($chunks[1]->toolCalls)->toBe([])
+        ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::Error);
+});
+
+test('stream that ends with STOP yields no extra Error chunk', function () {
+    $sseData = 'data: ' . json_encode(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'Hel']]]]]]) . "\n\n"
+        . 'data: ' . json_encode(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'lo']]], 'finishReason' => 'STOP']]]) . "\n\n";
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $chunks = iterator_to_array((new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->stream([new UserMessage('hi')]), false);
+
+    expect($chunks)->toHaveCount(2)
+        ->and(array_map(fn($r) => $r->finishReason, $chunks))->toBe([ProviderFinishReason::Stop, ProviderFinishReason::Stop]);
+});
+
+test('stream ignores parts and tool calls after a terminal candidate but still reads later usage', function (array $terminal, ProviderFinishReason $expected) {
+    $sseData = 'data: ' . json_encode($terminal) . "\n\n"
+        . 'data: ' . json_encode([
+            'candidates' => [[
+                'content' => ['role' => 'model', 'parts' => [['text' => 'Late text'], ['functionCall' => ['name' => 'get_weather', 'args' => ['city' => 'NYC']]]]],
+                'finishReason' => 'STOP',
+            ]],
+            'usageMetadata' => ['promptTokenCount' => 7, 'candidatesTokenCount' => 2, 'totalTokenCount' => 9],
+        ]) . "\n\n";
+
+    $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
+    $chunks = iterator_to_array((new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->stream([new UserMessage('hi')]), false);
+
+    $toolCalls = array_merge(...array_map(fn($r) => $r->toolCalls, $chunks));
+    $reasons = array_map(fn($r) => $r->finishReason, $chunks);
+
+    expect($toolCalls)->toBe([])
+        ->and(implode('', array_map(fn($r) => $r->content, $chunks)))->not->toContain('Late text')
+        ->and($reasons)->not->toContain(ProviderFinishReason::ToolUse)
+        ->and($reasons[0])->toBe($expected)
+        ->and($chunks[array_key_last($chunks)]->usage?->totalTokens)->toBe(9);
+})->with([
+    'SAFETY candidate' => [
+        ['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'Part']]], 'finishReason' => 'SAFETY']]],
+        ProviderFinishReason::ContentFilter,
+    ],
+    'blocked prompt' => [
+        ['promptFeedback' => ['blockReason' => 'SAFETY']],
+        ProviderFinishReason::ContentFilter,
+    ],
+    'STOP candidate' => [
+        ['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'Done.']]], 'finishReason' => 'STOP']]],
+        ProviderFinishReason::Stop,
+    ],
+]);
+
+function geminiReservedTool(): Tool
+{
+    return new Tool('agent_tool', 'The agent tool.', [], fn(array $input): ToolResult => ToolResult::success('ok'));
+}
+
+function geminiReservedOptions(): array
+{
+    return [
+        'systemInstruction' => ['parts' => [['text' => 'Injected instructions.']]],
+        'tools' => [['functionDeclarations' => [['name' => 'injected_tool', 'description' => 'Injected.']]]],
+    ];
+}
+
+test('options cannot replace the systemInstruction or the tools argument', function (string $method) {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $m, string $url, array $options) use (&$requestPayload, $method): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return $method === 'chat'
+            ? mockGeminiResponse()
+            : new MockResponse('data: ' . json_encode(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'ok']]], 'finishReason' => 'STOP']]]) . "\n\n", ['http_code' => 200]);
+    });
+    $provider = new GeminiProvider(apiKey: 'k', httpClient: $mockClient);
+
+    $result = $provider->{$method}([new SystemMessage('Agent instructions.'), new UserMessage('hi')], [geminiReservedTool()], geminiReservedOptions());
+    if ($method === 'stream') {
+        iterator_to_array($result);
+    }
+
+    expect($requestPayload['systemInstruction'])->toBe(['parts' => [['text' => 'Agent instructions.']]])
+        ->and($requestPayload['tools'][0]['functionDeclarations'][0]['name'])->toBe('agent_tool');
+})->with(['chat', 'stream']);
+
+test('options may supply systemInstruction and tools when there is no system message and no tools argument', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $m, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat([new UserMessage('hi')], [], geminiReservedOptions());
+
+    expect($requestPayload['systemInstruction'])->toBe(['parts' => [['text' => 'Injected instructions.']]])
+        ->and($requestPayload['tools'][0]['functionDeclarations'][0]['name'])->toBe('injected_tool');
+});
+
+test('options cannot replace the systemInstruction through its snake_case alias', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $m, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat(
+        [new SystemMessage('AGENT'), new UserMessage('hi')],
+        [],
+        ['system_instruction' => ['parts' => [['text' => 'EVIL']]]],
+    );
+
+    expect($requestPayload['systemInstruction'])->toBe(['parts' => [['text' => 'AGENT']]])
+        ->and($requestPayload)->not->toHaveKey('system_instruction');
+});
+
+test('options may supply system_instruction when there is no system message', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $m, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+
+    (new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->chat([new UserMessage('hi')], [], ['system_instruction' => ['parts' => [['text' => 'Caller']]]]);
+
+    expect($requestPayload['system_instruction'])->toBe(['parts' => [['text' => 'Caller']]]);
 });

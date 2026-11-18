@@ -4,8 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>php-agents — README Summarizer</title>
+    <!--
+        Security notes (example only): this page is a local demo.
+        - The Tailwind Play CDN script is a JIT compiler and cannot carry SRI; accepted for a local demo only.
+        - Alpine is pinned to an exact release. Add an integrity="sha384-..." hash computed from that
+          release's dist/cdn.min.js before serving this page anywhere but your own machine.
+        - Model output is rendered through markdown.js, which escapes HTML and allows only
+          http:, https: and mailto: links.
+    -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js" crossorigin="anonymous"></script>
+    <script src="markdown.js"></script>
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -165,7 +174,7 @@
 
         <!-- Footer -->
         <p class="text-center text-xs text-muted-foreground">
-            Powered by <span class="font-medium">carmelosantana/php-agents</span> &middot; FileAgent + Ollama
+            Powered by <span class="font-medium">carmelosantana/php-agents</span> &middot; AbstractAgent + Ollama
         </p>
     </div>
 
@@ -220,34 +229,7 @@
                     }
                 },
 
-                renderMarkdown(text) {
-                    if (!text) return '';
-
-                    return text
-                        // Code blocks
-                        .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-                        // Inline code
-                        .replace(/`([^`]+)`/g, '<code>$1</code>')
-                        // Headers
-                        .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-                        .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-                        .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-                        // Bold and italic
-                        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                        .replace(/\*(.+?)\*/g, '<em>$1</em>')
-                        // Links
-                        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
-                        // Unordered lists
-                        .replace(/^[*-] (.+)$/gm, '<li>$1</li>')
-                        // Wrap consecutive <li> in <ul>
-                        .replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>')
-                        // Paragraphs (double newline)
-                        .replace(/\n\n/g, '</p><p>')
-                        // Single newlines → <br> within paragraphs
-                        .replace(/\n/g, '<br>')
-                        // Wrap in paragraph
-                        .replace(/^(?!<[huploa])(.+)/gm, '<p>$1</p>');
-                },
+                renderMarkdown,
             };
         }
     </script>

@@ -134,14 +134,14 @@ Uses OpenAI's JSON mode with response format:
 ```php
 $result = $provider->structured(
     messages: [new UserMessage('Extract the name and age from: "John is 30 years old"')],
-    schema: [
+    schema: json_encode([
         'type' => 'object',
         'properties' => [
             'name' => ['type' => 'string'],
             'age' => ['type' => 'integer'],
         ],
         'required' => ['name', 'age'],
-    ],
+    ]),
 );
 // ['name' => 'John', 'age' => 30]
 ```
@@ -151,7 +151,7 @@ $result = $provider->structured(
 ```php
 // OpenRouter
 $provider = new OpenAICompatibleProvider(
-    model: 'anthropic/claude-sonnet-4-20250514',
+    model: 'anthropic/claude-sonnet-5-5',
     apiKey: getenv('OPENROUTER_API_KEY'),
     baseUrl: 'https://openrouter.ai/api/v1',
 );
@@ -222,7 +222,7 @@ Purpose-built provider for Claude models. Handles Anthropic's unique message for
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 
 $provider = new AnthropicProvider(
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-5-5',
     apiKey: getenv('ANTHROPIC_API_KEY'),
 );
 ```
@@ -231,7 +231,7 @@ $provider = new AnthropicProvider(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `model` | `string` | — | Model identifier (required) |
+| `model` | `string` | `'claude-sonnet-5-5'` | Model identifier |
 | `apiKey` | `string` | `''` | Anthropic API key |
 | `baseUrl` | `string` | `'https://api.anthropic.com/v1'` | API base URL |
 | `httpClient` | `?HttpClientInterface` | `null` | Custom HTTP client |
@@ -274,6 +274,11 @@ sequenceDiagram
     API-->>Provider: event: message_start
     Note over Provider: Extract initial usage
 
+    API-->>Provider: event: content_block_start (type: thinking)
+    API-->>Provider: event: content_block_delta (thinking_delta, then signature_delta)
+    Provider-->>App: yield Response(reasoning: "...")
+    Note over Provider: Keep the thinking text and its signature on the block
+
     API-->>Provider: event: content_block_start (type: text)
     API-->>Provider: event: content_block_delta (text: "I'll help")
     Provider-->>App: yield Response(content: "I'll help")
@@ -285,20 +290,35 @@ sequenceDiagram
     Note over Provider: Accumulate JSON fragments
 
     API-->>Provider: event: message_delta (stop_reason: tool_use)
-    Note over Provider: Assemble all pending tools
-    Provider-->>App: yield Response(toolCalls: [ToolCall])
-
     API-->>Provider: event: message_stop
+    Note over Provider: Assemble all pending tools and rebuild the blocks
+    Provider-->>App: yield Response(toolCalls: [ToolCall], contentBlocks: [...])
 ```
+
+### Thinking Blocks
+
+Thinking blocks are kept on the AssistantMessage and sent back unchanged within a run, on the turns that call tools, which is where Anthropic requires them. Anthropic rejects a thinking block whose text or `signature` changed, so the provider rebuilds each block from the stream: `thinking_delta` events give the thinking text, `signature_delta` events give its signature, and a `redacted_thinking` block arrives complete with its `data`. The final `Response` of a stream carries them, in order with the text and `tool_use` blocks, as `$response->contentBlocks`; `chat()` fills it from the response body. The agent passes them only to the `AssistantMessage` of a tool-use turn (`$message->contentBlocks()`); text answers, empty turns and failed stops are sent as plain text, so an empty assistant turn holding only thinking is never sent. The provider sends a tool-use turn's blocks as they are. Tool inputs keep `{}` as an object, so the JSON matches what the API sent. A text block that received no text is left out, because Anthropic rejects an empty text block.
+
+The blocks are dropped, and the message is sent as plain text and tool calls without thinking:
+
+- when pruning changes the conversation (the agent calls `withoutContentBlocks()` on every `AssistantMessage`), because Anthropic rejects replayed thinking after earlier history was edited;
+- when a new `run()` starts, for every `AssistantMessage` in the history passed in, because the system prompt or tools may have changed;
+- when the stream ended with a finish reason other than `Stop` or `ToolUse` (for example `max_tokens`, `refusal`, or a stream cut off before `message_stop`), when a tool's input JSON did not decode, or when it contained a block type other than `thinking`, `redacted_thinking`, `text` and `tool_use`.
+
+Other providers ignore content blocks: `AssistantMessage::toArray()` does not include them.
 
 ### Structured Output
 
-Uses Anthropic's tool-use trick: defines the schema as a tool, forces the model to use it, and extracts the structured result:
+Uses Anthropic's native structured outputs when the schema allows it: the request sends `output_config: {format: {type: 'json_schema', schema: ...}}`, and the model answers with one text block of JSON that matches the schema. `structured()` decodes that block and returns the array. Only the schema is sent; an envelope's `name` and `description` are not. Before sending, the provider adds `additionalProperties: false` to every object that lists `properties` and has no `additionalProperties`, keeps `required` exactly as you wrote it (optional properties stay optional and no `null` type is added), and strips the keywords the API rejects: `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `minLength` and `maxLength`. It does this in nested objects, array items, `anyOf`/`allOf`/`oneOf`, `$defs` and `definitions`.
+
+A schema native structured outputs cannot take is an open object (`{"type": "object"}` with no `properties`, `additionalProperties: true`, or `additionalProperties` set to a schema), a value that is not a schema object where one is expected, a recursive schema (a `$ref` cycle between definitions, including a definition that refers to itself), a `$ref` that is not a local `#/$defs/...` or `#/definitions/...` pointer to an existing definition, or a schema that uses `not`, `if`, `then`, `else`, `dependentSchemas`, `patternProperties`, `contains`, `propertyNames`, `unevaluatedProperties`, `$dynamicRef`, `$recursiveRef`, `dependencies`, `unevaluatedItems`, `additionalItems` or `contentSchema`. For such a schema the provider falls back to best-effort JSON: it sends no `output_config.format`, adds one user message, `Respond with only a JSON value that matches this JSON Schema, with no other text:` followed by the schema, and decodes the first text block. The answer is not constrained by the API on this path.
+
+Other `output_config` keys you pass in `$options`, such as `effort`, are kept on both paths. No tools are forced: a forced tool choice returns a 400 on current models, so one passed in `$options` is dropped. If the finish reason is not `Stop` (for example a refusal or `max_tokens`), or the first text block is not JSON that decodes to an array, `structured()` returns the `Response` instead:
 
 ```php
 $result = $provider->structured(
     messages: [new UserMessage('Extract: "Jane, age 25, from NYC"')],
-    schema: [
+    schema: json_encode([
         'type' => 'object',
         'properties' => [
             'name' => ['type' => 'string'],
@@ -306,7 +326,7 @@ $result = $provider->structured(
             'city' => ['type' => 'string'],
         ],
         'required' => ['name', 'age', 'city'],
-    ],
+    ]),
 );
 // ['name' => 'Jane', 'age' => 25, 'city' => 'NYC']
 ```
@@ -317,19 +337,19 @@ The provider tries Anthropic's models API first, then falls back to a static lis
 
 ```php
 $models = $provider->models();
-// ModelDefinition[] — includes context windows and max output tokens
+// ModelDefinition[] — context window, max output tokens, vision and thinking support,
+// read from max_input_tokens, max_tokens and capabilities, following has_more for up to 10 pages
 ```
 
 Static fallback models:
 
 | Model | Context Window | Max Output |
 |-------|:-:|:-:|
-| `claude-sonnet-4-20250514` | 200K | 8,192 |
-| `claude-opus-4-20250514` | 200K | 32,000 |
-| `claude-3-5-haiku-20241022` | 200K | 8,192 |
-| `claude-3-5-sonnet-20241022` | 200K | 8,192 |
-| `claude-3-opus-20240229` | 200K | 4,096 |
-| `claude-3-haiku-20240307` | 200K | 4,096 |
+| `claude-opus-5-5` | 1M | 128,000 |
+| `claude-sonnet-5-5` | 1M | 128,000 |
+| `claude-haiku-5-5` | 1M | 128,000 |
+| `claude-fable-5-2` | 1M | 128,000 |
+| `claude-haiku-4-5` | 200K | 64,000 |
 
 ### Health Check
 
@@ -582,6 +602,17 @@ The Claude SDK JSON output reports `usage.input_tokens`, `output_tokens`,
 `cache_read_input_tokens`, `cache_creation_input_tokens`, and `total_cost_usd`. The adapter folds the
 input + cache tokens into `Usage.promptTokens` so host-side budget tracking works the same as for
 HTTP providers.
+
+## Caller Options
+
+The `$options` array of `chat()`, `stream()` and `structured()` is merged into the request body, so it can set any field the provider's API takes. It cannot replace the fields the provider builds itself. The conversation and the transport flag are always the provider's. The system prompt is the provider's when the conversation has a `SystemMessage`, and the tool list is the provider's when the `$tools` argument is not empty; without them, `$options` may still supply those fields.
+
+| Provider | Always the provider's | Provider's with a `SystemMessage` | Provider's with a non-empty `$tools` |
+|----------|-----------------------|-----------------------------------|--------------------------------------|
+| `AnthropicProvider` | `messages`, `stream` | `system` | `tools` |
+| `GeminiProvider` | `contents` | `systemInstruction` and `system_instruction` | `tools` |
+| `OpenAICompatibleProvider` and its subclasses | `messages`, `stream` | (inside `messages`) | `tools` |
+| `OpenAIResponsesProvider` | `input`, `stream` | (inside `input`) | `tools` |
 
 ## Request Limits
 
