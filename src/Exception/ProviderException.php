@@ -31,9 +31,26 @@ final class ProviderException extends \RuntimeException
         return new self(sprintf('Provider request refused: %s', $reason), 0, $previous);
     }
 
-    /** An `error` event inside a provider's stream, as `type: message`. */
+    private const int STREAM_ERROR_MAX_CHARS = 300;
+
+    /**
+     * An `error` event inside a provider's stream, as `type: message`. The
+     * provider's text is untrusted: control characters become spaces,
+     * whitespace collapses, the message is cut to 300 characters (with `…`)
+     * and a type that is not 1-64 of `[a-z0-9_]` becomes `error`.
+     */
     public static function streamError(string $type, string $message): self
     {
+        if (preg_match('/^[a-z0-9_]{1,64}$/D', $type) !== 1) {
+            $type = 'error';
+        }
+
+        $message = (string) preg_replace('/\s+/u', ' ', (string) preg_replace('/\p{Cc}/u', ' ', mb_scrub($message, 'UTF-8')));
+        $message = trim($message);
+        if (mb_strlen($message, 'UTF-8') > self::STREAM_ERROR_MAX_CHARS) {
+            $message = mb_substr($message, 0, self::STREAM_ERROR_MAX_CHARS, 'UTF-8') . '…';
+        }
+
         return new self(sprintf('%s: %s', $type, $message));
     }
 
