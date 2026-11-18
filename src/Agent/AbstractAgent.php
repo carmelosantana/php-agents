@@ -67,6 +67,10 @@ abstract class AbstractAgent implements AgentInterface
         $this->maxTools = $max;
     }
 
+    /**
+     * @param array<string, mixed> $providerOptions Provider-specific request options (e.g. max_tokens,
+     *                                              thinking) sent with every stream() call in the loop.
+     */
     public function __construct(
         private readonly ProviderInterface $provider,
         private readonly int $maxIter = self::DEFAULT_MAX_ITERATIONS,
@@ -82,6 +86,7 @@ abstract class AbstractAgent implements AgentInterface
         ?TickCallbackInterface $tickCallback = null,
         private readonly EmptyResponseHandling $emptyResponseHandling = EmptyResponseHandling::Nudge,
         private readonly int $maxEmptyResponseRetries = 2,
+        private readonly array $providerOptions = [],
     ) {
         $this->toolExecutor = $toolExecutor ?? new SynchronousToolExecutor();
         $this->tickCallback = $tickCallback ?? new NullTickCallback();
@@ -246,7 +251,7 @@ abstract class AbstractAgent implements AgentInterface
                 $streamUsage = null;
                 $streamModel = '';
 
-                foreach ($this->provider->stream($conversation->messages(), $advertisedTools) as $chunk) {
+                foreach ($this->provider->stream($conversation->messages(), $advertisedTools, $this->providerOptions) as $chunk) {
                     $this->tickCallback->tick();
 
                     // Check cancellation between stream chunks so ESC/Ctrl+C returns

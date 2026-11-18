@@ -52,6 +52,7 @@ $agent = new ResearchAgent(
     safetyMarginPercent: 20,                // Optional: pruning safety margin
     budgetExitThreshold: 0.85,              // Optional: graceful wrap-up threshold
     budgetExitWrapUpIterations: 2,          // Optional: extra iterations after warning
+    providerOptions: ['max_tokens' => 8192], // Optional: provider-specific request options
 );
 ```
 
@@ -66,6 +67,12 @@ $agent = new ResearchAgent(
 | `safetyMarginPercent` | `int` | `20` | Headroom applied before pruning to absorb token-estimation drift |
 | `budgetExitThreshold` | `float` | `0.0` | Optional ratio `0.0`-`1.0`; emits `agent.budget_warning` once when the current iteration crosses the threshold |
 | `budgetExitWrapUpIterations` | `int` | `2` | Extra iterations allowed after a budget warning before the loop returns `BudgetExhausted` |
+| `providerOptions` | `array` | `[]` | Provider-specific request options passed to `stream()` on every iteration |
+
+`providerOptions` are specific to the provider you pass in: use the keys that provider's API takes
+(for example `max_tokens` or `thinking` for Anthropic). The agent sends the same options with every
+iteration of the loop, not only the first. They add to the request; they cannot replace the transport
+or history fields the provider builds itself (such as `stream`, `messages`, `input` or `contents`).
 
 ## The Run Loop in Detail
 
