@@ -274,6 +274,11 @@ sequenceDiagram
     API-->>Provider: event: message_start
     Note over Provider: Extract initial usage
 
+    API-->>Provider: event: content_block_start (type: thinking)
+    API-->>Provider: event: content_block_delta (thinking_delta, then signature_delta)
+    Provider-->>App: yield Response(reasoning: "...")
+    Note over Provider: Keep the thinking text and its signature on the block
+
     API-->>Provider: event: content_block_start (type: text)
     API-->>Provider: event: content_block_delta (text: "I'll help")
     Provider-->>App: yield Response(content: "I'll help")
@@ -285,11 +290,22 @@ sequenceDiagram
     Note over Provider: Accumulate JSON fragments
 
     API-->>Provider: event: message_delta (stop_reason: tool_use)
-    Note over Provider: Assemble all pending tools
-    Provider-->>App: yield Response(toolCalls: [ToolCall])
-
     API-->>Provider: event: message_stop
+    Note over Provider: Assemble all pending tools and rebuild the blocks
+    Provider-->>App: yield Response(toolCalls: [ToolCall], contentBlocks: [...])
 ```
+
+### Thinking Blocks
+
+Thinking blocks are kept on the AssistantMessage and sent back unchanged within a run. Anthropic rejects a thinking block whose text or `signature` changed, so the provider rebuilds each block from the stream: `thinking_delta` events give the thinking text, `signature_delta` events give its signature, and a `redacted_thinking` block arrives complete with its `data`. The final `Response` of a stream carries them, in order with the text and `tool_use` blocks, as `$response->contentBlocks`; `chat()` fills it from the response body. The agent passes them to the `AssistantMessage` it adds (`$message->contentBlocks()`), and the provider sends that message's blocks as they are. Tool inputs keep `{}` as an object, so the JSON matches what the API sent.
+
+The blocks are dropped, and the message is sent as plain text and tool calls without thinking:
+
+- when pruning changes the conversation (the agent calls `withoutContentBlocks()` on every `AssistantMessage`), because Anthropic rejects replayed thinking after earlier history was edited;
+- when a new `run()` starts, for every `AssistantMessage` in the history passed in, because the system prompt or tools may have changed;
+- when the stream ended with a finish reason other than `Stop` or `ToolUse` (for example `max_tokens`, `refusal`, or a stream cut off before `message_stop`), when a tool's input JSON did not decode, or when it contained a block type other than `thinking`, `redacted_thinking`, `text` and `tool_use`.
+
+Other providers ignore content blocks: `AssistantMessage::toArray()` does not include them.
 
 ### Structured Output
 
