@@ -123,7 +123,7 @@ Agents are composed from providers, toolkits, and policies rather than inheritin
 ```php
 $agent = new class(
     provider: new OllamaProvider(model: 'llama3.2'),
-    maxIterations: 10,
+    maxIter: 10,
     executionPolicy: new MyPolicy(),
 ) extends AbstractAgent {
     public function name(): string { return 'My Agent'; }

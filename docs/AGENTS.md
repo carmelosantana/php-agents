@@ -44,7 +44,7 @@ final class ResearchAgent extends AbstractAgent
 ```php
 $agent = new ResearchAgent(
     provider: $provider,                    // Required: ProviderInterface
-    maxIterations: 25,                      // Max tool-use loops (default: 25)
+    maxIter: 25,                            // Max tool-use loops (default: 25)
     executionPolicy: new MyPolicy(),        // Optional: tool gating
     cancellationToken: $token,              // Optional: cooperative cancellation
     pendingInputProvider: $inputProvider,   // Optional: external input injection
@@ -59,7 +59,7 @@ $agent = new ResearchAgent(
 | Parameter | Type | Default | Purpose |
 |-----------|------|---------|---------|
 | `provider` | `ProviderInterface` | — | LLM to use for reasoning |
-| `maxIterations` | `int` | `25` | Safety limit on tool-use loops |
+| `maxIter` | `int` | `25` | Safety limit on tool-use loops |
 | `executionPolicy` | `?ToolExecutionPolicyInterface` | `null` | Pre-execution tool gating |
 | `cancellationToken` | `?CancellationTokenInterface` | `null` | Cooperative cancellation |
 | `pendingInputProvider` | `?PendingInputProviderInterface` | `null` | Inject messages mid-loop |
@@ -76,6 +76,9 @@ or history fields the provider builds itself (such as `stream`, `messages`, `inp
 They cannot replace the agent's instructions or its tools either: the system prompt (`system`,
 `systemInstruction`) and the `tools` list come from the agent. See
 [Caller Options](PROVIDERS.md#caller-options) for each provider's fields.
+
+Treat `providerOptions` as trusted developer configuration. Never build them from end-user input or
+tool output: they can still change the model, the output-token limit and other request settings.
 
 ## The Run Loop in Detail
 

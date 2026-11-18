@@ -202,7 +202,7 @@ final class DatabaseAgent extends AbstractAgent
 {
     public function __construct(ProviderInterface $provider)
     {
-        parent::__construct($provider, maxIterations: 10);
+        parent::__construct($provider, maxIter: 10);
     }
 
     public function instructions(): string
