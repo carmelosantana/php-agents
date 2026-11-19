@@ -13,13 +13,14 @@ use CarmeloSantana\PHPAgents\Provider\Stream\StreamProjector;
 
 /**
  * Yields one scripted list of stream events per streamEvents() call; stream() is their
- * projection. Running out of scripts throws, as a provider failure would.
+ * projection. A Throwable in a script is thrown at that point, and running out of scripts
+ * throws, as a provider failure would.
  */
 final class ScriptedEventsProvider implements ProviderInterface
 {
     public int $calls = 0;
 
-    /** @param list<list<StreamEvent>> $scripts */
+    /** @param list<list<StreamEvent|\Throwable>> $scripts */
     public function __construct(private array $scripts) {}
 
     public function chat(array $messages, array $tools = [], array $options = []): Response
@@ -36,7 +37,11 @@ final class ScriptedEventsProvider implements ProviderInterface
     {
         $this->calls++;
 
-        yield from array_shift($this->scripts) ?? throw new \RuntimeException('No scripted events left.');
+        $script = array_shift($this->scripts) ?? throw new \RuntimeException('No scripted events left.');
+
+        foreach ($script as $event) {
+            yield $event instanceof \Throwable ? throw $event : $event;
+        }
     }
 
     public function structured(array $messages, string $schema, array $options = []): mixed

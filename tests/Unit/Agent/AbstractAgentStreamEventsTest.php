@@ -42,7 +42,7 @@ final class StreamEventsTestAgent extends AbstractAgent
         return [
             new Tool('echo', 'Echo text.', [new StringParameter('text', 'Text to echo')], fn(array $input): ToolResult => ToolResult::success('echo: ' . ($input['text'] ?? ''))),
             new Tool('slow', 'Sleep briefly.', [], function (array $input): ToolResult {
-                usleep(20_000);
+                usleep(100_000);
 
                 return ToolResult::success('slept');
             }),
@@ -321,6 +321,33 @@ test('a token limit after a ToolUse response discards its calls before agent.err
         ->and(array_slice($events->names(), -4))->toBe(['agent.step_finish', 'agent.tool_input_discarded', 'agent.error', 'agent.finish']);
 });
 
+test('a provider exception after a started call discards it before agent.error', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, 'c1', 'echo'),
+        new ToolInputDelta(0, 'c1', '{"text": "h'),
+        new RuntimeException('Idle timeout reached.'),
+    ]]);
+
+    $output = $agent->run(new UserMessage('Echo hi.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Error)
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'c1', 'echo', 'provider_error')])
+        ->and(array_slice($events->names(), -3))->toBe(['agent.tool_input_discarded', 'agent.error', 'agent.finish']);
+});
+
+test('a stream that ends without a Finish after a started call discards it before agent.error', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, 'c1', 'echo'),
+        new ToolInputDelta(0, 'c1', '{"text": "h'),
+    ]]);
+
+    $output = $agent->run(new UserMessage('Echo hi.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Error)
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'c1', 'echo', 'provider_error')])
+        ->and(array_slice($events->names(), -3))->toBe(['agent.tool_input_discarded', 'agent.error', 'agent.finish']);
+});
+
 test('a done call that finishes the run discards the other calls in its response', function () {
     [$agent, $events] = streamEventsAgent([
         streamEventsToolRound([['d1', 'done', ['response' => 'All set.']], ['c2', 'echo', ['text' => 'late']]]),
@@ -401,7 +428,7 @@ test('agent.finish fires exactly once, last, on every exit path', function (\Clo
     'run time limit' => [
         fn() => [...streamEventsAgent(
             [streamEventsToolRound([['c1', 'slow', []]])],
-            ['runLimits' => new RunLimits(maxRunSeconds: 0.01)],
+            ['runLimits' => new RunLimits(maxRunSeconds: 0.05)],
         ), new UserMessage('Hi')],
         AgentFinishReason::BudgetExhausted,
         ['agent.tool_result', 'agent.error', 'agent.finish'],

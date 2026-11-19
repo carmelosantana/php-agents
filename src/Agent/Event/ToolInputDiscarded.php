@@ -14,6 +14,7 @@ namespace CarmeloSantana\PHPAgents\Agent\Event;
  * - 'invalid_arguments': the response finished with Error and the call's arguments never
  *   completed as a JSON object (no ToolInputEnd).
  * - 'run_limit': a RunLimits limit (bytes, time, tokens) ended the run before the call ran.
+ * - 'provider_error': the stream threw, or ended without a Finish, after the call started.
  * - 'done_finished_run': a `done` call earlier in the same response finished the run.
  * - 'cancelled': the run was cancelled while the call was streaming.
  * - 'denied', 'invalid_done', 'duplicate_done': a previewed `done` call the policy denied,

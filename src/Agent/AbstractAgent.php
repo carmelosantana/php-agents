@@ -426,6 +426,7 @@ abstract class AbstractAgent implements AgentInterface
             } catch (\Throwable $e) {
                 $errorMessage = $this->providerErrorMessage($e);
 
+                $this->discardCalls($startedCalls, 'provider_error');
                 $this->notify('agent.error', $errorMessage);
 
                 return new Output(
@@ -447,6 +448,8 @@ abstract class AbstractAgent implements AgentInterface
             if ($finish !== null) {
                 $this->discardUnrunCalls($startedCalls, $endedCalls, $finish->reason);
                 $this->notify('agent.step_finish', new StepFinish($i + 1, $finish->reason, $finish->rawReason, $finish->usage, $finish->model));
+            } elseif (!$cancelled) {
+                $this->discardCalls($startedCalls, 'provider_error');
             }
 
             // A cancelled stream has no Finish: it keeps the calls that completed. A stream
