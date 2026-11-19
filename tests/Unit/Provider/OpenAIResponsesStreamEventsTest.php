@@ -266,10 +266,44 @@ test('streamEvents finishes with Refusal when a refusal streams alongside tool c
         responsesCompleted(),
     ]);
 
-    $finish = $events[array_key_last($events)];
+    // The call's end is emitted when its item is done; the Refusal finish means it never runs.
+    expect($events)->toEqual([
+        new TextDelta('I cannot help.'),
+        new ToolInputStart(0, 'call_1', 'get_weather'),
+        new ToolInputDelta(0, 'call_1', '{"city":"NYC"}'),
+        new ToolInputEnd(0, 'call_1', 'get_weather', ['city' => 'NYC']),
+        new Finish(ProviderFinishReason::Refusal, 'completed', null, 'gpt-4o-2024'),
+    ]);
+});
 
-    expect($finish->reason)->toBe(ProviderFinishReason::Refusal)
-        ->and($finish->rawReason)->toBe('completed');
+test('stream projects a refusal with tool calls as one Refusal chunk with no tool calls', function () {
+    $client = new MockHttpClient([new MockResponse(responsesEventsBody([
+        ['type' => 'response.refusal.delta', 'delta' => 'I cannot help.'],
+        responsesCallAdded(1, 'call_1', 'get_weather'),
+        responsesCallDone(1, 'call_1', 'get_weather', '{"city":"NYC"}'),
+        responsesCompleted(),
+    ]), ['http_code' => 200])]);
+    $provider = new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $client);
+
+    $chunks = array_values(iterator_to_array($provider->stream([new UserMessage('hi')]), false));
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[0]->content)->toBe('I cannot help.')
+        ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::Refusal)
+        ->and($chunks[1]->toolCalls)->toBe([]);
+});
+
+test('streamEvents takes the call id and name from the done item when the added item lacked them', function () {
+    $events = responsesStreamEvents([
+        ['type' => 'response.output_item.added', 'output_index' => 0, 'item' => ['type' => 'function_call', 'arguments' => '']],
+        responsesArgsDelta(0, '{"city":"NYC"}'),
+        responsesCallDone(0, 'call_1', 'get_weather', '{"city":"NYC"}'),
+        responsesCompleted(),
+    ]);
+
+    $ends = array_values(array_filter($events, fn($e) => $e instanceof ToolInputEnd));
+
+    expect($ends)->toEqual([new ToolInputEnd(0, 'call_1', 'get_weather', ['city' => 'NYC'])]);
 });
 
 test('streamEvents reads cached and reasoning tokens and keeps the provider total', function () {
