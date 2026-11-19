@@ -15,13 +15,17 @@ use CarmeloSantana\PHPAgents\Provider\Stream\StreamProjector;
  * Yields one scripted list of stream events per streamEvents() call; stream() is their
  * projection. A Throwable in a script is thrown at that point, and running out of scripts
  * throws, as a provider failure would. $closedStreams counts the generators whose `finally` ran,
- * so a test can see that the agent abandoned a stream.
+ * so a test can see that the agent abandoned a stream. $options records the options of each
+ * streamEvents() call.
  */
 final class ScriptedEventsProvider implements ProviderInterface
 {
     public int $calls = 0;
 
     public int $closedStreams = 0;
+
+    /** @var list<array<string, mixed>> */
+    public array $options = [];
 
     /** @param list<list<StreamEvent|\Throwable>> $scripts */
     public function __construct(private array $scripts) {}
@@ -39,6 +43,7 @@ final class ScriptedEventsProvider implements ProviderInterface
     public function streamEvents(array $messages, array $tools = [], array $options = []): iterable
     {
         $this->calls++;
+        $this->options[] = $options;
 
         $script = array_shift($this->scripts) ?? throw new \RuntimeException('No scripted events left.');
 

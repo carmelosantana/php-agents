@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Agent;
 
+use CarmeloSantana\PHPAgents\Contract\CancellationTokenInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
@@ -19,6 +20,7 @@ final class Agent extends AbstractAgent
     /**
      * @param ToolInterface[] $tools
      * @param ToolkitInterface[] $toolkits
+     * @param array<string, mixed> $providerOptions
      */
     public function __construct(
         ProviderInterface $provider,
@@ -27,8 +29,18 @@ final class Agent extends AbstractAgent
         array $toolkits = [],
         int $maxIterations = self::DEFAULT_MAX_ITERATIONS,
         ?ToolExecutionPolicyInterface $executionPolicy = null,
+        ?RunLimits $runLimits = null,
+        ?CancellationTokenInterface $cancellationToken = null,
+        array $providerOptions = [],
     ) {
-        parent::__construct($provider, maxIter: $maxIterations, executionPolicy: $executionPolicy);
+        parent::__construct(
+            $provider,
+            maxIter: $maxIterations,
+            executionPolicy: $executionPolicy,
+            cancellationToken: $cancellationToken,
+            providerOptions: $providerOptions,
+            runLimits: $runLimits,
+        );
 
         foreach ($tools as $tool) {
             $this->addTool($tool);
