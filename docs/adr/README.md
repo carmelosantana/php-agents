@@ -7,4 +7,5 @@ decision, and its consequences. Plans, specs and work ledgers do not live in thi
 | --- | --- |
 | [0001](0001-mcp-client.md) | A hand-rolled, HTTP-only MCP client with fingerprint-pinned tools |
 | [0002](0002-structured-output-schemas.md) | Structured-output schemas are normalised per provider, never trusted as sent |
+| [0003](0003-provider-request-limits.md) | Provider requests are bounded per request and follow no redirect |
 | [0004](0004-streaming-events.md) | Providers stream typed events; stream() is a projection of them |
