@@ -54,6 +54,9 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   [Cooperative Cancellation](AGENTS.md#cooperative-cancellation).
 - `agent.finish` fires once on every exit path that returns. An exception that escapes `run()`
   gets none.
+- `ImagePolicy` (and so `LocalImageResolver`, `RemoteImageResolver` and the image normalizers)
+  works without ext-fileinfo: it sniffs with `getimagesizefromstring()` instead of failing with
+  `Class "finfo" not found`. That fallback knows image formats only, so non-images sniff as `unknown`.
 
 ### New and not breaking
 
