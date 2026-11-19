@@ -158,7 +158,7 @@ when the run ends for another reason. An exception that escapes `run()` gets no 
 | Text answer | `step_finish` → `done` → `finish` | `Stop` |
 | Reasoning-only answer | `step_finish` → `empty_response` → `warning` → `done` → `finish` | `Stop` |
 | `done` tool | `step_finish` → `tool_input_discarded` (the response's other calls) → `done` → `finish` | `Done` |
-| Tool-call limit per run | `step_finish` → `warning` → `finish` | `BudgetExhausted` |
+| Tool-call limit per run | `step_finish` → … tools … → `warning` → `finish` | `BudgetExhausted` |
 | Budget wrap-up exhausted | `warning` → `finish` | `BudgetExhausted` |
 | Run limit while streaming (bytes, time, tokens) | `tool_input_discarded` (`run_limit`, each started call) → `error` → `finish` | `BudgetExhausted` |
 | Token limit after a response | `step_finish` → `tool_input_discarded` (`run_limit`, each completed call) → `error` → `finish` | `BudgetExhausted` |
@@ -170,7 +170,7 @@ when the run ends for another reason. An exception that escapes `run()` gets no 
 | Stream ended without a `Finish` | `tool_input_discarded` (`provider_error`, each started call) → `error` → `finish` | `Error` |
 | Provider exception | `tool_input_discarded` (`provider_error`, each started call) → `error` → `finish` | `Error` |
 | Tool `TerminationException` | `step_finish` → `finish` (no `agent.error`) | `Error` |
-| Cancel mid-stream | `tool_input_discarded` (each call still open) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
+| Cancel mid-stream | `tool_input_discarded` (`cancelled`, each started call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 | Cancel at top of iteration or during tools | (`step_finish` already fired for a completed response; no call is open, so no `tool_input_discarded`) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 
 Tests pin each sequence.

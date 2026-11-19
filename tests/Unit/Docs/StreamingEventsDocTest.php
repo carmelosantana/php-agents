@@ -130,3 +130,10 @@ test('ADR 0004 is accepted', function () use ($root) {
 
     expect($adr)->toContain('- Status: accepted (v0.18.0, 2026-11)');
 });
+
+test('ADR 0004 and AGENTS.md agree on the tool-call limit and mid-stream cancel sequences', function (string $path) use ($root) {
+    $doc = (string) file_get_contents($root . '/' . $path);
+
+    expect($doc)->toContain('| `step_finish` → … tools … → `warning` → `finish` | `BudgetExhausted` |')
+        ->and($doc)->toContain('| `tool_input_discarded` (`cancelled`, each started call) → `error` `\'Task cancelled\'` → `finish` | `Cancelled` |');
+})->with(['docs/AGENTS.md', 'docs/adr/0004-streaming-events.md']);
