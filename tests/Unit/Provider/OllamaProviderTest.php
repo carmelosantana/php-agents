@@ -483,3 +483,48 @@ test('explicit reasoning_effort option is not overridden', function () {
 
     expect($requestPayload['reasoning_effort'])->toBe('high');
 });
+
+test('streamEvents injects Ollama options and keeps stream_options include_usage', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return new MockResponse('data: ' . json_encode(['choices' => [['delta' => ['content' => 'Hi'], 'finish_reason' => 'stop']]]) . "\n\ndata: [DONE]\n\n", ['http_code' => 200]);
+    });
+
+    $provider = new OllamaProvider(
+        model: 'qwen3:8b',
+        httpClient: $mockClient,
+        reasoningEffort: \CarmeloSantana\PHPAgents\Enum\ReasoningEffort::None,
+    );
+    $tool = new Tool(
+        name: 'test_tool',
+        description: 'Test',
+        parameters: [new StringParameter('input', 'Input', required: true)],
+        callback: fn(array $args): ToolResult => ToolResult::success('ok'),
+    );
+
+    iterator_to_array($provider->streamEvents([new UserMessage('hi')], [$tool]), false);
+
+    expect($requestPayload['num_ctx'])->toBe(65536)
+        ->and($requestPayload['reasoning_effort'])->toBe('none')
+        ->and($requestPayload['stream_options'])->toBe(['include_usage' => true]);
+});
+
+test('streamEvents decodes an Ollama parameterless tool call with empty arguments as an empty object', function () {
+    // Ollama streams each call whole; a tool with no parameters arrives with arguments "".
+    $body = 'data: ' . json_encode(['model' => 'qwen3:8b', 'choices' => [['delta' => ['tool_calls' => [
+        ['id' => 'call_1', 'index' => 0, 'type' => 'function', 'function' => ['name' => 'current_time', 'arguments' => '']],
+    ]], 'finish_reason' => null]]]) . "\n\n"
+        . 'data: ' . json_encode(['model' => 'qwen3:8b', 'choices' => [['delta' => [], 'finish_reason' => 'tool_calls']]]) . "\n\n"
+        . 'data: ' . json_encode(['model' => 'qwen3:8b', 'choices' => [], 'usage' => ['prompt_tokens' => 9, 'completion_tokens' => 4, 'total_tokens' => 13]]) . "\n\n"
+        . "data: [DONE]\n\n";
+    $provider = new OllamaProvider(model: 'qwen3:8b', httpClient: new MockHttpClient([new MockResponse($body, ['http_code' => 200])]));
+
+    $events = array_values(iterator_to_array($provider->streamEvents([new UserMessage('time?')]), false));
+    $ends = array_values(array_filter($events, fn($e) => $e instanceof \CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd));
+    $finish = $events[array_key_last($events)];
+
+    expect($ends)->toEqual([new \CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd(0, 'call_1', 'current_time', [])])
+        ->and($finish->reason)->toBe(ProviderFinishReason::ToolUse)
+        ->and($finish->usage)->toEqual(new \CarmeloSantana\PHPAgents\Provider\Usage(9, 4, 13));
+});

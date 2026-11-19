@@ -578,3 +578,25 @@ test('messages without tool calls pass through unchanged', function () {
         ->and($messages[3]['role'])->toBe('user')
         ->and($messages[3]['content'])->toBe('How are you?');
 });
+
+test('streamEvents payload omits OpenAI stream_options extension and still finishes without a usage chunk', function () {
+    $requestPayload = null;
+    $sseData = 'data: ' . json_encode(['choices' => [['delta' => ['content' => 'Hi'], 'finish_reason' => 'stop']]]) . "\n\ndata: [DONE]\n\n";
+
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload, $sseData): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return new MockResponse($sseData, ['http_code' => 200]);
+    });
+
+    $provider = new MistralProvider(apiKey: 'test-key', httpClient: $mockClient);
+
+    $events = array_values(iterator_to_array($provider->streamEvents([new UserMessage('Hello')], [], ['stream_options' => ['include_usage' => true]]), false));
+    $finish = $events[array_key_last($events)];
+
+    expect($requestPayload['stream'])->toBeTrue()
+        ->and($requestPayload)->not->toHaveKey('stream_options')
+        ->and($events[0])->toEqual(new \CarmeloSantana\PHPAgents\Provider\Stream\TextDelta('Hi'))
+        ->and($finish)->toBeInstanceOf(\CarmeloSantana\PHPAgents\Provider\Stream\Finish::class)
+        ->and($finish->reason)->toBe(ProviderFinishReason::Stop)
+        ->and($finish->usage)->toBeNull();
+});

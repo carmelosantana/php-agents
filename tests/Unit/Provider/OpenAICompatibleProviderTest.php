@@ -547,13 +547,15 @@ test('stream produces text deltas', function () {
         $chunks[] = $chunk;
     }
 
-    // Text chunk 1, Text chunk 2, Stop chunk, Usage chunk
-    expect($chunks)->toHaveCount(4)
+    // Text chunk 1, Text chunk 2, then one terminal chunk with the stop reason and usage
+    expect($chunks)->toHaveCount(3)
         ->and($chunks[0]->content)->toBe('He')
         ->and($chunks[1]->content)->toBe('llo')
+        ->and($chunks[0]->usage)->toBeNull()
+        ->and($chunks[2]->content)->toBe('')
         ->and($chunks[2]->finishReason)->toBe(ProviderFinishReason::Stop)
-        ->and($chunks[3]->usage)->not->toBeNull()
-        ->and($chunks[3]->usage->totalTokens)->toBe(7);
+        ->and($chunks[2]->usage)->not->toBeNull()
+        ->and($chunks[2]->usage->totalTokens)->toBe(7);
 });
 
 test('stream assembles tool call deltas', function () {

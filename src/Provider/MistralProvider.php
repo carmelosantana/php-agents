@@ -57,11 +57,11 @@ final class MistralProvider extends OpenAICompatibleProvider
      * stream_options extension, so suppress it on inherited streaming calls.
      */
     #[\Override]
-    public function stream(array $messages, array $tools = [], array $options = []): iterable
+    public function streamEvents(array $messages, array $tools = [], array $options = []): iterable
     {
         $options['stream_options'] = null;
 
-        return parent::stream($messages, $tools, $options);
+        return parent::streamEvents($messages, $tools, $options);
     }
 
     /**
