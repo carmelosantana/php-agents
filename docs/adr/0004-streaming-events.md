@@ -1,0 +1,215 @@
+# 0004: Providers stream typed events; stream() is a projection of them
+
+- Status: proposed (v0.18.0, 2026-11)
+
+## Context
+
+A chat UI that streams replies as server-sent fragments (in the style of the Vercel AI SDK's UI
+parts) needs three things the 0.17 streaming API cannot give it:
+
+1. **Stop mid-stream.** A Stop click has to cut a reply off within about a quarter of a second,
+   keep the text already shown, and end the run with a finish reason that says "cancelled". In
+   0.17 cancellation is only checked when a chunk arrives, so a silent model cannot be stopped,
+   and a mid-stream cancel returns `Stop`.
+2. **Streamed tool calls.** Tool cards should fill in while the model is still writing the
+   arguments (input start, delta, available). `stream()` only hands over finished tool calls.
+3. **Live usage.** A context-budget gauge should update after every model response, with cache
+   and reasoning tokens counted the same way on every provider.
+
+A `done`-tool answer should also type out live like plain text, and the convenience `Agent`
+should accept `RunLimits`, a cancellation token and provider options.
+
+Every SDK revised in the last 18 months (Vercel AI SDK v5, Prism PHP 0.92, symfony/ai 0.7) moved
+from one chunk object to typed start/delta/end events, each in a breaking release. Starting on
+typed events now avoids paying for that migration later, so 0.18.0 is a breaking release.
+
+Alternatives considered, one line each:
+
+- Optional fields on `Response` chunks: ticks would leak into direct `stream()` callers, and the
+  ecosystem has moved away from that shape.
+- `streamEvents()` on a separate optional interface: decorating providers would silently hide it,
+  so agents behind them would lose the new events without any error.
+- Closures in `$options`: options are merged into request payloads and would need stripping at
+  every merge point.
+
+## Decision
+
+### Stream events
+
+`Provider\Stream\StreamEvent` is a marker interface; every event is a `final readonly` class.
+
+| Event | Fields | When |
+| --- | --- | --- |
+| `ReasoningDelta` | `string $delta` | each reasoning/thinking fragment |
+| `TextDelta` | `string $delta` | each text fragment |
+| `ToolInputStart` | `int $index, string $id, string $name` | a tool call opens |
+| `ToolInputDelta` | `int $index, string $id, string $delta` | a raw argument-JSON fragment |
+| `ToolInputEnd` | `int $index, string $id, string $name, array $arguments, array $metadata` | arguments complete and decoded to a JSON object |
+| `Tick` | none | the stream has been idle for `tickInterval` |
+| `Finish` | `ProviderFinishReason $reason, string $rawReason, ?Usage $usage, string $model, array $contentBlocks` | exactly once, last, for every stream that does not throw |
+
+- `$index` is the call's 0-based position in this response, in the order calls opened; `$id` is
+  the provider's call id, repeated on every event even where the provider sends it only once.
+- Providers that deliver a call whole (Gemini, Ollama, the llama.cpp tool parser) emit
+  `ToolInputStart`, one `ToolInputDelta` carrying the full JSON-encoded arguments, then
+  `ToolInputEnd`, so every call has at least one delta.
+- Empty or whitespace-only arguments decode as `{}`. Any other arguments that do not decode to a
+  JSON object get no `ToolInputEnd`, and `Finish` carries `Error`, on every provider.
+- `ToolInputEnd` is emitted as soon as each call's arguments are complete. The tool calls are the
+  `ToolInputEnd` events; the agent runs them only when `Finish->reason` is `ToolUse`.
+- Per-call metadata such as Gemini's `thoughtSignature` rides on `ToolInputEnd->metadata`, with
+  the values `ToolCall::metadata` holds.
+- Errors are thrown as before (`ProviderException`, symfony HTTP exceptions); there is no error
+  event.
+
+### Provider contract
+
+- `ProviderInterface` gains
+  `streamEvents(array $messages, array $tools = [], array $options = []): iterable<StreamEvent>`.
+  `stream()` stays on the interface and is not deprecated.
+- `AbstractProvider::stream()` is `final` and projects `streamEvents()` into one shape for every
+  provider: one `Response` per text or reasoning delta (finish reason `Stop`, no usage, no tool
+  calls), then exactly one terminal `Response` with the finish reason, usage, model, tool calls
+  (from `ToolInputEnd`, only on `ToolUse`) and content blocks. Ticks and tool-input events are
+  not projected. A subclass that still overrides `stream()` fails loudly.
+- Request preparation that Mistral and Ollama did in `stream()` moves to `streamEvents()` (or a
+  shared protected hook), so both paths get it.
+- Classes that implement `ProviderInterface` directly use the trait
+  `Provider\Stream\StreamsEventsFromResponses`, which builds events from their `stream()`:
+  text and reasoning deltas, whole-call tool events from the terminal chunk's tool calls, and
+  `Finish` from the terminal chunk. Decorators forward with
+  `yield from $inner->streamEvents(...)`.
+
+### Idle ticks and polling
+
+- `RequestLimits` gains a trailing `float $tickInterval = 0.25`; 0 disables ticks.
+- `SseStreamParser` polls with `$httpClient->stream($response, $tickInterval)` in a loop,
+  checking `isTimeout()` before reading content, and re-enters `stream()` after each timeout
+  chunk. Polling also covers the wait for headers; the status check happens on the first
+  non-timeout chunk.
+- The parser tracks the time since the last data and throws the same idle-timeout error symfony
+  would once `idleTimeout` passes; `maxDuration` still works through `max_duration`. A tick never
+  extends either deadline.
+- The parser yields a sentinel per tick, which providers turn into a `Tick` event. When the
+  consumer stops iterating, the provider's generator cancels the HTTP response in a `finally`
+  block.
+- Ticks depend on the client honouring the timeout argument of `stream()`. A client that ignores
+  it gets no ticks, and cancellation then works per data chunk only. `LlamaCppProvider` and
+  `CliProvider` have no SSE stream: they honour cancellation per chunk and emit no ticks.
+  `docs/PROVIDERS.md` lists, per provider, whether cancellation works during silence or per
+  chunk.
+
+### Agent events
+
+The agent iterates `streamEvents()`. On every event it runs the tick callback, the cancellation
+check and the run-limit checks (bytes, time, tokens). `TextDelta` and `ReasoningDelta` keep firing
+`agent.text_delta` and `agent.reasoning` with a string. Existing events keep their names,
+payloads and order. New events:
+
+| Event | Payload | Fired |
+| --- | --- | --- |
+| `agent.tool_input_start` | `ToolInputStart` | the model opens a call |
+| `agent.tool_input_delta` | `ToolInputDelta` | each argument fragment |
+| `agent.tool_input_end` | `ToolInputEnd` | arguments complete, before `agent.tool_call` |
+| `agent.done_delta` | `DonePreview{callId, delta}` | provisional decoded text of the `done` call's `response` argument |
+| `agent.tool_input_discarded` | `ToolInputDiscarded{index, id, name, reason}` | a call that got `agent.tool_input_start` will not run |
+| `agent.step_finish` | `StepFinish{iteration, reason, rawReason, usage, model}` | after each provider response |
+| `agent.finish` | `RunFinish{AgentFinishReason reason, Usage usage, int iterations, string model}` | exactly once, on every exit path, just before `run()` returns |
+
+- `agent.tool_input_discarded` covers a response that did not end in `ToolUse` (max tokens,
+  error, cancel), arguments that failed to decode, and a call left behind when a `done` call ended
+  the run. For a previewed `done` call it also covers denied, invalid and duplicate. A UI uses it
+  to retract a card or a preview.
+- `agent.finish` fires from one place: `run()` wraps the loop and notifies with the `Output` it
+  is about to return.
+- **`done` previews.** `DonePreviewReader` reads the `done` call's argument JSON incrementally and
+  emits the decoded text of the top-level `response` string as it arrives, handling escapes
+  (`\n`, `\"`, `\\`, `\uXXXX` with surrogate pairs) split across fragments. It ignores other keys
+  and never emits text from a nested object. Only the first `done` call in a response is
+  previewed, one preview per call id. Acceptance is the existing `agent.done` event; a preview
+  that does not finish the run gets `agent.tool_input_discarded`. Whole-call providers deliver
+  the preview in one `agent.done_delta`.
+- **`Agent` constructor.** Trailing optional `?RunLimits $runLimits = null`,
+  `?CancellationTokenInterface $cancellationToken = null` and `array $providerOptions = []`,
+  passed through to `AbstractAgent`.
+
+Terminal sequence on every exit path:
+`agent.step_finish` (when a provider response completed) → `agent.done`, `agent.error` or
+`agent.warning` as in 0.17 → `agent.finish`.
+
+| Exit path | Sequence | `AgentFinishReason` |
+| --- | --- | --- |
+| Text answer | `step_finish` → `done` → `finish` | `Stop` |
+| `done` tool | `step_finish` → `done` → `finish` | `Done` |
+| Tool-call limit per run | `step_finish` → `warning` → `finish` | `BudgetExhausted` |
+| Budget wrap-up exhausted | `warning` → `finish` | `BudgetExhausted` |
+| Run limit (bytes, time, tokens) | (`step_finish` when the response completed) → `error` → `finish` | `BudgetExhausted` |
+| Repeated empty responses | `step_finish` → `error` → `finish` | `EmptyResponse` |
+| Max iterations | `error` → `finish` | `MaxIterations` |
+| Refusal, content filter, context window | `step_finish` → `finish` | `Refusal`, `ContentFilter`, `ContextWindowExceeded` |
+| Provider error finish (`Error`, `PauseTurn`, bare `MaxTokens`) | `step_finish` → `error` → `finish` | `Error` |
+| Provider exception | `error` → `finish` | `Error` |
+| Cancel | `tool_input_discarded` (each open call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
+
+Tests pin each sequence.
+
+### Cancellation
+
+- New case `AgentFinishReason::Cancelled = 'cancelled'`.
+- Checked on every stream event (ticks included), at the top of each iteration, before each tool
+  call and before a batch starts.
+- **Mid-stream.** Iteration stops and the HTTP response is cancelled. `Output->content` is the
+  text streamed so far in this step plus any provisional `done` preview, or
+  `'Task was cancelled.'` when both are empty. Non-empty text is appended to the returned
+  conversation as an `AssistantMessage` with no tool calls. Calls still streaming are dropped,
+  and every open call, a `done` preview included, gets `agent.tool_input_discarded` with reason
+  `cancelled`.
+- **During tools.** The assistant's tool-call message is already in the conversation. Finished
+  calls keep their results; every call that did not start gets
+  `ToolResult::error('Cancelled before it ran.')` with error code `cancelled`, so
+  `repairToolPairing()` keeps the group. A running batch is not interrupted; its results are kept,
+  then the run ends.
+- **Top of iteration.** Returns `Cancelled`.
+- `agent.error` with `'Task cancelled'` still fires on every cancel, before `agent.finish`, so
+  observers that know only the 0.17 events still see it.
+
+### Usage
+
+- `Usage` gains trailing `?int $cacheReadTokens = null`, `?int $cacheWriteTokens = null` and
+  `?int $reasoningTokens = null`. `null` means not reported; `0` means reported zero.
+- `promptTokens` counts all input tokens, cache reads and writes included. `completionTokens`
+  counts all output tokens, reasoning included. `totalTokens` is the provider's total when given,
+  else prompt plus completion.
+- One usage parser per provider serves `chat()` and streaming, so both report the same figures.
+- Sources: Anthropic cache read/write (and thinking tokens when reported); OpenAI Chat
+  `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens`;
+  Responses `input_tokens_details.cached_tokens` and `output_tokens_details.reasoning_tokens`;
+  Gemini `cachedContentTokenCount` and `thoughtsTokenCount`; Ollama, Mistral, xAI, llama.cpp and
+  CLI whatever they report, else `null`.
+- `Output->usage` sums every field across steps; a field stays `null` only when every step
+  reported `null`.
+
+## Consequences
+
+Breaking changes, hence 0.18.0:
+
+| Change | Who is affected | Migration |
+| --- | --- | --- |
+| `ProviderInterface::streamEvents()` added | every class implementing the interface directly: provider decorators, custom providers, test doubles | `use StreamsEventsFromResponses;`, or forward with `yield from $inner->streamEvents()` |
+| `AgentFinishReason::Cancelled`; cancel no longer returns `Error` | exhaustive `match` on the enum; code treating cancel as an error | add the case; `agent.error` `'Task cancelled'` still fires |
+| `stream()` normalised: deltas, then exactly one terminal chunk with finish reason, usage and tool calls | direct `stream()` callers on OpenAI-compatible, Gemini and Responses providers | read the finish reason and usage from the last chunk; summing usage across chunks still works |
+| Anthropic `promptTokens` includes cache tokens | cost and usage tallies | read `cacheReadTokens` and `cacheWriteTokens` for the old figure |
+| Agent iterates `streamEvents()`; `AbstractProvider::stream()` is `final` | subclasses overriding `stream()` | move the override to `streamEvents()` |
+| Unparseable tool arguments end the step as `Error` on every provider (empty → `{}`) | OpenAI-family callers relying on the `[]` fallback | none for valid models; truncated calls no longer run |
+| Gemini `completionTokens` includes thought tokens; Responses `totalTokens` is the provider's total; `chat()` usage normalised the same way | usage tallies | read the new fields for the old split |
+
+Not breaking: the new observer events, the new `Usage` fields (trailing, optional),
+`RequestLimits::$tickInterval` and the new `Agent` parameters.
+
+Known limits:
+
+- An injected client that ignores the timeout argument of `stream()` gets no ticks; a silent
+  model can then only be cancelled when the next chunk arrives.
+- A tool that is already running is not interrupted by a cancel.
+- Text and reasoning block ids, citations and cost are not events yet; they can be added later as
+  new event types without breaking anything.
