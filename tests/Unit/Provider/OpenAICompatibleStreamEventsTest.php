@@ -152,6 +152,37 @@ test('streamEvents opens a new call when a fragment brings a new id on an index 
     ]);
 });
 
+test('streamEvents accepts arguments sent as a JSON object', function (array $arguments, array $expected) {
+    $events = openAIStreamEvents([
+        openAIToolChunk([['index' => 0, 'id' => 'c1', 'function' => ['name' => 'x', 'arguments' => (object) $arguments]]]),
+        openAIFinishChunk('tool_calls'),
+    ]);
+
+    $ends = array_values(array_filter($events, fn($e) => $e instanceof ToolInputEnd));
+    $finish = $events[array_key_last($events)];
+
+    expect($ends)->toEqual([new ToolInputEnd(0, 'c1', 'x', $expected)])
+        ->and($finish->reason)->toBe(ProviderFinishReason::ToolUse);
+})->with([
+    'with keys' => [['a' => 1], ['a' => 1]],
+    'empty' => [[], []],
+]);
+
+test('streamEvents ends calls in the order they opened, not by provider index', function () {
+    $events = openAIStreamEvents([
+        openAIToolChunk([['index' => 1, 'id' => 'c2', 'function' => ['name' => 'second', 'arguments' => '{"b":2}']]]),
+        openAIToolChunk([['index' => 0, 'id' => 'c1', 'function' => ['name' => 'first', 'arguments' => '{"a":1}']]]),
+        openAIFinishChunk('tool_calls'),
+    ]);
+
+    $ends = array_values(array_filter($events, fn($e) => $e instanceof ToolInputEnd));
+
+    expect($ends)->toEqual([
+        new ToolInputEnd(0, 'c2', 'second', ['b' => 2]),
+        new ToolInputEnd(1, 'c1', 'first', ['a' => 1]),
+    ]);
+});
+
 test('streamEvents treats a repeated id on the same index as a continuation', function () {
     $events = openAIStreamEvents([
         openAIToolChunk([['index' => 0, 'id' => 'c1', 'function' => ['name' => 'x', 'arguments' => '{"a"']]]),

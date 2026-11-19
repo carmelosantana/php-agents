@@ -154,7 +154,13 @@ class OpenAICompatibleProvider extends AbstractProvider
                         $index = (int) ($fragment['index'] ?? 0);
                         $id = $fragment['id'] ?? null;
                         $argumentsDelta = $fragment['function']['arguments'] ?? '';
-                        $argumentsDelta = is_string($argumentsDelta) ? $argumentsDelta : (string) json_encode($argumentsDelta);
+                        // Some servers send arguments as a JSON object; the parser decodes it to an
+                        // array, so `{}` arrives as [] and is re-encoded as an object.
+                        $argumentsDelta = match (true) {
+                            is_string($argumentsDelta) => $argumentsDelta,
+                            $argumentsDelta === [] => '{}',
+                            default => (string) json_encode($argumentsDelta),
+                        };
 
                         if (is_string($id) && $id !== '' && (!isset($openCallAt[$index]) || $calls[$openCallAt[$index]]['id'] !== $id)) {
                             $position = count($calls);
