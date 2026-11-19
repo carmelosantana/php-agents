@@ -15,7 +15,6 @@ use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
-use CarmeloSantana\PHPAgents\Provider\Stream\StreamProjector;
 use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
@@ -115,11 +114,6 @@ final class AnthropicProvider extends AbstractProvider
         }
 
         return $blocks;
-    }
-
-    public function stream(array $messages, array $tools = [], array $options = []): iterable
-    {
-        return StreamProjector::toResponses($this->streamEvents($messages, $tools, $options));
     }
 
     public function streamEvents(array $messages, array $tools = [], array $options = []): iterable

@@ -10,7 +10,6 @@ use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
-use CarmeloSantana\PHPAgents\Provider\Stream\StreamProjector;
 use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
@@ -55,11 +54,6 @@ class OpenAICompatibleProvider extends AbstractProvider
         ]));
 
         return $this->parseResponse($this->decodeResponse($response));
-    }
-
-    public function stream(array $messages, array $tools = [], array $options = []): iterable
-    {
-        return StreamProjector::toResponses($this->streamEvents($messages, $tools, $options));
     }
 
     public function streamEvents(array $messages, array $tools = [], array $options = []): iterable

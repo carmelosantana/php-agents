@@ -2,4 +2,7 @@ parameters:
     level: 8
     paths:
         - src
+        # Uses StreamsEventsFromResponses, a trait for consumers that no class in src uses,
+        # so PHPStan analyses the trait through this class.
+        - tests/Support/Agent/ScriptedProvider.php
     treatPhpDocTypesAsCertain: false
