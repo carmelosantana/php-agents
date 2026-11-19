@@ -113,7 +113,7 @@ payloads and order. New events:
 | `agent.tool_input_end` | `ToolInputEnd` | arguments complete, before `agent.tool_call` |
 | `agent.done_delta` | `DonePreview{callId, delta}` | provisional decoded text of the `done` call's `response` argument |
 | `agent.tool_input_discarded` | `ToolInputDiscarded{index, id, name, reason}` | a call that got `agent.tool_input_start` will not run |
-| `agent.step_finish` | `StepFinish{iteration, reason, rawReason, usage, model}` | after each provider response |
+| `agent.step_finish` | `StepFinish{int iteration, ProviderFinishReason reason, string rawReason, ?Usage usage, string model}` | after each provider response |
 | `agent.finish` | `RunFinish{AgentFinishReason reason, Usage usage, int iterations, string model}` | exactly once, on every exit path, just before `run()` returns |
 
 - `agent.tool_input_discarded` covers a response that did not end in `ToolUse` (max tokens,
@@ -140,6 +140,7 @@ Terminal sequence on every exit path:
 | Exit path | Sequence | `AgentFinishReason` |
 | --- | --- | --- |
 | Text answer | `step_finish` → `done` → `finish` | `Stop` |
+| Reasoning-only answer | `step_finish` → `warning` → `done` → `finish` | `Stop` |
 | `done` tool | `step_finish` → `done` → `finish` | `Done` |
 | Tool-call limit per run | `step_finish` → `warning` → `finish` | `BudgetExhausted` |
 | Budget wrap-up exhausted | `warning` → `finish` | `BudgetExhausted` |
@@ -149,7 +150,9 @@ Terminal sequence on every exit path:
 | Refusal, content filter, context window | `step_finish` → `finish` | `Refusal`, `ContentFilter`, `ContextWindowExceeded` |
 | Provider error finish (`Error`, `PauseTurn`, bare `MaxTokens`) | `step_finish` → `error` → `finish` | `Error` |
 | Provider exception | `error` → `finish` | `Error` |
-| Cancel | `tool_input_discarded` (each open call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
+| Tool `TerminationException` | `step_finish` → `finish` (no `agent.error`) | `Error` |
+| Cancel mid-stream | `tool_input_discarded` (each call still open) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
+| Cancel at top of iteration or during tools | (`step_finish` already fired for a completed response; no call is open, so no `tool_input_discarded`) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 
 Tests pin each sequence.
 
