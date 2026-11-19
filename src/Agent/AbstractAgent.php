@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Agent;
 
+use CarmeloSantana\PHPAgents\Agent\Event\DonePreview;
 use CarmeloSantana\PHPAgents\Agent\Event\RunFinish;
 use CarmeloSantana\PHPAgents\Agent\Event\StepFinish;
 use CarmeloSantana\PHPAgents\Agent\Event\ToolInputDiscarded;
@@ -363,6 +364,9 @@ abstract class AbstractAgent implements AgentInterface
             $startedCalls = [];
             /** @var array<int, ToolInputEnd> $endedCalls */
             $endedCalls = [];
+            // The first `done` call to open in this response streams its answer live.
+            $donePreview = null;
+            $donePreviewIndex = null;
 
             try {
                 foreach ($this->provider->streamEvents($conversation->messages(), $advertisedTools, $this->providerOptions) as $event) {
@@ -403,8 +407,18 @@ abstract class AbstractAgent implements AgentInterface
                     } elseif ($event instanceof ToolInputStart) {
                         $startedCalls[$event->index] = $event;
                         $this->notify('agent.tool_input_start', $event);
+                        if ($donePreview === null && $event->name === DoneTool::NAME) {
+                            $donePreview = new DonePreviewReader();
+                            $donePreviewIndex = $event->index;
+                        }
                     } elseif ($event instanceof ToolInputDelta) {
                         $this->notify('agent.tool_input_delta', $event);
+                        if ($event->index === $donePreviewIndex) {
+                            $previewDelta = $donePreview?->push($event->delta) ?? '';
+                            if ($previewDelta !== '') {
+                                $this->notify('agent.done_delta', new DonePreview($event->id, $previewDelta));
+                            }
+                        }
                     } elseif ($event instanceof ToolInputEnd) {
                         $endedCalls[$event->index] = $event;
                         $this->notify('agent.tool_input_end', $event);
@@ -431,11 +445,11 @@ abstract class AbstractAgent implements AgentInterface
             }
 
             // A cancel mid-stream abandons the response: no call of it runs, and the text
-            // streamed so far is the run's answer.
+            // streamed so far, followed by any `done` preview, is the run's answer.
             if ($cancelled) {
                 $this->discardCalls($startedCalls, 'cancelled');
 
-                return $this->cancelledOutput(implode('', $contentParts), $conversation, $allToolResults, $totalUsage, $i + 1);
+                return $this->cancelledOutput(implode('', $contentParts) . ($donePreview?->text() ?? ''), $conversation, $allToolResults, $totalUsage, $i + 1);
             }
 
             if ($streamLimit !== null) {
@@ -520,14 +534,17 @@ abstract class AbstractAgent implements AgentInterface
 
             // The first `done` call is authorized by the policy and validated; when it passes
             // the run finishes. Otherwise it, and any later `done`, gets an error result that
-            // goes through executeToolCalls with the rest of the response.
+            // goes through executeToolCalls with the rest of the response; each is discarded
+            // first, so a UI retracts its preview before the run continues.
             $finishingCall = null;
-            $doneResults = $this->resolveDoneCalls($response->toolCalls, $finishingCall);
+            $doneDiscards = [];
+            $doneResults = $this->resolveDoneCalls($response->toolCalls, $finishingCall, $doneDiscards);
             if ($finishingCall !== null) {
                 foreach ($response->toolCalls as $position => $toolCall) {
                     if ($toolCall !== $finishingCall) {
                         $end = $completedCalls[$position];
-                        $this->notify('agent.tool_input_discarded', new ToolInputDiscarded($end->index, $end->id, $end->name, 'done_finished_run'));
+                        $reason = $toolCall->name === DoneTool::NAME ? 'duplicate_done' : 'done_finished_run';
+                        $this->notify('agent.tool_input_discarded', new ToolInputDiscarded($end->index, $end->id, $end->name, $reason));
                     }
                 }
 
@@ -544,6 +561,11 @@ abstract class AbstractAgent implements AgentInterface
                     reasoning: $response->reasoning,
                     providerFinishReason: $response->finishReason,
                 );
+            }
+
+            foreach ($doneDiscards as $position => $reason) {
+                $end = $completedCalls[$position];
+                $this->notify('agent.tool_input_discarded', new ToolInputDiscarded($end->index, $end->id, $end->name, $reason));
             }
 
             if (!empty($response->toolCalls)) {
@@ -1281,11 +1303,15 @@ abstract class AbstractAgent implements AgentInterface
      *
      * @param ToolCall[] $toolCalls
      * @param ToolCall|null $finishingCall Set to the `done` call that finishes the run
+     * @param array<string> $discardReasons Set, keyed by the position of each call given an error
+     *                                      result, to its agent.tool_input_discarded reason:
+     *                                      'denied', 'invalid_done' or 'duplicate_done'
      * @return array<int, ToolResult>
      */
-    private function resolveDoneCalls(array $toolCalls, ?ToolCall &$finishingCall): array
+    private function resolveDoneCalls(array $toolCalls, ?ToolCall &$finishingCall, array &$discardReasons): array
     {
         $finishingCall = null;
+        $discardReasons = [];
         $results = [];
         $first = true;
 
@@ -1297,11 +1323,17 @@ abstract class AbstractAgent implements AgentInterface
             if (!$first) {
                 $results[$position] = ToolResult::error('Only one done call is allowed per response.')
                     ->withCallId($toolCall->id);
+                $discardReasons[$position] = 'duplicate_done';
                 continue;
             }
 
             $first = false;
-            $error = $this->policyDenial($toolCall) ?? $this->doneArgumentsError($toolCall);
+            $error = $this->policyDenial($toolCall);
+            $reason = 'denied';
+            if ($error === null) {
+                $error = $this->doneArgumentsError($toolCall);
+                $reason = 'invalid_done';
+            }
             if ($error === null) {
                 $finishingCall = $toolCall;
 
@@ -1309,6 +1341,7 @@ abstract class AbstractAgent implements AgentInterface
             }
 
             $results[$position] = $error;
+            $discardReasons[$position] = $reason;
         }
 
         return $results;

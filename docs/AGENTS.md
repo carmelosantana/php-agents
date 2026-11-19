@@ -339,7 +339,7 @@ The token is checked at the top of each iteration, on every stream event (includ
 | When | Outcome |
 |---|---|
 | Top of an iteration | `content` is `'Task was cancelled.'`; the provider is not called |
-| Mid-stream | The stream is abandoned (the HTTP response is cancelled). `content` is the text streamed so far in this step, appended to the conversation as an `AssistantMessage` with no tool calls, or `'Task was cancelled.'` when none arrived. No call of the response runs: each started call gets `agent.tool_input_discarded` with reason `cancelled` |
+| Mid-stream | The stream is abandoned (the HTTP response is cancelled). `content` is the text streamed so far in this step, followed by the `done` answer previewed so far (`agent.done_delta`) if one was streaming, appended to the conversation as an `AssistantMessage` with no tool calls, or `'Task was cancelled.'` when none arrived. No call of the response runs: each started call gets `agent.tool_input_discarded` with reason `cancelled` |
 | During tools | Calls that finished keep their results. Every call that did not start gets an error `ToolResult` with content `'Cancelled before it ran.'` and `errorCode` `'cancelled'`, so every call in the conversation has a result and `repairToolPairing()` keeps the group. A running tool or batch is not interrupted; a batch's results are all kept. `content` is `'Task was cancelled.'` |
 
 ## Pending Input Injection

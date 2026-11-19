@@ -3,12 +3,14 @@
 declare(strict_types=1);
 
 use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
+use CarmeloSantana\PHPAgents\Agent\Event\DonePreview;
 use CarmeloSantana\PHPAgents\Agent\Event\RunFinish;
 use CarmeloSantana\PHPAgents\Agent\Event\StepFinish;
 use CarmeloSantana\PHPAgents\Agent\Event\ToolInputDiscarded;
 use CarmeloSantana\PHPAgents\Agent\Output;
 use CarmeloSantana\PHPAgents\Agent\RunLimits;
 use CarmeloSantana\PHPAgents\Context\ContextWindow;
+use CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolExecutorInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\AgentFinishReason;
@@ -16,6 +18,7 @@ use CarmeloSantana\PHPAgents\Enum\EmptyResponseHandling;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Exception\TerminationException;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
+use CarmeloSantana\PHPAgents\Provider\Response;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
@@ -29,6 +32,7 @@ use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Tests\Support\Agent\ScriptedEventsProvider;
+use Tests\Support\Agent\ScriptedProvider;
 
 final class StreamEventsTestAgent extends AbstractAgent
 {
@@ -95,7 +99,7 @@ final class StreamEventsRecorder implements SplObserver
      */
     public function legacy(): array
     {
-        $added = ['agent.tool_input_start', 'agent.tool_input_delta', 'agent.tool_input_end', 'agent.tool_input_discarded', 'agent.step_finish', 'agent.finish'];
+        $added = ['agent.tool_input_start', 'agent.tool_input_delta', 'agent.tool_input_end', 'agent.tool_input_discarded', 'agent.done_delta', 'agent.step_finish', 'agent.finish'];
 
         return array_values(array_filter($this->events, fn(array $e): bool => !in_array($e[0], $added, true)));
     }
@@ -487,3 +491,102 @@ test('agent.finish fires exactly once, last, on every exit path', function (\Clo
         ['agent.start', 'agent.error', 'agent.finish'],
     ],
 ]);
+
+/**
+ * Denies every `done` call; allows everything else.
+ */
+final class StreamEventsDenyDonePolicy implements ToolExecutionPolicyInterface
+{
+    public function shouldExecute(string $toolName, array $arguments): true|string
+    {
+        return $toolName === 'done' ? 'not yet' : true;
+    }
+}
+
+test('a done answer streamed over three deltas fires three done_delta events, then agent.done', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, 'd1', 'done'),
+        new ToolInputDelta(0, 'd1', '{"response":"Hel'),
+        new ToolInputDelta(0, 'd1', 'lo, wor'),
+        new ToolInputDelta(0, 'd1', 'ld."}'),
+        new ToolInputEnd(0, 'd1', 'done', ['response' => 'Hello, world.']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ]]);
+
+    $output = $agent->run(new UserMessage('Greet.'));
+
+    $previewNames = array_values(array_filter($events->names(), fn(string $n): bool => in_array($n, ['agent.done_delta', 'agent.done'], true)));
+    expect($output->finishReason)->toBe(AgentFinishReason::Done)
+        ->and($output->content)->toBe('Hello, world.')
+        ->and($events->dataFor('agent.done_delta'))->toEqual([
+            new DonePreview('d1', 'Hel'),
+            new DonePreview('d1', 'lo, wor'),
+            new DonePreview('d1', 'ld.'),
+        ])
+        ->and($previewNames)->toBe(['agent.done_delta', 'agent.done_delta', 'agent.done_delta', 'agent.done'])
+        ->and($events->dataFor('agent.tool_input_discarded'))->toBe([]);
+});
+
+test('a whole-call provider previews a done answer in one done_delta', function () {
+    $agent = new StreamEventsTestAgent(new ScriptedProvider([
+        new Response('', ProviderFinishReason::ToolUse, [new ToolCall('d1', 'done', ['response' => 'All set.'])], 'test-model'),
+    ]));
+    $events = new StreamEventsRecorder();
+    $agent->attach($events);
+
+    $output = $agent->run(new UserMessage('Finish.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Done)
+        ->and($events->dataFor('agent.done_delta'))->toEqual([new DonePreview('d1', 'All set.')]);
+});
+
+test('a second done call in a response is not previewed and is discarded as a duplicate', function () {
+    [$agent, $events] = streamEventsAgent([
+        streamEventsToolRound([['d1', 'done', ['response' => 'First.']], ['d2', 'done', ['response' => 'Second.']]]),
+    ]);
+
+    $output = $agent->run(new UserMessage('Finish.'));
+
+    $previewIds = array_map(fn(DonePreview $p): string => $p->callId, $events->dataFor('agent.done_delta'));
+    expect($output->content)->toBe('First.')
+        ->and(array_unique($previewIds))->toBe(['d1'])
+        ->and(implode('', array_map(fn(DonePreview $p): string => $p->delta, $events->dataFor('agent.done_delta'))))->toBe('First.')
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(1, 'd2', 'done', 'duplicate_done')])
+        ->and(array_slice($events->names(), -4))->toBe(['agent.step_finish', 'agent.tool_input_discarded', 'agent.done', 'agent.finish']);
+});
+
+test('a policy-denied done is discarded as denied, a later done as a duplicate, before the tool round', function () {
+    [$agent, $events] = streamEventsAgent(
+        [
+            streamEventsToolRound([['d1', 'done', ['response' => 'Early.']], ['d2', 'done', ['response' => 'Again.']]]),
+            streamEventsText('Carrying on.'),
+        ],
+        ['executionPolicy' => new StreamEventsDenyDonePolicy()],
+    );
+
+    $output = $agent->run(new UserMessage('Finish.'));
+
+    $names = $events->names();
+    $stepFinish = array_search('agent.step_finish', $names, true);
+    expect($output->finishReason)->toBe(AgentFinishReason::Stop)
+        ->and($output->content)->toBe('Carrying on.')
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([
+            new ToolInputDiscarded(0, 'd1', 'done', 'denied'),
+            new ToolInputDiscarded(1, 'd2', 'done', 'duplicate_done'),
+        ])
+        ->and(array_slice($names, $stepFinish, 4))->toBe(['agent.step_finish', 'agent.tool_input_discarded', 'agent.tool_input_discarded', 'agent.tool_call']);
+});
+
+test('a done call with invalid arguments is discarded as invalid_done and the run continues', function () {
+    [$agent, $events] = streamEventsAgent([
+        streamEventsToolRound([['d1', 'done', ['response' => 'Half.', 'extra' => true]]]),
+        streamEventsText('Retried.'),
+    ]);
+
+    $output = $agent->run(new UserMessage('Finish.'));
+
+    expect($output->content)->toBe('Retried.')
+        ->and($events->dataFor('agent.done_delta'))->not->toBe([])
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'd1', 'done', 'invalid_done')])
+        ->and($events->dataFor('agent.done'))->toBe([['response' => 'Retried.']]);
+});

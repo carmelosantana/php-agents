@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
 use CarmeloSantana\PHPAgents\Agent\CallbackObserver;
+use CarmeloSantana\PHPAgents\Agent\Event\DonePreview;
 use CarmeloSantana\PHPAgents\Agent\Event\RunFinish;
 use CarmeloSantana\PHPAgents\Agent\Event\ToolInputDiscarded;
 use CarmeloSantana\PHPAgents\Contract\BatchToolExecutorInterface;
@@ -331,4 +332,34 @@ test('an observer filtered to agent.error still receives Task cancelled', functi
     $agent->run(new UserMessage('Hello.'));
 
     expect($errors)->toBe(['Task cancelled']);
+});
+
+test('a cancel mid-preview returns the streamed text plus the done preview and discards the done call', function () {
+    [$agent, $events, $provider] = cancellationAgent(
+        [[
+            new TextDelta('Wrapping up. '),
+            new ToolInputStart(0, 'd1', 'done'),
+            new ToolInputDelta(0, 'd1', '{"response":"The ans'),
+            new Tick(),
+            new ToolInputDelta(0, 'd1', 'wer is 4."}'),
+            new ToolInputEnd(0, 'd1', 'done', ['response' => 'The answer is 4.']),
+            new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+        ]],
+        fn(string $event, mixed $data): bool => $event === 'agent.done_delta',
+    );
+
+    $output = $agent->run(new UserMessage('2+2?'));
+    $messages = $output->conversation?->messages() ?? [];
+    $last = end($messages);
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->content)->toBe('Wrapping up. The ans')
+        ->and($last)->toBeInstanceOf(AssistantMessage::class)
+        ->and($last->content())->toBe('Wrapping up. The ans')
+        ->and($last->toolCalls())->toBe([])
+        ->and($events->dataFor('agent.done_delta'))->toEqual([new DonePreview('d1', 'The ans')])
+        ->and($events->dataFor('agent.done'))->toBe([])
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'd1', 'done', 'cancelled')])
+        ->and(array_slice($events->names(), -3))->toBe(['agent.tool_input_discarded', 'agent.error', 'agent.finish'])
+        ->and($provider->closedStreams)->toBe(1);
 });

@@ -16,9 +16,14 @@ namespace CarmeloSantana\PHPAgents\Agent\Event;
  * - 'run_limit': a RunLimits limit (bytes, time, tokens) ended the run before the call ran.
  * - 'provider_error': the stream threw, or ended without a Finish, after the call started.
  * - 'done_finished_run': a `done` call earlier in the same response finished the run.
- * - 'cancelled': the run was cancelled while the call was streaming.
- * - 'denied', 'invalid_done', 'duplicate_done': a previewed `done` call the policy denied,
- *   whose arguments failed validation, or that was not the first `done` in its response.
+ * - 'cancelled': a cancel abandoned the response before it finished, so none of its calls
+ *   runs, including a call whose arguments had completed and a previewed `done` call. Calls of
+ *   a finished response that a cancel stops get a 'cancelled' tool result instead.
+ * - 'denied', 'invalid_done': the first `done` call of a response that the execution policy
+ *   denied, or whose arguments failed validation; the run continues.
+ * - 'duplicate_done': a `done` call that was not the first in its response.
+ *
+ * For a `done` call this retracts what agent.done_delta previewed.
  */
 final readonly class ToolInputDiscarded
 {
