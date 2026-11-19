@@ -445,11 +445,13 @@ abstract class AbstractAgent implements AgentInterface
             }
 
             // A cancel mid-stream abandons the response: no call of it runs, and the text
-            // streamed so far, followed by any `done` preview, is the run's answer.
+            // streamed so far and any `done` preview, separated by a blank line when both
+            // are present, is the run's answer.
             if ($cancelled) {
                 $this->discardCalls($startedCalls, 'cancelled');
+                $partial = implode("\n\n", array_filter([implode('', $contentParts), $donePreview?->text() ?? ''], static fn(string $part): bool => $part !== ''));
 
-                return $this->cancelledOutput(implode('', $contentParts) . ($donePreview?->text() ?? ''), $conversation, $allToolResults, $totalUsage, $i + 1);
+                return $this->cancelledOutput($partial, $conversation, $allToolResults, $totalUsage, $i + 1);
             }
 
             if ($streamLimit !== null) {
