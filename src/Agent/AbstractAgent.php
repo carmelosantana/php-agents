@@ -439,6 +439,8 @@ abstract class AbstractAgent implements AgentInterface
             }
 
             if ($streamLimit !== null) {
+                $this->discardCalls($startedCalls, 'run_limit');
+
                 return $this->runLimitOutput($streamLimit, $conversation, $allToolResults, $totalUsage, $i + 1);
             }
 
@@ -485,6 +487,10 @@ abstract class AbstractAgent implements AgentInterface
             }
 
             if ($maxTokens > 0 && $spentTokens > $maxTokens) {
+                if ($response->toolCalls !== []) {
+                    $this->discardCalls($completedCalls, 'run_limit');
+                }
+
                 return $this->runLimitOutput(self::TOKEN_LIMIT_REACHED, $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
             }
 
@@ -739,9 +745,22 @@ abstract class AbstractAgent implements AgentInterface
     }
 
     /**
+     * Fire agent.tool_input_discarded with $reason for each call, in order.
+     *
+     * @param array<int, ToolInputStart|ToolInputEnd> $calls
+     */
+    private function discardCalls(array $calls, string $reason): void
+    {
+        foreach ($calls as $call) {
+            $this->notify('agent.tool_input_discarded', new ToolInputDiscarded($call->index, $call->id, $call->name, $reason));
+        }
+    }
+
+    /**
      * Fire agent.tool_input_discarded for each call of a finished response that will not run:
-     * 'invalid_arguments' for a call whose arguments never completed, 'not_tool_use' for a
-     * completed call when the response finished with a reason other than ToolUse.
+     * a call whose arguments never completed is 'invalid_arguments' when the response finished
+     * with Error, else 'not_tool_use'; a completed call is 'not_tool_use' when the response
+     * finished with a reason other than ToolUse.
      *
      * @param array<int, ToolInputStart> $startedCalls
      * @param array<int, ToolInputEnd> $endedCalls
@@ -750,7 +769,7 @@ abstract class AbstractAgent implements AgentInterface
     {
         foreach ($startedCalls as $index => $start) {
             $discardReason = match (true) {
-                !isset($endedCalls[$index]) => 'invalid_arguments',
+                !isset($endedCalls[$index]) => $reason === ProviderFinishReason::Error ? 'invalid_arguments' : 'not_tool_use',
                 $reason !== ProviderFinishReason::ToolUse => 'not_tool_use',
                 default => null,
             };

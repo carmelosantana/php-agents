@@ -275,6 +275,52 @@ test('a started call with no end before an Error finish is discarded as invalid 
         ->and($events->dataFor('agent.tool_call'))->toBe([]);
 });
 
+test('a call truncated by a MaxTokens finish is discarded as not tool use', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new TextDelta('Partial answer'),
+        new ToolInputStart(0, 'c1', 'echo'),
+        new ToolInputDelta(0, 'c1', '{"text": "h'),
+        new Finish(ProviderFinishReason::MaxTokens, 'max_tokens', null, 'test-model'),
+    ]]);
+
+    $agent->run(new UserMessage('Echo hi.'));
+
+    expect($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'c1', 'echo', 'not_tool_use')]);
+});
+
+test('a run limit mid-stream discards every started call before agent.error', function () {
+    [$agent, $events] = streamEventsAgent([[
+        ...streamEventsCall(0, 'c1', 'echo', ['text' => 'hi']),
+        new ToolInputStart(1, 'c2', 'echo'),
+        new ToolInputDelta(1, 'c2', '{"text": "' . str_repeat('x', 200)),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ]], ['runLimits' => new RunLimits(maxResponseBytes: 100)]);
+
+    $output = $agent->run(new UserMessage('Echo hi.'));
+
+    expect($output->content)->toBe('Response size limit reached.')
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([
+            new ToolInputDiscarded(0, 'c1', 'echo', 'run_limit'),
+            new ToolInputDiscarded(1, 'c2', 'echo', 'run_limit'),
+        ])
+        ->and($events->dataFor('agent.tool_call'))->toBe([])
+        ->and(array_slice($events->names(), -4))->toBe(['agent.tool_input_discarded', 'agent.tool_input_discarded', 'agent.error', 'agent.finish']);
+});
+
+test('a token limit after a ToolUse response discards its calls before agent.error', function () {
+    [$agent, $events] = streamEventsAgent(
+        [streamEventsToolRound([['c1', 'echo', ['text' => 'hi']]], new Usage(10, 1_000_000, 1_000_010))],
+        ['runLimits' => new RunLimits(maxEstimatedTokens: 100_000)],
+    );
+
+    $output = $agent->run(new UserMessage('Echo hi.'));
+
+    expect($output->content)->toBe('Token limit reached.')
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'c1', 'echo', 'run_limit')])
+        ->and($events->dataFor('agent.tool_call'))->toBe([])
+        ->and(array_slice($events->names(), -4))->toBe(['agent.step_finish', 'agent.tool_input_discarded', 'agent.error', 'agent.finish']);
+});
+
 test('a done call that finishes the run discards the other calls in its response', function () {
     [$agent, $events] = streamEventsAgent([
         streamEventsToolRound([['d1', 'done', ['response' => 'All set.']], ['c2', 'echo', ['text' => 'late']]]),
