@@ -11,7 +11,7 @@ namespace CarmeloSantana\PHPAgents\Contract;
  * or perform any periodic work while the agent is running.
  *
  * Tick points:
- * - Between each stream chunk from the provider
+ * - On every stream event from the provider, idle ticks included
  * - Between each tool call execution
  * - After the provider call completes (before tool processing)
  */

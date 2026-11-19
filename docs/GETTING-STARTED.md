@@ -301,7 +301,7 @@ $output = $agent->run(new UserMessage('...'));
 
 ## Streaming Responses
 
-For real-time output, use `stream()` on the provider directly:
+For real-time output, use `stream()` on the provider directly. Text arrives one chunk per fragment; the last chunk carries the finish reason, usage and any tool calls:
 
 ```php
 foreach ($provider->stream($messages, $tools) as $response) {
@@ -314,6 +314,8 @@ foreach ($provider->stream($messages, $tools) as $response) {
     }
 }
 ```
+
+`streamEvents()` yields typed events instead, including tool-call arguments as they are written; see [Streaming Events](PROVIDERS.md#streaming-events). Inside an agent, observe `agent.text_delta` and the other events in [Agents](AGENTS.md#events-reference).
 
 ## Configuration with OpenClaw
 

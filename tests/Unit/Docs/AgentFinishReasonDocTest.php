@@ -30,6 +30,7 @@ test('AGENTS.md says the first failure reason of a turn is sticky', function () 
     $doc = (string) file_get_contents(__DIR__ . '/../../../docs/AGENTS.md');
 
     expect($doc)->not->toContain("The run's accumulated reason is the last chunk reason that is not `Stop`;")
+        ->and($doc)->toContain("The turn's reason is the reason on the stream's one `Finish` event, and a stream that ends without one counts as `Error`.")
         ->and($doc)->toContain('The first failure reason a chunk carries (`Error`, `Refusal`, `ContentFilter`, `ContextWindowExceeded`, `PauseTurn` or `MaxTokens`) is the turn\'s reason: no later chunk changes it to `ToolUse` or `Stop`, and every tool call of the turn is dropped.');
 });
 

@@ -1,6 +1,6 @@
 # 0004: Providers stream typed events; stream() is a projection of them
 
-- Status: proposed (v0.18.0, 2026-11)
+- Status: accepted (v0.18.0, 2026-11)
 
 ## Context
 
@@ -53,8 +53,10 @@ Alternatives considered, one line each:
 - Providers that deliver a call whole (Gemini, Ollama, the llama.cpp tool parser) emit
   `ToolInputStart`, one `ToolInputDelta` carrying the full JSON-encoded arguments, then
   `ToolInputEnd`, so every call has at least one delta.
-- Empty or whitespace-only arguments decode as `{}`. Any other arguments that do not decode to a
-  JSON object get no `ToolInputEnd`, and `Finish` carries `Error`, on every provider.
+- Empty or whitespace-only arguments, and an empty object, decode as `{}`. Any other arguments
+  that do not decode to a JSON object get no `ToolInputEnd` and the call is dropped, on every
+  provider. A response that would have finished with `ToolUse` then finishes with `Error`; any
+  other reason (`MaxTokens`, for example) is kept.
 - `ToolInputEnd` is emitted as soon as each call's arguments are complete. The tool calls are the
   `ToolInputEnd` events; the agent runs them only when `Finish->reason` is `ToolUse`.
 - Per-call metadata such as Gemini's `thoughtSignature` rides on `ToolInputEnd->metadata`, with
@@ -116,40 +118,57 @@ payloads and order. New events:
 | `agent.step_finish` | `StepFinish{int iteration, ProviderFinishReason reason, string rawReason, ?Usage usage, string model}` | after each provider response |
 | `agent.finish` | `RunFinish{AgentFinishReason reason, Usage usage, int iterations, string model}` | exactly once, on every exit path, just before `run()` returns |
 
-- `agent.tool_input_discarded` covers a response that did not end in `ToolUse` (max tokens,
-  error, cancel), arguments that failed to decode, and a call left behind when a `done` call ended
-  the run. For a previewed `done` call it also covers denied, invalid and duplicate. A UI uses it
-  to retract a card or a preview.
+- `agent.tool_input_discarded` carries one of these reasons, and a UI uses it to retract a card or
+  a preview:
+  - `not_tool_use`: the response finished with a reason other than `ToolUse`, or with `Error` after
+    the call's arguments completed;
+  - `invalid_arguments`: the response finished with `Error` and the call's arguments never
+    completed as a JSON object;
+  - `run_limit`: a run limit (bytes, time, tokens) ended the run first, while streaming or after the
+    response;
+  - `provider_error`: the stream threw, or ended without a `Finish`, after the call started;
+  - `cancelled`: a cancel abandoned the response before it finished;
+  - `done_finished_run`: a `done` call earlier in the same response finished the run;
+  - `denied`, `invalid_done`: the policy denied the response's first `done` call, or its arguments
+    failed validation, and the run continues;
+  - `duplicate_done`: a `done` call that was not the first in its response.
 - `agent.finish` fires from one place: `run()` wraps the loop and notifies with the `Output` it
   is about to return.
 - **`done` previews.** `DonePreviewReader` reads the `done` call's argument JSON incrementally and
   emits the decoded text of the top-level `response` string as it arrives, handling escapes
   (`\n`, `\"`, `\\`, `\uXXXX` with surrogate pairs) split across fragments. It ignores other keys
   and never emits text from a nested object. Only the first `done` call in a response is
-  previewed, one preview per call id. Acceptance is the existing `agent.done` event; a preview
-  that does not finish the run gets `agent.tool_input_discarded`. Whole-call providers deliver
-  the preview in one `agent.done_delta`.
+  previewed, one preview per call id: the first `done` call to open, while the call that finishes
+  the run is the first in completion order (they differ only when `done` calls interleave).
+  Acceptance is the existing `agent.done` event, which carries the authoritative `response`; a
+  preview that does not finish the run gets `agent.tool_input_discarded`. Whole-call providers
+  deliver the preview in one `agent.done_delta`.
 - **`Agent` constructor.** Trailing optional `?RunLimits $runLimits = null`,
   `?CancellationTokenInterface $cancellationToken = null` and `array $providerOptions = []`,
   passed through to `AbstractAgent`.
 
-Terminal sequence on every exit path:
-`agent.step_finish` (when a provider response completed) → `agent.done`, `agent.error` or
-`agent.warning` as in 0.17 → `agent.finish`.
+Every exit path that returns ends with the same tail: `agent.step_finish` when a provider response
+completed, then the `agent.done`, `agent.error` and `agent.warning` events that path emitted in
+0.17 (none, one, or `warning` before `done` for the reasoning fallback), then `agent.finish`.
+Discards fire before `agent.step_finish` when the finish reason rules a call out, and after it
+when the run ends for another reason. An exception that escapes `run()` gets no `agent.finish`.
 
 | Exit path | Sequence | `AgentFinishReason` |
 | --- | --- | --- |
 | Text answer | `step_finish` → `done` → `finish` | `Stop` |
-| Reasoning-only answer | `step_finish` → `warning` → `done` → `finish` | `Stop` |
-| `done` tool | `step_finish` → `done` → `finish` | `Done` |
+| Reasoning-only answer | `step_finish` → `empty_response` → `warning` → `done` → `finish` | `Stop` |
+| `done` tool | `step_finish` → `tool_input_discarded` (the response's other calls) → `done` → `finish` | `Done` |
 | Tool-call limit per run | `step_finish` → `warning` → `finish` | `BudgetExhausted` |
 | Budget wrap-up exhausted | `warning` → `finish` | `BudgetExhausted` |
-| Run limit (bytes, time, tokens) | (`step_finish` when the response completed) → `error` → `finish` | `BudgetExhausted` |
-| Repeated empty responses | `step_finish` → `error` → `finish` | `EmptyResponse` |
+| Run limit while streaming (bytes, time, tokens) | `tool_input_discarded` (`run_limit`, each started call) → `error` → `finish` | `BudgetExhausted` |
+| Token limit after a response | `step_finish` → `tool_input_discarded` (`run_limit`, each completed call) → `error` → `finish` | `BudgetExhausted` |
+| Run limit elsewhere (time at the top of an iteration or during tools, input size) | `error` → `finish` | `BudgetExhausted` |
+| Repeated empty responses | `step_finish` → `empty_response` → `error` → `finish` | `EmptyResponse` |
 | Max iterations | `error` → `finish` | `MaxIterations` |
 | Refusal, content filter, context window | `step_finish` → `finish` | `Refusal`, `ContentFilter`, `ContextWindowExceeded` |
 | Provider error finish (`Error`, `PauseTurn`, bare `MaxTokens`) | `step_finish` → `error` → `finish` | `Error` |
-| Provider exception | `error` → `finish` | `Error` |
+| Stream ended without a `Finish` | `tool_input_discarded` (`provider_error`, each started call) → `error` → `finish` | `Error` |
+| Provider exception | `tool_input_discarded` (`provider_error`, each started call) → `error` → `finish` | `Error` |
 | Tool `TerminationException` | `step_finish` → `finish` (no `agent.error`) | `Error` |
 | Cancel mid-stream | `tool_input_discarded` (each call still open) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 | Cancel at top of iteration or during tools | (`step_finish` already fired for a completed response; no call is open, so no `tool_input_discarded`) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
@@ -162,9 +181,11 @@ Tests pin each sequence.
 - Checked on every stream event (ticks included), at the top of each iteration, before each tool
   call and before a batch starts.
 - **Mid-stream.** Iteration stops and the HTTP response is cancelled. `Output->content` is the
-  text streamed so far in this step plus any provisional `done` preview, or
-  `'Task was cancelled.'` when both are empty. Non-empty text is appended to the returned
-  conversation as an `AssistantMessage` with no tool calls. Calls still streaming are dropped,
+  text streamed so far in this step, then a blank line (`"\n\n"`) and the provisional `done`
+  preview when both are present, or `'Task was cancelled.'` when both are empty. The preview is
+  used as it streamed, even for a call the execution policy would have denied, since the policy
+  only sees completed calls. Non-empty text is appended to the returned conversation as an
+  `AssistantMessage` with no tool calls. Calls still streaming are dropped,
   and every open call, a `done` preview included, gets `agent.tool_input_discarded` with reason
   `cancelled`.
 - **During tools.** The assistant's tool-call message is already in the conversation. Finished
@@ -183,8 +204,9 @@ Tests pin each sequence.
 - `promptTokens` counts all input tokens, cache reads and writes included. `completionTokens`
   counts all output tokens, reasoning included. `totalTokens` is the provider's total when given,
   else prompt plus completion.
-- One usage parser per provider serves `chat()` and streaming, so both report the same figures.
-- Sources: Anthropic cache read/write (and thinking tokens when reported); OpenAI Chat
+- One usage parser per provider serves `chat()` and streaming, so both report the same figures
+  (`MistralProvider::chat()` keeps its own prompt, completion and total parser).
+- Sources: Anthropic cache read/write (reasoning stays `null`); OpenAI Chat
   `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens`;
   Responses `input_tokens_details.cached_tokens` and `output_tokens_details.reasoning_tokens`;
   Gemini `cachedContentTokenCount` and `thoughtsTokenCount`; Ollama, Mistral, xAI, llama.cpp and
@@ -203,8 +225,17 @@ Breaking changes, hence 0.18.0:
 | `stream()` normalised: deltas, then exactly one terminal chunk with finish reason, usage and tool calls | direct `stream()` callers on OpenAI-compatible, Gemini and Responses providers | read the finish reason and usage from the last chunk; summing usage across chunks still works |
 | Anthropic `promptTokens` includes cache tokens | cost and usage tallies | read `cacheReadTokens` and `cacheWriteTokens` for the old figure |
 | Agent iterates `streamEvents()`; `AbstractProvider::stream()` is `final` | subclasses overriding `stream()` | move the override to `streamEvents()` |
-| Unparseable tool arguments end the step as `Error` on every provider (empty → `{}`) | OpenAI-family callers relying on the `[]` fallback | none for valid models; truncated calls no longer run |
+| Unparseable tool arguments drop the call on every provider, and a `ToolUse` finish becomes `Error` (empty → `{}`) | OpenAI-family callers relying on the `[]` fallback | none for valid models; truncated calls no longer run |
 | Gemini `completionTokens` includes thought tokens; Responses `totalTokens` is the provider's total; `chat()` usage normalised the same way | usage tallies | read the new fields for the old split |
+
+Behaviour changes that ship with these:
+
+- `stream()` delta chunks carry no model; the model is on the terminal chunk.
+- llama.cpp `chat()` reports `ToolUse` where a trailing usage-only chunk used to overwrite it with
+  `Stop`, and a llama.cpp stream that ends without a finish reason finishes `Stop`.
+- A provider stream that ends with no `Finish` is a provider error (`AgentFinishReason::Error`).
+- A cancel at the top of an iteration returns `Cancelled` (0.17: `Error`); a mid-stream cancel
+  returns `Cancelled` with the partial text (0.17: `Stop`).
 
 Not breaking: the new observer events, the new `Usage` fields (trailing, optional),
 `RequestLimits::$tickInterval` and the new `Agent` parameters.

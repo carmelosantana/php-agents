@@ -30,3 +30,31 @@ test('the docs say providerOptions must not come from end users or tool output',
 
     expect($doc)->toContain('Treat `providerOptions` as trusted developer configuration');
 });
+
+test('the ready-made Agent section matches the Agent constructor', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../docs/AGENTS.md');
+    $parameters = (new ReflectionMethod(\CarmeloSantana\PHPAgents\Agent\Agent::class, '__construct'))->getParameters();
+    $trailing = array_map(
+        fn(ReflectionParameter $p): array => [$p->getName(), $p->getDefaultValue()],
+        array_slice($parameters, -3),
+    );
+
+    expect($trailing)->toBe([['runLimits', null], ['cancellationToken', null], ['providerOptions', []]]);
+
+    foreach ($parameters as $parameter) {
+        expect($doc)->toContain('| `' . $parameter->getName() . '` |');
+    }
+
+    preg_match('/### The ready-made `Agent`.*?```php\n(.*?)```/s', $doc, $m);
+    preg_match_all('/^\s+(\w+): /m', $m[1] ?? '', $named);
+    $names = array_map(fn(ReflectionParameter $p): string => $p->getName(), $parameters);
+
+    expect($m[1] ?? '')->toContain('new Agent(')
+        ->and($m[1] ?? '')->toContain('runLimits: new RunLimits(maxRunSeconds: 5),')
+        ->and($m[1] ?? '')->toContain('cancellationToken: $token,')
+        ->and($m[1] ?? '')->toContain("providerOptions: ['max_tokens' => 10],")
+        ->and($named[1])->not->toBeEmpty();
+    foreach ($named[1] as $name) {
+        expect($names)->toContain($name);
+    }
+});

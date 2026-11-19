@@ -64,7 +64,7 @@ graph TB
 
 ## The Agent Loop
 
-The core of php-agents is the iterative agent loop in `AbstractAgent::run()`. This is where the "agentic" behavior happens — the LLM decides what tools to call, processes results, and continues until it decides it's done.
+The core of php-agents is the iterative agent loop in `AbstractAgent::run()`. This is where the "agentic" behavior happens — the LLM decides what tools to call, processes results, and continues until it decides it's done. Every return path fires `agent.finish` once, just before `run()` returns.
 
 ```mermaid
 flowchart TD
@@ -84,11 +84,12 @@ flowchart TD
     CANCEL -->|No| PENDING[Inject pending inputs]
 
     PENDING --> NOTIFY[Notify: agent.iteration]
-    NOTIFY --> CHAT[provider.chat messages, tools]
+    NOTIFY --> CHAT[provider.streamEvents messages, tools<br/>cancel and run limits checked per event]
 
     CHAT -->|Error| ERR[Return: provider error]
+    CHAT -->|Cancelled| CANCELLED
 
-    CHAT -->|Success| USAGE[Accumulate token usage]
+    CHAT -->|Finish| USAGE[notify: agent.step_finish<br/>Accumulate token usage]
     USAGE --> BUDGET{Budget threshold<br/>crossed?}
     BUDGET -->|Yes| WARN[notify: agent.budget_warning]
     BUDGET -->|No| DONE{DoneTool in<br/>tool_calls?}
@@ -168,8 +169,13 @@ sequenceDiagram
 
     loop Each Iteration
         Agent->>Observer: notify(agent.iteration, n)
-        Agent->>Provider: chat(messages, tools)
-        Provider-->>Agent: Response
+        Agent->>Provider: streamEvents(messages, tools)
+        loop Each stream event
+            Provider-->>Agent: TextDelta / ToolInputStart / ToolInputDelta / ToolInputEnd / Tick
+            Agent->>Observer: notify(agent.text_delta, agent.tool_input_*, ...)
+        end
+        Provider-->>Agent: Finish
+        Agent->>Observer: notify(agent.step_finish, StepFinish)
 
         alt Tool Calls
             Agent->>Observer: notify(agent.tool_call, toolCall)
@@ -180,6 +186,7 @@ sequenceDiagram
     end
 
     Agent->>Observer: notify(agent.done, response)
+    Agent->>Observer: notify(agent.finish, RunFinish)
     Agent-->>App: Output
 ```
 
@@ -189,11 +196,28 @@ sequenceDiagram
 |-------|------|------|
 | `agent.start` | `MessageInterface` | Before first iteration |
 | `agent.iteration` | `int` (iteration number) | Top of each loop |
+| `agent.reasoning` | `string` (fragment) | Each reasoning fragment as it streams |
+| `agent.text_delta` | `string` (fragment) | Each text fragment as it streams |
+| `agent.tool_input_start` | `ToolInputStart` | The model opens a tool call |
+| `agent.tool_input_delta` | `ToolInputDelta` | Each fragment of a call's argument JSON |
+| `agent.tool_input_end` | `ToolInputEnd` | A call's arguments are complete |
+| `agent.done_delta` | `DonePreview` | Provisional text of the `done` call's answer |
+| `agent.tool_input_discarded` | `ToolInputDiscarded` | A started call will not run |
+| `agent.step_finish` | `StepFinish` | After each provider response: finish reason and usage |
+| `agent.empty_response` | `array` | A response with no text and no tool calls |
 | `agent.tool_call` | `ToolCall` | Before executing a tool |
+| `agent.batch_start` | `array` | Before a batch executor runs the approved calls |
+| `agent.batch_end` | `array` | After the batch returns |
 | `agent.tool_result` | `ToolResult` | After tool execution |
 | `agent.tool_error` | `string` (error message) | When a tool throws |
-| `agent.done` | `array` (response) | Agent finished |
+| `agent.budget_warning` | `array` | The context budget threshold was crossed |
+| `agent.warning` | `string` | Non-fatal notice |
 | `agent.error` | `string` (error message) | Unrecoverable error |
+| `agent.done` | `array` (response) | Agent finished with an answer |
+| `agent.finish` | `RunFinish` | Exactly once, last, on every exit path |
+
+Payloads, the discard reasons and the event order on each exit path are in
+[Agents](AGENTS.md#events-reference).
 
 ## Message Flow
 
@@ -231,6 +255,7 @@ classDiagram
         <<interface>>
         +chat(messages, tools, options) Response
         +stream(messages, tools, options) iterable~Response~
+        +streamEvents(messages, tools, options) iterable~StreamEvent~
         +structured(messages, schema, options) mixed
         +models() ModelDefinition[]
         +isAvailable() bool
@@ -244,6 +269,8 @@ classDiagram
         #baseUrl: string
         #apiKey: string
         #httpClient: HttpClientInterface
+        +stream() final
+        +streamEvents()*
         #headers() array
         #formatTools(tools) array
         #formatMessages(messages) array
@@ -252,7 +279,7 @@ classDiagram
 
     class OpenAICompatibleProvider {
         +chat()
-        +stream()
+        +streamEvents()
         +structured()
     }
 
@@ -263,7 +290,7 @@ classDiagram
 
     class AnthropicProvider {
         +chat()
-        +stream()
+        +streamEvents()
         +structured()
         -extractSystemAndMessages()
         -formatAnthropicMessage()

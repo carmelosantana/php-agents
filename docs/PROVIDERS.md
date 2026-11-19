@@ -8,6 +8,7 @@ Providers abstract the differences between LLM APIs. php-agents ships with provi
 |---------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
 | `chat()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `stream()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `streamEvents()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `structured()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Tool calling | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Streaming + tool calls | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -20,7 +21,7 @@ Providers abstract the differences between LLM APIs. php-agents ships with provi
 \* Gemini does not natively support URL image references. The provider auto-downloads URL images and converts them to base64 `inlineData` for seamless compatibility.
 
 **CliProvider** (the `claude` CLI vendor) runs as a raw chat completion and has a narrower profile:
-`chat()`, `stream()`, `structured()` (best-effort JSON), `models()`, `isAvailable()`, and
+`chat()`, `stream()`, `streamEvents()`, `structured()` (best-effort JSON), `models()`, `isAvailable()`, and
 `withModel()` are supported. Native tool calling and image input are **not** in v1 — the host app's
 own toolkits run the tools and prior tool history is folded into the prompt. See
 [CliProvider (CLI Vendors)](#cliprovider-cli-vendors) below.
@@ -115,7 +116,10 @@ The provider reads these if not passed directly:
 
 ### Streaming with Tool Calls
 
-The `stream()` method yields `Response` objects as SSE chunks arrive. Tool call deltas are accumulated across chunks and yielded as complete `ToolCall` objects when the model signals `finish_reason: tool_calls`:
+`stream()` yields one `Response` per text fragment, then one final `Response` with the finish
+reason, usage and, on a `tool_calls` finish, the complete `ToolCall` objects (see
+[The `stream()` shape](#the-stream-shape)). To watch the arguments as they are written, use
+`streamEvents()` instead.
 
 ```php
 foreach ($provider->stream($messages, $tools) as $response) {
@@ -124,7 +128,7 @@ foreach ($provider->stream($messages, $tools) as $response) {
         echo $response->content;
     }
 
-    // Tool calls arrive fully assembled when the model is done calling
+    // Tool calls arrive fully assembled on the final chunk
     foreach ($response->toolCalls as $toolCall) {
         $result = $tool->execute($toolCall->arguments);
     }
@@ -148,10 +152,11 @@ sequenceDiagram
         Note over Provider: Accumulate tool call deltas
 
         API-->>Provider: data: {"finish_reason": "tool_calls"}
-        Provider-->>App: yield Response(toolCalls: [ToolCall])
+        API-->>Provider: data: {"usage": {...}}
     end
 
     API-->>Provider: data: [DONE]
+    Provider-->>App: yield Response(finishReason: ToolUse, toolCalls: [ToolCall], usage)
 ```
 
 ### Structured Output
@@ -292,7 +297,7 @@ $message = new UserMessage([
 
 ### Streaming with Tool Calls
 
-Anthropic uses a different streaming protocol (content blocks + deltas) than OpenAI (token-level deltas). php-agents normalizes both to the same `Response` yield pattern:
+Anthropic uses a different streaming protocol (content blocks + deltas) than OpenAI (token-level deltas). php-agents normalizes both to the same events, and `stream()` to the same `Response` yield pattern:
 
 ```mermaid
 sequenceDiagram
@@ -634,11 +639,123 @@ authenticated yourself.
 The Claude SDK JSON output reports `usage.input_tokens`, `output_tokens`,
 `cache_read_input_tokens`, `cache_creation_input_tokens`, and `total_cost_usd`. The adapter folds the
 input + cache tokens into `Usage.promptTokens` so host-side budget tracking works the same as for
-HTTP providers.
+HTTP providers. It does not report the cache figures separately.
+
+## Streaming Events
+
+`streamEvents()` is the stream every provider implements and the agent consumes. It yields typed
+events from `CarmeloSantana\PHPAgents\Provider\Stream`:
+
+| Event | Fields | When |
+|-------|--------|------|
+| `ReasoningDelta` | `delta` | Each reasoning (thinking) fragment |
+| `TextDelta` | `delta` | Each text fragment |
+| `ToolInputStart` | `index`, `id`, `name` | A tool call opens |
+| `ToolInputDelta` | `index`, `id`, `delta` | A raw fragment of the call's argument JSON |
+| `ToolInputEnd` | `index`, `id`, `name`, `arguments`, `metadata` | The call's arguments are complete and decoded to a JSON object |
+| `Tick` | none | The stream has been silent for `RequestLimits::$tickInterval` |
+| `Finish` | `reason`, `rawReason`, `usage`, `model`, `contentBlocks` | Exactly once, last, on every stream that does not throw |
+
+```php
+use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
+use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
+
+foreach ($provider->streamEvents($messages, $tools) as $event) {
+    if ($event instanceof TextDelta) {
+        echo $event->delta;
+    } elseif ($event instanceof ToolInputEnd) {
+        $calls[] = $event->toToolCall();
+    } elseif ($event instanceof Finish) {
+        $reason = $event->reason; // run $calls only when this is ProviderFinishReason::ToolUse
+    }
+}
+```
+
+- `index` is the call's 0-based position in the response, in the order calls opened; `id` is the
+  provider's call id, repeated on every event of the call.
+- Providers that receive a call whole (Gemini, Ollama, the llama.cpp tool parser, CLI) emit
+  `ToolInputStart`, one `ToolInputDelta` with the full JSON-encoded arguments, then `ToolInputEnd`.
+- Empty or whitespace-only arguments and an empty object decode to empty arguments (`{}`). Arguments
+  that do not decode to a JSON object get no `ToolInputEnd`; the call is dropped, and when the response
+  would otherwise have finished with `ToolUse` the `Finish` reason is `Error`. Another reason, such
+  as `MaxTokens`, is kept.
+- A stream that throws (`ProviderException`, symfony HTTP exceptions) has no `Finish`.
+- Per-call metadata, such as Gemini's `thoughtSignature`, is on `ToolInputEnd->metadata`.
+
+### The `stream()` shape
+
+`AbstractProvider::stream()` is `final`: it is a projection of `streamEvents()`, the same for every
+provider. It yields one `Response` per text or reasoning delta (finish reason `Stop`, no model, no
+usage, no tool calls), then one terminal `Response` with the finish reason, usage, model, content
+blocks, and the tool calls when the reason is `ToolUse`. Ticks and tool-input events are not
+projected. Read the finish reason and usage from the last chunk; summing usage across chunks gives
+the same figure.
+
+### Cancellation and idle ticks
+
+The agent checks its cancellation token and run limits on every event. Providers that poll their
+HTTP stream yield a `Tick` every `tickInterval` seconds of silence, so a cancel lands within about
+that long even while the model is thinking or waiting to send headers. The others are checked only
+when the next chunk arrives:
+
+| Provider | Ticks during silence | Cancellation and run limits |
+|----------|:-:|---|
+| `AnthropicProvider` | ✅ | During silence |
+| `OpenAICompatibleProvider` (OpenAI, OpenRouter, MiniMax and other compatible servers), `OllamaProvider`, `XAIProvider`, `MistralProvider` | ✅ | During silence |
+| `OpenAIResponsesProvider` | ✅ | During silence |
+| `GeminiProvider` | ✅ | During silence |
+| `LlamaCppProvider` | — | Per chunk only |
+| `CliProvider` | — | Per chunk only |
+| Any provider on an injected HTTP client that ignores the timeout argument of symfony's `stream()` | — | Per chunk only |
+
+When a consumer stops iterating (a cancel or a run limit), the provider cancels the HTTP response.
+With ticks on, the parser keeps the idle deadline itself: once `idleTimeout` seconds pass with no
+data it throws symfony's idle-timeout `TimeoutException`, up to one `tickInterval` late, and an
+`idleTimeout` of `0.0` sets no idle deadline. A tick never extends `idleTimeout` or `maxDuration`.
+`tickInterval: 0.0` turns ticks off and leaves the idle timeout to symfony.
+
+### Usage
+
+`Usage` has `promptTokens`, `completionTokens` and `totalTokens`, plus `cacheReadTokens`,
+`cacheWriteTokens` and `reasoningTokens`, which are `null` when the provider did not report them
+(`0` means it reported zero). Every provider fills them the same way:
+
+- `promptTokens` counts all input tokens, cache reads and writes included.
+- `completionTokens` counts all output tokens, reasoning included.
+- `totalTokens` is the provider's total when it sends one, else prompt plus completion.
+- `chat()` and streaming share one usage parser per provider, so they report the same figures, and
+  usage is `null` when the response carries no token counts.
+
+| Provider | Source | Cache read / write | Reasoning |
+|----------|--------|--------------------|-----------|
+| `AnthropicProvider` | `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`, `output_tokens`; total is their sum | `cache_read_input_tokens` / `cache_creation_input_tokens` | `null` |
+| `OpenAICompatibleProvider` family | `prompt_tokens`, `completion_tokens`, `total_tokens` | `prompt_tokens_details.cached_tokens` / `null` | `completion_tokens_details.reasoning_tokens` |
+| `OpenAIResponsesProvider` | `input_tokens`, `output_tokens`, `total_tokens` | `input_tokens_details.cached_tokens` / `null` | `output_tokens_details.reasoning_tokens` |
+| `GeminiProvider` | `promptTokenCount`, `candidatesTokenCount + thoughtsTokenCount`, `totalTokenCount` | `cachedContentTokenCount` / `null` | `thoughtsTokenCount` |
+| `LlamaCppProvider` | Prompt and generated token counts from the runtime | `null` | `null` |
+| `CliProvider` | The CLI's input plus cache tokens, and output tokens | `null` | `null` |
+
+`MistralProvider::chat()` keeps its own parser: prompt, completion and total only, never `null`
+when the body has a `usage` object. Its streamed usage follows the OpenAI row.
+
+### Raw finish reasons
+
+`Finish->rawReason` (and `StepFinish->rawReason` on the agent event) is the provider's own reason,
+before it is mapped to `ProviderFinishReason`. It is `''` when a stream ended without one.
+
+| Provider | `rawReason` |
+|----------|-------------|
+| `AnthropicProvider` | `stop_reason` |
+| `OpenAICompatibleProvider` family | `finish_reason` |
+| `OpenAIResponsesProvider` | `'completed'`, the `incomplete_details.reason` of an incomplete response (`'incomplete'` without one), or `'failed'` |
+| `GeminiProvider` | The candidate's `finishReason`, or `promptFeedback.blockReason` for a blocked prompt |
+| `LlamaCppProvider` | The runtime's finish reason value |
+| `CliProvider` | `''` |
 
 ## Caller Options
 
-The `$options` array of `chat()`, `stream()` and `structured()` is merged into the request body, so it can set any field the provider's API takes. It cannot replace the fields the provider builds itself. The conversation and the transport flag are always the provider's. The system prompt is the provider's when the conversation has a `SystemMessage`, and the tool list is the provider's when the `$tools` argument is not empty; without them, `$options` may still supply those fields.
+The `$options` array of `chat()`, `stream()`, `streamEvents()` and `structured()` is merged into the request body, so it can set any field the provider's API takes. It cannot replace the fields the provider builds itself. The conversation and the transport flag are always the provider's. The system prompt is the provider's when the conversation has a `SystemMessage`, and the tool list is the provider's when the `$tools` argument is not empty; without them, `$options` may still supply those fields.
 
 | Provider | Always the provider's | Provider's with a `SystemMessage` | Provider's with a non-empty `$tools` |
 |----------|-----------------------|-----------------------------------|--------------------------------------|
@@ -725,13 +842,20 @@ Shared SSE line-buffering parser used by all streaming providers. Handles chunk 
 
 ```php
 use CarmeloSantana\PHPAgents\Provider\SseStreamParser;
+use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 
-$parser = new SseStreamParser($httpClient, $response);
+$parser = new SseStreamParser($httpClient, $response, tickInterval: 0.25, idleTimeout: 300.0);
 
 foreach ($parser->events() as $payload) {
+    if ($payload instanceof Tick) {
+        yield $payload; // the stream is silent; pass the tick on
+        continue;
+    }
     // $payload is a decoded associative array from each `data: {...}` line
 }
 ```
+
+With the default `tickInterval` of `0.0` it yields no `Tick` and leaves the idle timeout to symfony.
 
 Custom providers can use `SseStreamParser` directly instead of implementing their own SSE buffering logic.
 
@@ -757,7 +881,13 @@ $schema = SchemaUtils::flattenCombinator($schema, 'anyOf');
 
 ## Creating a Custom Provider
 
-Implement `ProviderInterface` or extend `AbstractProvider`:
+Extend `AbstractProvider` to get `stream()` for free: implement `streamEvents()` (plus `chat()`,
+`structured()`, `models()`, `isAvailable()` and the message and tool formatting hooks), and
+`stream()` is projected from it. `stream()` is `final` there, so an override fails loudly.
+
+A class that implements `ProviderInterface` directly can keep writing `stream()` and take
+`streamEvents()` from the `StreamsEventsFromResponses` trait, which turns each chunk into events
+and merges the chunks' finish reasons and usage into one `Finish`:
 
 ```php
 <?php
@@ -766,29 +896,32 @@ declare(strict_types=1);
 
 namespace Acme\MyProvider;
 
+use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
-use CarmeloSantana\PHPAgents\Message\Response;
-use CarmeloSantana\PHPAgents\Provider\ModelDefinition;
-use CarmeloSantana\PHPAgents\Tool\ToolCall;
-use CarmeloSantana\PHPAgents\Tool\Usage;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
+use CarmeloSantana\PHPAgents\Provider\Usage;
 
 final class MyProvider implements ProviderInterface
 {
+    use StreamsEventsFromResponses;
+
     public function chat(array $messages, array $tools = [], array $options = []): Response
     {
         // Send messages to your LLM, return a Response
         return new Response(
             content: 'Hello from my provider',
-            toolCalls: [],
-            usage: new Usage(inputTokens: 10, outputTokens: 5),
+            finishReason: ProviderFinishReason::Stop,
+            usage: new Usage(promptTokens: 10, completionTokens: 5, totalTokens: 15),
         );
     }
 
     public function stream(array $messages, array $tools = [], array $options = []): iterable
     {
-        // Yield Response objects as they arrive
-        yield new Response(content: 'Hello');
-        yield new Response(content: ' world');
+        // Yield Response objects as they arrive; the last one carries the finish reason
+        yield new Response(content: 'Hello', finishReason: ProviderFinishReason::Stop);
+        yield new Response(content: ' world', finishReason: ProviderFinishReason::Stop);
     }
 
     public function structured(array $messages, string $schema, array $options = []): mixed
@@ -802,6 +935,8 @@ final class MyProvider implements ProviderInterface
         return [
             new ModelDefinition(
                 id: 'my-model',
+                name: 'My Model',
+                provider: 'acme',
                 contextWindow: 128_000,
                 maxTokens: 4096,
             ),
@@ -825,5 +960,15 @@ final class MyProvider implements ProviderInterface
         // set model on clone
         return $clone;
     }
+}
+```
+
+A decorator that wraps another provider forwards the events instead, so the agent behind it still
+gets tool-input events and ticks:
+
+```php
+public function streamEvents(array $messages, array $tools = [], array $options = []): iterable
+{
+    yield from $this->inner->streamEvents($messages, $tools, $options);
 }
 ```

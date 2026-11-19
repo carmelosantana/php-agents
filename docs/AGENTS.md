@@ -68,7 +68,7 @@ $agent = new ResearchAgent(
 | `safetyMarginPercent` | `int` | `20` | Headroom applied before pruning to absorb token-estimation drift |
 | `budgetExitThreshold` | `float` | `0.0` | Optional ratio `0.0`-`1.0`; emits `agent.budget_warning` once when the current iteration crosses the threshold |
 | `budgetExitWrapUpIterations` | `int` | `2` | Extra iterations allowed after a budget warning before the loop returns `BudgetExhausted` |
-| `providerOptions` | `array` | `[]` | Provider-specific request options passed to `stream()` on every iteration |
+| `providerOptions` | `array` | `[]` | Provider-specific request options passed to `streamEvents()` on every iteration |
 | `runLimits` | `?RunLimits` | `null` | Tool-call caps per turn and per run, which tools may execute, and cumulative wall-time, response-size, token and input-size limits; `null` means `new RunLimits()` (see [Run Limits](#run-limits)) |
 
 `providerOptions` are specific to the provider you pass in: use the keys that provider's API takes
@@ -81,6 +81,40 @@ They cannot replace the agent's instructions or its tools either: the system pro
 
 Treat `providerOptions` as trusted developer configuration. Never build them from end-user input or
 tool output: they can still change the model, the output-token limit and other request settings.
+
+### The ready-made `Agent`
+
+`Agent` is an `AbstractAgent` you configure in the constructor instead of writing a subclass. It
+takes the instructions, tools and toolkits directly, and passes run limits, a cancellation token
+and provider options through to `AbstractAgent`:
+
+```php
+use CarmeloSantana\PHPAgents\Agent\Agent;
+use CarmeloSantana\PHPAgents\Agent\RunLimits;
+
+$agent = new Agent(
+    $provider,
+    instructions: 'You are a calculator.',
+    tools: [$add],
+    runLimits: new RunLimits(maxRunSeconds: 5),
+    cancellationToken: $token,
+    providerOptions: ['max_tokens' => 10],
+);
+```
+
+| Parameter | Type | Default |
+|-----------|------|---------|
+| `provider` | `ProviderInterface` | — |
+| `instructions` | `string` | `'You are a helpful assistant.'` |
+| `tools` | `ToolInterface[]` | `[]` |
+| `toolkits` | `ToolkitInterface[]` | `[]` |
+| `maxIterations` | `int` | `25` (passed on as `maxIter`) |
+| `executionPolicy` | `?ToolExecutionPolicyInterface` | `null` |
+| `runLimits` | `?RunLimits` | `null` |
+| `cancellationToken` | `?CancellationTokenInterface` | `null` |
+| `providerOptions` | `array` | `[]` |
+
+Extend `AbstractAgent` for anything else, such as a context window or a pending-input provider.
 
 ## Run Limits
 
@@ -135,13 +169,13 @@ returns that fixed content:
 
 | Limit | Checked | Content |
 |-------|---------|---------|
-| `maxRunSeconds` | At the top of each iteration, between stream chunks, before each serial tool call and before a batch call | `Run time limit reached.` |
-| `maxResponseBytes` | After each stream chunk; the stream is abandoned | `Response size limit reached.` |
-| `maxEstimatedTokens` | Before each provider call, between stream chunks and after each response | `Token limit reached.` |
+| `maxRunSeconds` | At the top of each iteration, on every stream event (idle ticks included), before each serial tool call and before a batch call | `Run time limit reached.` |
+| `maxResponseBytes` | On every stream event; the stream is abandoned | `Response size limit reached.` |
+| `maxEstimatedTokens` | Before each provider call, on every stream event and after each response | `Token limit reached.` |
 | `maxInputTokens` | Before the first provider call, and on each pending input before it is added | `Input is too large.` |
 
-- **Response bytes** count each chunk's `content` and `reasoning` plus the JSON of its tool calls and
-  content blocks. The total runs across every provider call of the run.
+- **Response bytes** count the text of each text, reasoning and tool-input delta, plus the JSON of
+  the response's content blocks. The total runs across every provider call of the run.
 - **Estimated tokens.** Before each provider call the request estimate is
   `Conversation::estimateTokens()` plus one token per 4 bytes of the tool schemas' JSON. If the
   tokens spent so far plus that estimate exceed the limit, the run ends before the request is sent.
@@ -156,9 +190,11 @@ returns that fixed content:
 - **Tools stopped by time.** A tool call that `maxRunSeconds` stops gets the error result
   `Run time limit reached.` with its call id, so every tool call still has a result.
 
-The limits are cooperative: the agent checks them between chunks, before each tool and around batch
-calls. A provider that blocks before yielding its first chunk is bounded only by the provider's
-`RequestLimits` (see [PROVIDERS.md](PROVIDERS.md)), and a single slow tool only by the tool itself.
+The limits are cooperative: the agent checks them on every stream event, before each tool and
+around batch calls. Providers that poll their stream yield an idle `Tick` while the model is silent,
+so `maxRunSeconds` holds then too. A provider that yields nothing, not even a tick (see the
+cancellation column in [Streaming Events](PROVIDERS.md#streaming-events)), is bounded only by the
+provider's `RequestLimits`, and a single slow tool only by the tool itself.
 One oversized chunk is a transport concern too: `RequestLimits::$maxResponseBytes` caps the
 downloaded body. An endless stream of empty chunks is bounded only by `maxRunSeconds`: it adds no
 response bytes and no tokens.
@@ -194,7 +230,7 @@ flowchart TD
         CHECK_CANCEL{cancelled?} -->|Yes| RETURN_CANCEL[Output: cancelled]
         CHECK_CANCEL -->|No| INJECT[Inject pending inputs]
         INJECT --> NOTIFY_ITER[notify: agent.iteration]
-        NOTIFY_ITER --> CHAT[provider.stream]
+        NOTIFY_ITER --> CHAT[provider.streamEvents]
 
         CHAT -->|Error| RETURN_ERR[Output: error]
         CHAT -->|OK| TRACK[Track usage + report to contextWindow]
@@ -287,13 +323,107 @@ echo $metrics->summary();
 |-------|-----------|-------------|
 | `agent.start` | `MessageInterface` | The input message before first iteration |
 | `agent.iteration` | `int` | Iteration number (1-based) |
+| `agent.reasoning` | `string` | A reasoning (thinking) fragment as it streams |
+| `agent.text_delta` | `string` | A text fragment as it streams |
+| `agent.tool_input_start` | `ToolInputStart` | The model opened a tool call: `index` (0-based, in the order calls opened), `id`, `name` |
+| `agent.tool_input_delta` | `ToolInputDelta` | A raw fragment of a call's argument JSON: `index`, `id`, `delta` |
+| `agent.tool_input_end` | `ToolInputEnd` | A call's arguments are complete and decoded: `index`, `id`, `name`, `arguments`, `metadata`. It runs only if the response ends in `ToolUse` |
+| `agent.done_delta` | `DonePreview` | Provisional decoded text of the `done` call's `response` argument: `callId`, `delta` |
+| `agent.tool_input_discarded` | `ToolInputDiscarded` | A call that got `agent.tool_input_start` will not run: `index`, `id`, `name`, `reason` |
+| `agent.step_finish` | `StepFinish` | A provider response completed: `iteration`, `reason` (`ProviderFinishReason`), `rawReason`, `usage` (`?Usage`), `model` |
+| `agent.empty_response` | `array{attempt: int, maxRetries: int, hasReasoning: bool}` | The response had no text and no tool calls |
 | `agent.tool_call` | `ToolCall` | Before a tool is executed |
-| `agent.tool_result` | `ToolResult` | After successful tool execution |
+| `agent.batch_start` | `array{count: int, tools: list<string>}` | A batch tool executor is about to run the approved calls |
+| `agent.batch_end` | `array{count: int}` | The batch returned |
+| `agent.tool_result` | `ToolResult` | Each tool result, error results included |
 | `agent.tool_error` | `string` | When a tool throws an exception |
-| `agent.done` | `array` | Agent completed (contains response data) |
 | `agent.budget_warning` | `array{usagePercent: float, threshold: float, wrapUpIterations: int}` | Budget threshold was crossed for the current iteration |
 | `agent.warning` | `string` | Non-fatal notice, such as a tool-call limit reached |
 | `agent.error` | `string` | Unrecoverable error in agent loop |
+| `agent.done` | `array` | The run produced its answer: the `done` call's arguments, or `['response' => $text]` |
+| `agent.finish` | `RunFinish` | Exactly once, last, on every exit path: `reason` (`AgentFinishReason`), `usage` (summed), `iterations`, `model` |
+
+`ToolInputStart`, `ToolInputDelta` and `ToolInputEnd` are the provider's stream events
+(`CarmeloSantana\PHPAgents\Provider\Stream`); `DonePreview`, `ToolInputDiscarded`, `StepFinish`
+and `RunFinish` live in `CarmeloSantana\PHPAgents\Agent\Event`. An observer that does not know an
+event ignores it, so the `default` arm of a `match` keeps working as events are added.
+
+### Streaming tool input and usage
+
+A UI can fill in a tool card while the model is still writing its arguments, and update a usage
+gauge after every provider response:
+
+```php
+use CarmeloSantana\PHPAgents\Agent\CallbackObserver;
+use CarmeloSantana\PHPAgents\Agent\Event\StepFinish;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
+
+$agent->attach(new CallbackObserver(
+    function (string $event, mixed $data): void {
+        if ($data instanceof ToolInputDelta) {
+            echo $data->delta; // raw argument JSON, as the model writes it
+        } elseif ($data instanceof StepFinish) {
+            printf("\n[step %d: %s, %d tokens]\n", $data->iteration, $data->reason->value, $data->usage->totalTokens ?? 0);
+        }
+    },
+    'agent.tool_input_delta',
+    'agent.step_finish',
+));
+```
+
+The argument JSON is provisional until `agent.tool_input_end`, and a call runs only when its
+response ends in `ToolUse`. A call that will not run gets `agent.tool_input_discarded`, so the UI can
+retract its card. Providers that deliver a call whole (Gemini, Ollama, llama.cpp) send one delta
+holding the full JSON.
+
+`agent.done_delta` streams a `done` answer the same way: the decoded text of the first `done` call's
+`response` argument, as it arrives. `agent.done` accepts it and carries the authoritative
+`response`, which a UI renders in place of the preview; `agent.tool_input_discarded` for the same
+call id retracts it.
+
+| Discard reason | The call will not run because |
+|---|---|
+| `not_tool_use` | The response finished with a reason other than `ToolUse` (max tokens, refusal), or with `Error` after the call's arguments completed |
+| `invalid_arguments` | The response finished with `Error` and the call's arguments never completed as a JSON object |
+| `run_limit` | A `RunLimits` limit (bytes, time, tokens) ended the run first |
+| `provider_error` | The stream threw, or ended without a finish, after the call started |
+| `cancelled` | A cancel abandoned the response before it finished |
+| `done_finished_run` | A `done` call earlier in the same response finished the run |
+| `denied` | The execution policy denied the response's first `done` call; the run continues |
+| `invalid_done` | The first `done` call's arguments failed validation; the run continues |
+| `duplicate_done` | A `done` call that was not the first in its response |
+
+### How a run ends
+
+Every run that returns ends with the same tail: `agent.step_finish` when a provider response
+completed, then the `agent.done`, `agent.error` or `agent.warning` this exit emits (some emit none,
+the reasoning fallback emits a warning before `done`), then `agent.finish`. Discards for calls that
+will not run fire before `agent.step_finish` when the finish reason rules them out, and after it
+when the run ends for another reason.
+
+| Exit | Events, in order | `AgentFinishReason` |
+|---|---|---|
+| Text answer | `step_finish` → `done` → `finish` | `Stop` |
+| Reasoning-only answer (fallback) | `step_finish` → `empty_response` → `warning` → `done` → `finish` | `Stop` |
+| `done` tool | `step_finish` → `tool_input_discarded` (the response's other calls) → `done` → `finish` | `Done` |
+| Tool-call limit per run | `step_finish` → … tools … → `warning` → `finish` | `BudgetExhausted` |
+| Budget wrap-up exhausted | `warning` → `finish` | `BudgetExhausted` |
+| Run limit while streaming | `tool_input_discarded` (`run_limit`, each started call) → `error` → `finish` | `BudgetExhausted` |
+| Token limit after a response | `step_finish` → `tool_input_discarded` (`run_limit`, each completed call) → `error` → `finish` | `BudgetExhausted` |
+| Run limit elsewhere (time, input size) | `error` → `finish` | `BudgetExhausted` |
+| Repeated empty responses | `step_finish` → `empty_response` → `error` → `finish` | `EmptyResponse` |
+| Max iterations | `error` → `finish` | `MaxIterations` |
+| Refusal, content filter, context window | `step_finish` → `finish` | `Refusal`, `ContentFilter`, `ContextWindowExceeded` |
+| Provider error finish (`Error`, `PauseTurn`, `MaxTokens` with no text) | `step_finish` → `error` → `finish` | `Error` |
+| Stream ended without a finish | `tool_input_discarded` (`provider_error`) → `error` → `finish` | `Error` |
+| Provider exception | `tool_input_discarded` (`provider_error`) → `error` → `finish` | `Error` |
+| Tool `TerminationException` | `step_finish` → … tools … → `finish` (no `agent.error`) | `Error` |
+| Cancel mid-stream | `tool_input_discarded` (`cancelled`, each started call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
+| Cancel at the top of an iteration or during tools | `error` `'Task cancelled'` → `finish` | `Cancelled` |
+
+Rows that start with `error` follow whatever the step already fired: a cancel or time limit during
+tools comes after that response's `step_finish` and tool events. An exception that escapes `run()`
+(thrown by an observer, for example) skips `agent.finish`.
 
 ### Error text is redacted and bounded
 
@@ -334,7 +464,7 @@ $agent = new MyAgent(
 // Agent will stop after 30 seconds, even mid-loop
 ```
 
-The token is checked at the top of each iteration, on every stream event (including the idle `Tick`s, so a silent model can be stopped), before each tool call and before a batch starts. Every cancel ends the run with `AgentFinishReason::Cancelled`, after `agent.error` with `'Task cancelled'`:
+The token is checked at the top of each iteration, on every stream event (including the idle `Tick`s, so a silent model can be stopped), before each tool call and before a batch starts. Which providers tick during silence, and which only check per chunk, is listed under [Streaming Events](PROVIDERS.md#streaming-events). Every cancel ends the run with `AgentFinishReason::Cancelled`, after `agent.error` with `'Task cancelled'`:
 
 | When | Outcome |
 |---|---|
@@ -452,4 +582,4 @@ The agent reads the provider reason before it looks at `done()`, tool calls or t
 | `Error` | `AgentFinishReason::Error` with content `'Provider error: the response ended without a valid finish reason.'` and an `agent.error` event |
 | `PauseTurn` | `AgentFinishReason::Error` with content `'Provider paused the turn (pause_turn); server-tool continuation is not supported.'` and an `agent.error` event |
 
-The first failure reason a chunk carries (`Error`, `Refusal`, `ContentFilter`, `ContextWindowExceeded`, `PauseTurn` or `MaxTokens`) is the turn's reason: no later chunk changes it to `ToolUse` or `Stop`, and every tool call of the turn is dropped. Without a failure the reason is the last chunk reason that is not `Stop`; when every chunk says `Stop` it is `ToolUse` if tool calls were collected, otherwise `Stop`. Usage on a failed chunk still counts toward `Output::$usage` and the context window.
+The turn's reason is the reason on the stream's one `Finish` event, and a stream that ends without one counts as `Error`. A provider built on `StreamsEventsFromResponses` (see [Creating a Custom Provider](PROVIDERS.md#creating-a-custom-provider)) merges its `stream()` chunks into that `Finish`. The first failure reason a chunk carries (`Error`, `Refusal`, `ContentFilter`, `ContextWindowExceeded`, `PauseTurn` or `MaxTokens`) is the turn's reason: no later chunk changes it to `ToolUse` or `Stop`, and every tool call of the turn is dropped. Without a failure the reason is the last chunk reason that is not `Stop`; when every chunk says `Stop` it is `ToolUse` if tool calls were collected, otherwise `Stop`. Usage on a failed finish still counts toward `Output::$usage` and the context window.

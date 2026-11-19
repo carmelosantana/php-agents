@@ -47,7 +47,9 @@ PHP 8.4+ with `curl`, `json` and `mbstring`.
 | Chat once, no agent loop | `$provider->chat([new UserMessage('Hi')])->content` |
 | An agent with tools | `new Agent($provider, instructions: '…', tools: [...], toolkits: [...])`, or extend `AbstractAgent` |
 | Stream the agent's text | `$agent->attach(new CallbackObserver(fn($event, $delta) => print $delta, 'agent.text_delta'))` |
-| Stream without an agent | `foreach ($provider->stream($messages) as $chunk) echo $chunk->content;` |
+| Stream tool input and usage | Observe `agent.tool_input_delta`, `agent.step_finish` and `agent.finish`, see [Agents](docs/AGENTS.md#streaming-tool-input-and-usage) |
+| Stop a run mid-stream | `new Agent($provider, cancellationToken: $token)`; the run ends `AgentFinishReason::Cancelled` |
+| Stream without an agent | `foreach ($provider->stream($messages) as $chunk) echo $chunk->content;`, or `streamEvents()` for typed events |
 | Typed data out | `StructuredOutput::extract($provider, $messages, ['type' => 'object', ...])` returns an array |
 | A remote MCP server's tools | `McpClient` + `McpToolkit` with pinned fingerprints, see [Tools & Toolkits](docs/TOOLS-AND-TOOLKITS.md) |
 | Pick a provider from config | `ProviderFactory::fromModelString('anthropic/claude-sonnet-5-5')` (reads the key from env) |
@@ -74,6 +76,7 @@ and [Providers](docs/PROVIDERS.md).
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `chat()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `stream()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `streamEvents()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `structured()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Tool calling | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Streaming + tool calls | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -103,6 +106,7 @@ parameter types and MCP are in [Tools & Toolkits](docs/TOOLS-AND-TOOLKITS.md).
 | [Embeddings & Vector Stores](docs/MEMORY.md) | Embedding providers, similarity search |
 | [Local Runtime](docs/LOCAL-RUNTIME.md) | Native llama.cpp setup, benchmarks |
 | [Architecture](docs/ARCHITECTURE.md) | Design, diagrams, extension points |
+| [Upgrading](docs/UPGRADING.md) | Breaking changes and migration notes per release |
 | [Decisions](docs/adr/) | Architecture decision records |
 
 Runnable examples are in [`examples/`](examples/) (repo only, not in the Composer dist).
