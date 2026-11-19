@@ -257,7 +257,9 @@ final class AnthropicProvider extends AbstractProvider
                         }
                     }
 
-                    if ($badToolArguments) {
+                    // A tool call whose arguments are not a JSON object cannot run: a ToolUse
+                    // end becomes Error. Any other end keeps its reason (e.g. MaxTokens).
+                    if ($badToolArguments && $reason === ProviderFinishReason::ToolUse) {
                         $reason = ProviderFinishReason::Error;
                     }
 
@@ -305,7 +307,7 @@ final class AnthropicProvider extends AbstractProvider
     {
         $arguments = $this->decodeToolArguments($block['json']);
         if ($arguments === null) {
-            $this->logger?->debug('Anthropic tool {tool} arguments ({length} bytes) are not a JSON object; ending the stream with Error', [
+            $this->logger?->debug('Anthropic tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [
                 'tool' => $block['name'],
                 'length' => strlen($block['json']),
             ]);

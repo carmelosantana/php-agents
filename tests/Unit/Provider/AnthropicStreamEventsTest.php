@@ -320,3 +320,19 @@ test('streamEvents leaves the API error body readable on an HTTP error', functio
     expect($thrown)->not->toBeNull()
         ->and($thrown?->getResponse()->getContent(false))->toContain('"message":"bad"');
 });
+
+test('streamEvents keeps MaxTokens when a closed tool block has truncated arguments', function () {
+    $events = anthropicStreamEvents(
+        anthropicEvStart(),
+        anthropicEvTool(0, 'toolu_1', 'lookup'),
+        anthropicEvJson(0, '{"q": "ph'),
+        anthropicEvBlockStop(0),
+        anthropicEvStop('max_tokens'),
+        ANTHROPIC_EV_MESSAGE_STOP,
+    );
+    $finish = end($events);
+
+    expect(anthropicEventClasses($events))->toBe([ToolInputStart::class, ToolInputDelta::class, Finish::class])
+        ->and($finish->reason)->toBe(ProviderFinishReason::MaxTokens)
+        ->and($finish->rawReason)->toBe('max_tokens');
+});
