@@ -1183,11 +1183,12 @@ test('stream that ends with STOP yields no extra Error chunk', function () {
     $mockClient = new MockHttpClient([new MockResponse($sseData, ['http_code' => 200])]);
     $chunks = iterator_to_array((new GeminiProvider(apiKey: 'k', httpClient: $mockClient))->stream([new UserMessage('hi')]), false);
 
-    expect($chunks)->toHaveCount(2)
-        ->and(array_map(fn($r) => $r->finishReason, $chunks))->toBe([ProviderFinishReason::Stop, ProviderFinishReason::Stop]);
+    expect($chunks)->toHaveCount(3)
+        ->and(array_map(fn($r) => $r->content, $chunks))->toBe(['Hel', 'lo', ''])
+        ->and(array_map(fn($r) => $r->finishReason, $chunks))->toBe([ProviderFinishReason::Stop, ProviderFinishReason::Stop, ProviderFinishReason::Stop]);
 });
 
-test('stream ignores parts and tool calls after a terminal candidate but still reads later usage', function (array $terminal, ProviderFinishReason $expected) {
+test('stream ignores parts and tool calls after a terminal candidate but folds later usage into the terminal chunk', function (array $terminal, ProviderFinishReason $expected) {
     $sseData = 'data: ' . json_encode($terminal) . "\n\n"
         . 'data: ' . json_encode([
             'candidates' => [[
@@ -1206,7 +1207,7 @@ test('stream ignores parts and tool calls after a terminal candidate but still r
     expect($toolCalls)->toBe([])
         ->and(implode('', array_map(fn($r) => $r->content, $chunks)))->not->toContain('Late text')
         ->and($reasons)->not->toContain(ProviderFinishReason::ToolUse)
-        ->and($reasons[0])->toBe($expected)
+        ->and($reasons[array_key_last($reasons)])->toBe($expected)
         ->and($chunks[array_key_last($chunks)]->usage?->totalTokens)->toBe(9);
 })->with([
     'SAFETY candidate' => [
