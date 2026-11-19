@@ -113,3 +113,16 @@ test('Agent applies the RunLimits it is given', function () {
         ->and($output->content)->toBe('Input is too large.')
         ->and($provider->calls)->toBe(0);
 });
+
+test('an image does not push a short message over maxInputTokens', function () {
+    $provider = new ScriptedEventsProvider([[new TextDelta('A cat.'), new Finish(ProviderFinishReason::Stop)]]);
+    $agent = new Agent($provider, runLimits: new RunLimits(maxInputTokens: 2_000));
+
+    $output = $agent->run(new UserMessage([
+        ['type' => 'text', 'text' => 'What is in this picture?'],
+        ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . str_repeat('A', 4 * 1024 * 1024)]],
+    ]));
+
+    expect($output->finishReason)->not->toBe(AgentFinishReason::BudgetExhausted)
+        ->and($provider->calls)->toBe(1);
+});

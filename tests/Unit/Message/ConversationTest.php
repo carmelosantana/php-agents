@@ -81,11 +81,47 @@ test('estimateTokens returns positive for non-empty conversation', function () {
 test('estimateTokens counts a multimodal message with invalid UTF-8 text', function () {
     $conversation = new Conversation();
     $conversation->add(new UserMessage([
-        ['type' => 'text', 'text' => "bad\xff"],
-        ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . str_repeat('A', 4 * 1024 * 1024)]],
+        ['type' => 'text', 'text' => "bad\xff" . str_repeat('t', 4_000_000)],
+        ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,AAAA']],
     ]));
 
     expect($conversation->estimateTokens())->toBeGreaterThan(1_000_000);
+});
+
+// An image's base64 is not text the model reads as tokens: each image part counts as a
+// flat Conversation::IMAGE_TOKENS, however many bytes it carries.
+
+function estimateOf(string|array $content): int
+{
+    $conversation = new Conversation();
+    $conversation->add(new UserMessage($content));
+
+    return $conversation->estimateTokens();
+}
+
+test('estimateTokens counts an image part as IMAGE_TOKENS, not its base64 length', function (int $bytes) {
+    $text = ['type' => 'text', 'text' => 'Describe this picture.'];
+    $image = ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . str_repeat('A', $bytes)]];
+
+    expect(estimateOf([$text, $image]))->toBe(estimateOf([$text]) + Conversation::IMAGE_TOKENS);
+})->with(['tiny' => 4, '4 MiB' => 4 * 1024 * 1024]);
+
+test('estimateTokens counts each image part once', function () {
+    $text = ['type' => 'text', 'text' => 'Compare these.'];
+    $image = ['type' => 'image_url', 'image_url' => ['url' => 'data:image/jpeg;base64,' . str_repeat('B', 100_000)]];
+
+    expect(estimateOf([$text, $image, $image]))->toBe(estimateOf([$text]) + 2 * Conversation::IMAGE_TOKENS);
+});
+
+test('estimateTokens counts an Anthropic-style image block as an image', function () {
+    $text = ['type' => 'text', 'text' => 'What is this?'];
+    $image = ['type' => 'image', 'source' => ['type' => 'base64', 'media_type' => 'image/png', 'data' => str_repeat('C', 100_000)]];
+
+    expect(estimateOf([$text, $image]))->toBe(estimateOf([$text]) + Conversation::IMAGE_TOKENS);
+});
+
+test('IMAGE_TOKENS is a small fixed count', function () {
+    expect(Conversation::IMAGE_TOKENS)->toBe(1_000);
 });
 
 test('estimateTokens counts tool calls whose arguments carry invalid UTF-8', function () {

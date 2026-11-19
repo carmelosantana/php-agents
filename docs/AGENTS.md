@@ -184,6 +184,8 @@ returns that fixed content:
   `max(reported completion tokens, response bytes / 4)`, so a provider that reports zero or no
   usage still counts. A response that crosses the limit
   ends `BudgetExhausted` even when it carried a final answer.
+- **Images.** `Conversation::estimateTokens()`, which both token limits use, counts each image part as `Conversation::IMAGE_TOKENS` (1,000)
+  rather than one token per 4 bytes of its base64, so a photo does not trip `maxInputTokens`.
 - **Input size.** Only new input is measured: the `$input` message and each message a
   `PendingInputProviderInterface` hands in between iterations, with the same 4-characters-per-token
   heuristic; history is covered by `maxEstimatedTokens`. A larger input never reaches the provider.

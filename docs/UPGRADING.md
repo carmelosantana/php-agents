@@ -57,6 +57,9 @@ public function streamEvents(array $messages, array $tools = [], array $options 
 - `ImagePolicy` (and so `LocalImageResolver`, `RemoteImageResolver` and the image normalizers)
   works without ext-fileinfo: it sniffs with `getimagesizefromstring()` instead of failing with
   `Class "finfo" not found`. That fallback knows image formats only, so non-images sniff as `unknown`.
+- In `Conversation::estimateTokens()` (and so `maxInputTokens` and `maxEstimatedTokens`) an image part
+  counts as `Conversation::IMAGE_TOKENS` (1,000) instead of one token per 4 bytes of its base64. A
+  workaround that raised `maxInputTokens` to fit images can go.
 
 ### New and not breaking
 
