@@ -22,16 +22,22 @@ use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppStructuredOutputNormalize
 use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppToolCallParser;
 use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppToolPromptInjector;
 use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppToolSchemaNormalizer;
-use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
-use CarmeloSantana\PHPAgents\Runtime\RuntimeCompletionChunk;
+use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
+use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamProjector;
+use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolArguments;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
 use CarmeloSantana\PHPAgents\Runtime\RuntimeCompletionRequest;
 use CarmeloSantana\PHPAgents\Runtime\RuntimeCompletionResult;
 use CarmeloSantana\PHPAgents\Runtime\RuntimeModelMetadata;
+use CarmeloSantana\PHPAgents\Tool\ToolCall;
 
 final class LlamaCppProvider implements ProviderInterface
 {
-    use StreamsEventsFromResponses;
-
     private const INTERNAL_REQUEST_OPTION_KEYS = [
         'sequence_id',
         'sequenceId',
@@ -92,6 +98,27 @@ final class LlamaCppProvider implements ProviderInterface
 
     public function stream(array $messages, array $tools = [], array $options = []): iterable
     {
+        return StreamProjector::toResponses($this->streamEvents($messages, $tools, $options));
+    }
+
+    /**
+     * Each runtime chunk, in order:
+     *   reasoning   → ReasoningDelta
+     *   content     → TextDelta; on the tool-parser path it is buffered until the finish
+     *                 chunk, then parsed into tool calls (ToolUse) or emitted as one TextDelta
+     *                 (a chunk carrying runtime tool calls flushes the buffer as text)
+     *   toolCalls   → ToolInputStart, one ToolInputDelta with the whole JSON arguments,
+     *                 ToolInputEnd
+     * Finish comes last with the last finish reason and usage the runtime reported (no finish
+     * reason is Stop, as in RuntimeCompletionResult); a Stop answer that carried tool calls is
+     * ToolUse, and parser output kept as text under the `content` failure policy is Stop.
+     * The runtime stream is pulled one chunk at a time, so an abandoned generator stops it at
+     * the next chunk.
+     *
+     * @return iterable<StreamEvent>
+     */
+    public function streamEvents(array $messages, array $tools = [], array $options = []): iterable
+    {
         $handle = $this->handle();
         $metadata = $handle->model();
         $normalizedTools = $this->toolSchemaNormalizer->normalize($tools);
@@ -112,21 +139,90 @@ final class LlamaCppProvider implements ProviderInterface
             ),
         );
 
-        $stream = $handle->stream($request);
+        $parserMode = $normalizedTools !== [] && $promptContext->toolParser !== null && $promptContext->toolParser !== 'native'
+            ? $promptContext->toolParser
+            : null;
+        $failurePolicy = $this->extractToolParserFailurePolicy($options);
 
-        if ($normalizedTools !== [] && $promptContext->toolParser !== null && $promptContext->toolParser !== 'native') {
-            yield from $this->streamWithToolParser(
-                $stream,
-                $promptContext->toolParser,
-                $this->extractToolParserFailurePolicy($options),
-            );
+        $buffer = '';
+        $callCount = 0;
+        $usage = null;
+        $finishReason = null;
+        $keptAsText = false;
 
-            return;
+        foreach ($handle->stream($request) as $chunk) {
+            $usage = $chunk->usage ?? $usage;
+
+            if ($chunk->reasoning !== '') {
+                yield new ReasoningDelta($chunk->reasoning);
+            }
+
+            if ($parserMode === null || $chunk->toolCalls !== []) {
+                $text = $buffer . $chunk->content;
+                $buffer = '';
+                if ($text !== '') {
+                    yield new TextDelta($text);
+                }
+            } else {
+                $buffer .= $chunk->content;
+            }
+
+            foreach ($chunk->toolCalls as $call) {
+                yield from $this->toolCallEvents($callCount++, $call);
+            }
+
+            if ($chunk->finishReason === null) {
+                continue;
+            }
+
+            $finishReason = $chunk->finishReason;
+
+            if ($buffer === '') {
+                continue;
+            }
+
+            if ($finishReason !== RuntimeFinishReason::ToolUse || $parserMode === null) {
+                yield new TextDelta($buffer);
+                $buffer = '';
+
+                continue;
+            }
+
+            try {
+                $parsed = $this->toolCallParser->parse($buffer, $parserMode);
+            } catch (\Throwable $e) {
+                if ($failurePolicy !== 'content') {
+                    throw new \RuntimeException(
+                        'Failed to parse llama.cpp tool call output: ' . $e->getMessage(),
+                        previous: $e,
+                    );
+                }
+
+                yield new TextDelta($buffer);
+                $buffer = '';
+                $keptAsText = true;
+
+                continue;
+            }
+
+            $buffer = '';
+            foreach ($parsed as $call) {
+                yield from $this->toolCallEvents($callCount++, $call);
+            }
         }
 
-        foreach ($stream as $chunk) {
-            yield $this->mapRuntimeChunkToResponse($chunk);
+        if ($buffer !== '') {
+            yield new TextDelta($buffer);
         }
+
+        $reason = $this->mapFinishReason($finishReason);
+        if ($keptAsText) {
+            $reason = ProviderFinishReason::Stop;
+        } elseif ($reason === ProviderFinishReason::Stop && $callCount > 0) {
+            $reason = ProviderFinishReason::ToolUse;
+        }
+
+        yield new Finish($reason, $finishReason->value ?? '', $usage, $this->model);
     }
 
     public function structured(array $messages, string $schema, array $options = []): mixed
@@ -309,138 +405,14 @@ final class LlamaCppProvider implements ProviderInterface
         };
     }
 
-    private function mapRuntimeChunkToResponse(RuntimeCompletionChunk $chunk): Response
-    {
-        return new Response(
-            content: $chunk->content,
-            finishReason: $this->mapFinishReason($chunk->finishReason),
-            toolCalls: $chunk->toolCalls,
-            model: $this->model,
-            usage: $chunk->usage,
-            reasoning: $chunk->reasoning,
-        );
-    }
-
     /**
-    * @param iterable<RuntimeCompletionChunk> $stream
-     * @return iterable<Response>
+     * @return \Generator<int, StreamEvent>
      */
-    private function streamWithToolParser(iterable $stream, string $parserMode, string $failurePolicy): iterable
+    private function toolCallEvents(int $index, ToolCall $call): \Generator
     {
-        $buffer = '';
-
-        foreach ($stream as $chunk) {
-            if ($chunk->reasoning !== '') {
-                yield new Response(
-                    content: '',
-                    finishReason: ProviderFinishReason::Stop,
-                    toolCalls: [],
-                    model: $this->model,
-                    reasoning: $chunk->reasoning,
-                );
-            }
-
-            if ($chunk->toolCalls !== []) {
-                if ($buffer !== '') {
-                    yield new Response(
-                        content: $buffer,
-                        finishReason: ProviderFinishReason::Stop,
-                        toolCalls: [],
-                        model: $this->model,
-                    );
-                    $buffer = '';
-                }
-
-                yield $this->mapRuntimeChunkToResponse($chunk);
-                continue;
-            }
-
-            if ($chunk->content !== '') {
-                $buffer .= $chunk->content;
-            }
-
-            if ($chunk->finishReason === RuntimeFinishReason::ToolUse) {
-                if ($buffer === '') {
-                    continue;
-                }
-
-                try {
-                    $toolCalls = $this->toolCallParser->parse($buffer, $parserMode);
-
-                    yield new Response(
-                        content: '',
-                        finishReason: ProviderFinishReason::ToolUse,
-                        toolCalls: $toolCalls,
-                        model: $this->model,
-                        usage: $chunk->usage,
-                    );
-                } catch (\Throwable $e) {
-                    if ($failurePolicy !== 'content') {
-                        throw new \RuntimeException(
-                            'Failed to parse llama.cpp tool call output: ' . $e->getMessage(),
-                            previous: $e,
-                        );
-                    }
-
-                    yield new Response(
-                        content: $buffer,
-                        finishReason: ProviderFinishReason::Stop,
-                        toolCalls: [],
-                        model: $this->model,
-                        usage: $chunk->usage,
-                    );
-                }
-
-                $buffer = '';
-                continue;
-            }
-
-            if ($chunk->finishReason !== null) {
-                if ($buffer !== '') {
-                    yield new Response(
-                        content: $buffer,
-                        finishReason: $this->mapFinishReason($chunk->finishReason),
-                        toolCalls: [],
-                        model: $this->model,
-                        usage: $chunk->usage,
-                    );
-                    $buffer = '';
-                } else {
-                    yield $this->mapRuntimeChunkToResponse($chunk);
-                }
-
-                continue;
-            }
-
-            if ($chunk->usage !== null) {
-                if ($buffer !== '') {
-                    yield new Response(
-                        content: $buffer,
-                        finishReason: ProviderFinishReason::Stop,
-                        toolCalls: [],
-                        model: $this->model,
-                    );
-                    $buffer = '';
-                }
-
-                yield new Response(
-                    content: '',
-                    finishReason: ProviderFinishReason::Stop,
-                    toolCalls: [],
-                    model: $this->model,
-                    usage: $chunk->usage,
-                );
-            }
-        }
-
-        if ($buffer !== '') {
-            yield new Response(
-                content: $buffer,
-                finishReason: ProviderFinishReason::Stop,
-                toolCalls: [],
-                model: $this->model,
-            );
-        }
+        yield new ToolInputStart($index, $call->id, $call->name);
+        yield new ToolInputDelta($index, $call->id, ToolArguments::toJson($call->arguments));
+        yield new ToolInputEnd($index, $call->id, $call->name, $call->arguments, $call->metadata);
     }
 
     private function toModelDefinition(RuntimeModelMetadata $metadata): ModelDefinition

@@ -2,6 +2,9 @@
 
 declare(strict_types=1);
 
+use CarmeloSantana\PHPAgents\Config\ModelDefinition;
+use CarmeloSantana\PHPAgents\Contract\CliRuntimeInterface;
+use CarmeloSantana\PHPAgents\Contract\CliVendorAdapterInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
@@ -9,8 +12,17 @@ use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\Cli\ClaudeCliVendorAdapter;
 use CarmeloSantana\PHPAgents\Provider\Cli\CliProcessChunk;
+use CarmeloSantana\PHPAgents\Provider\Cli\CliProcessRequest;
 use CarmeloSantana\PHPAgents\Provider\Cli\CliProcessResult;
 use CarmeloSantana\PHPAgents\Provider\CliProvider;
+use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
+use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
+use CarmeloSantana\PHPAgents\Provider\Usage;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
 use Tests\Support\Runtime\FakeCliRuntime;
@@ -218,4 +230,160 @@ test('isAvailable and models delegate to runtime and adapter', function () {
     $models = makeCliProvider((new FakeCliRuntime()))->models();
     expect($models)->not->toBeEmpty()
         ->and($models[0]->provider)->toBe('claude-cli');
+});
+
+/**
+ * @param list<array<string, mixed>> $events
+ */
+function cliNdjson(array $events): string
+{
+    return implode("\n", array_map(static fn(array $event): string => (string) json_encode($event), $events)) . "\n";
+}
+
+test('streamEvents yields a TextDelta per streamed fragment and one Finish with the result usage', function () {
+    $runtime = (new FakeCliRuntime())->withChunks([
+        new CliProcessChunk(content: cliNdjson([
+            ['type' => 'system', 'subtype' => 'init', 'model' => 'claude-sonnet-4-6'],
+            ['type' => 'stream_event', 'event' => ['delta' => ['type' => 'text_delta', 'text' => 'Hel']]],
+        ])),
+        new CliProcessChunk(content: cliNdjson([
+            ['type' => 'stream_event', 'event' => ['delta' => ['type' => 'text_delta', 'text' => 'lo']]],
+        ])),
+        new CliProcessChunk(content: cliNdjson([
+            ['type' => 'assistant', 'message' => ['model' => 'claude-sonnet-4-6', 'content' => [['type' => 'text', 'text' => 'Hello']]]],
+            ['type' => 'result', 'is_error' => false, 'result' => 'Hello', 'stop_reason' => 'end_turn', 'usage' => ['input_tokens' => 4, 'output_tokens' => 2]],
+        ]), isLast: true),
+    ]);
+
+    $events = iterator_to_array(makeCliProvider($runtime)->streamEvents([new UserMessage('hi')]), false);
+
+    expect($events)->toEqual([
+        new TextDelta('Hel'),
+        new TextDelta('lo'),
+        new Finish(ProviderFinishReason::Stop, '', new Usage(4, 2, 6), 'sonnet'),
+    ])->and(array_filter($events, static fn(object $event): bool => $event instanceof Tick))->toBe([]);
+});
+
+test('streamEvents finishes with Error when the runtime reports a process error', function () {
+    $runtime = (new FakeCliRuntime())->withChunks([
+        new CliProcessChunk(content: cliNdjson([
+            ['type' => 'stream_event', 'event' => ['delta' => ['type' => 'text_delta', 'text' => 'Partial']]],
+        ])),
+        new CliProcessChunk(isLast: true, exitCode: 137, error: 'killed'),
+    ]);
+
+    $events = iterator_to_array(makeCliProvider($runtime)->streamEvents([new UserMessage('hi')]), false);
+
+    expect($events)->toEqual([
+        new TextDelta('Partial'),
+        new Finish(ProviderFinishReason::Error, '', null, 'sonnet'),
+    ]);
+});
+
+test('streamEvents turns a non-streaming adapter response into deltas, whole-call tool events and one Finish', function () {
+    $adapter = new class implements CliVendorAdapterInterface {
+        public function binaryName(): string
+        {
+            return 'fake-cli';
+        }
+
+        public function buildRequest(array $messages, array $tools, array $options, string $model, bool $stream): CliProcessRequest
+        {
+            return new CliProcessRequest(binary: 'fake-cli', arguments: [], stdin: '', model: $model);
+        }
+
+        public function parseResult(CliProcessResult $result, string $model): Response
+        {
+            return new Response(
+                content: 'Checking.',
+                finishReason: ProviderFinishReason::ToolUse,
+                toolCalls: [new ToolCall('call_7', 'lookup_weather', ['city' => 'Miami'])],
+                model: 'fake-model-1',
+                usage: new Usage(8, 3, 11),
+            );
+        }
+
+        public function parseChunk(CliProcessChunk $chunk, string $model, array &$carry): ?Response
+        {
+            return null;
+        }
+
+        public function isStreamingSupported(): bool
+        {
+            return false;
+        }
+
+        /** @return ModelDefinition[] */
+        public function discoverModels(CliRuntimeInterface $runtime): array
+        {
+            return [];
+        }
+    };
+
+    $provider = new CliProvider('fake', $adapter, new FakeCliRuntime());
+    $events = iterator_to_array($provider->streamEvents([new UserMessage('weather?')]), false);
+
+    expect($events)->toEqual([
+        new TextDelta('Checking.'),
+        new ToolInputStart(0, 'call_7', 'lookup_weather'),
+        new ToolInputDelta(0, 'call_7', '{"city":"Miami"}'),
+        new ToolInputEnd(0, 'call_7', 'lookup_weather', ['city' => 'Miami']),
+        new Finish(ProviderFinishReason::ToolUse, '', new Usage(8, 3, 11), 'fake-model-1'),
+    ]);
+});
+
+test('stream projects the events: text deltas, then one terminal chunk with reason and usage', function () {
+    $runtime = (new FakeCliRuntime())->withChunks([new CliProcessChunk(content: cliNdjson([
+        ['type' => 'assistant', 'message' => ['model' => 'claude-opus-4-8', 'content' => [['type' => 'text', 'text' => 'Full answer.']]]],
+        ['type' => 'result', 'is_error' => false, 'result' => 'Full answer.', 'stop_reason' => 'end_turn', 'usage' => ['input_tokens' => 6, 'output_tokens' => 3]],
+    ]), isLast: true)]);
+
+    $chunks = iterator_to_array(makeCliProvider($runtime)->stream([new UserMessage('hi')]), false);
+
+    expect($chunks)->toHaveCount(2)
+        ->and($chunks[0]->content)->toBe('Full answer.')
+        ->and($chunks[0]->usage)->toBeNull()
+        ->and($chunks[1]->content)->toBe('')
+        ->and($chunks[1]->finishReason)->toBe(ProviderFinishReason::Stop)
+        ->and($chunks[1]->usage?->totalTokens)->toBe(9);
+});
+
+test('abandoning streamEvents releases the runtime process stream', function () {
+    $runtime = new class implements CliRuntimeInterface {
+        public bool $released = false;
+
+        public function isAvailable(string $binary): bool
+        {
+            return true;
+        }
+
+        public function run(CliProcessRequest $request): CliProcessResult
+        {
+            return new CliProcessResult(0, '');
+        }
+
+        public function stream(CliProcessRequest $request): iterable
+        {
+            try {
+                yield new CliProcessChunk(content: cliNdjson([
+                    ['type' => 'stream_event', 'event' => ['delta' => ['type' => 'text_delta', 'text' => 'first']]],
+                ]));
+                yield new CliProcessChunk(content: cliNdjson([
+                    ['type' => 'stream_event', 'event' => ['delta' => ['type' => 'text_delta', 'text' => 'second']]],
+                ]), isLast: true);
+            } finally {
+                $this->released = true;
+            }
+        }
+    };
+
+    $events = (new CliProvider('sonnet', new ClaudeCliVendorAdapter(), $runtime))->streamEvents([new UserMessage('hi')]);
+    foreach ($events as $event) {
+        expect($event)->toEqual(new TextDelta('first'));
+        break;
+    }
+
+    expect($runtime->released)->toBeFalse();
+    unset($events);
+    expect($runtime->released)->toBeTrue();
 });

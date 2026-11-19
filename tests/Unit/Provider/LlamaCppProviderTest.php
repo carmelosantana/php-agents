@@ -12,6 +12,13 @@ use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppMultimodalNormalizer;
 use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppProjectorResolver;
 use CarmeloSantana\PHPAgents\Provider\LlamaCppProvider;
+use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
+use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
 use CarmeloSantana\PHPAgents\Provider\Usage;
 use CarmeloSantana\PHPAgents\Runtime\RuntimeCompletionChunk;
 use CarmeloSantana\PHPAgents\Runtime\RuntimeModelMetadata;
@@ -60,7 +67,7 @@ test('chat aggregates runtime stream chunks into a canonical response', function
 
     expect($response->content)->toBe('Hello world')
         ->and($response->reasoning)->toBe('Thinking...')
-        ->and($response->finishReason)->toBe(ProviderFinishReason::Stop)
+        ->and($response->finishReason)->toBe(ProviderFinishReason::ToolUse)
         ->and($response->toolCalls)->toHaveCount(1)
         ->and($response->toolCalls[0]->id)->toBe('call_1')
         ->and($response->usage?->totalTokens)->toBe(14);
@@ -847,4 +854,177 @@ test('tool requests fail for models that do not support tools', function () {
 
     expect(fn() => $provider->chat([new UserMessage('Use a tool')], [$tool]))
         ->toThrow(InvalidArgumentException::class, 'does not support tools');
+});
+/**
+ * @param list<RuntimeCompletionChunk> $chunks
+ */
+function llamaEventsProvider(array $chunks): LlamaCppProvider
+{
+    $runtime = new FakeLocalModelRuntime();
+    $runtime->registerModel(
+        new RuntimeModelMetadata(id: 'events-model', name: 'Events Model', supportsTools: true, supportsReasoning: true, defaultTemplate: 'baseline'),
+        ['responses' => ['*' => $chunks]],
+    );
+
+    return new LlamaCppProvider('events-model', $runtime);
+}
+
+function llamaWeatherTool(): Tool
+{
+    return new Tool(
+        name: 'lookup_weather',
+        description: 'Lookup weather',
+        parameters: [new StringParameter('city', 'City', required: true)],
+        callback: fn(array $input): ToolResult => ToolResult::success('ok'),
+    );
+}
+
+test('streamEvents turns parsed tool output into whole-call events and one Finish with the reported usage', function () {
+    $provider = llamaEventsProvider([
+        new RuntimeCompletionChunk(reasoning: 'Weather needed.'),
+        new RuntimeCompletionChunk(content: '{"tool_calls":[{"id":"call_10","name":"lookup_weather","arguments":{"ci'),
+        new RuntimeCompletionChunk(content: 'ty":"San Juan"}}]}'),
+        new RuntimeCompletionChunk(finishReason: RuntimeFinishReason::ToolUse, usage: new Usage(12, 9, 21)),
+    ]);
+
+    $events = iterator_to_array($provider->streamEvents([new UserMessage('Need weather')], [llamaWeatherTool()]), false);
+
+    expect($events)->toEqual([
+        new ReasoningDelta('Weather needed.'),
+        new ToolInputStart(0, 'call_10', 'lookup_weather'),
+        new ToolInputDelta(0, 'call_10', '{"city":"San Juan"}'),
+        new ToolInputEnd(0, 'call_10', 'lookup_weather', ['city' => 'San Juan']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', new Usage(12, 9, 21), 'events-model'),
+    ]);
+});
+
+test('streamEvents emits runtime tool calls as whole-call events and keeps the reported usage after the finish chunk', function () {
+    $provider = llamaEventsProvider([
+        new RuntimeCompletionChunk(reasoning: 'Thinking...'),
+        new RuntimeCompletionChunk(content: 'Hello '),
+        new RuntimeCompletionChunk(
+            content: 'world',
+            toolCalls: [new ToolCall('call_1', 'lookup_weather', ['city' => 'Miami'], ['source' => 'runtime'])],
+            finishReason: RuntimeFinishReason::ToolUse,
+        ),
+        new RuntimeCompletionChunk(usage: new Usage(10, 4, 14)),
+    ]);
+
+    $events = iterator_to_array($provider->streamEvents([new UserMessage('Hello runtime')]), false);
+
+    expect($events)->toEqual([
+        new ReasoningDelta('Thinking...'),
+        new TextDelta('Hello '),
+        new TextDelta('world'),
+        new ToolInputStart(0, 'call_1', 'lookup_weather'),
+        new ToolInputDelta(0, 'call_1', '{"city":"Miami"}'),
+        new ToolInputEnd(0, 'call_1', 'lookup_weather', ['city' => 'Miami'], ['source' => 'runtime']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', new Usage(10, 4, 14), 'events-model'),
+    ]);
+});
+
+test('streamEvents delivers a plain answer on the tool-parser path as text', function () {
+    $provider = llamaEventsProvider([
+        new RuntimeCompletionChunk(content: 'It is '),
+        new RuntimeCompletionChunk(content: 'sunny.'),
+        new RuntimeCompletionChunk(finishReason: RuntimeFinishReason::Stop, usage: new Usage(5, 2, 7)),
+    ]);
+
+    $events = iterator_to_array($provider->streamEvents([new UserMessage('Weather?')], [llamaWeatherTool()]), false);
+
+    expect($events)->toEqual([
+        new TextDelta('It is sunny.'),
+        new Finish(ProviderFinishReason::Stop, 'stop', new Usage(5, 2, 7), 'events-model'),
+    ]);
+});
+
+test('streamEvents falls back to text with a Stop finish when the content policy catches a parser failure', function () {
+    $provider = llamaEventsProvider([
+        new RuntimeCompletionChunk(content: '{"tool_calls":[', finishReason: RuntimeFinishReason::ToolUse),
+    ]);
+
+    $events = iterator_to_array($provider->streamEvents(
+        [new UserMessage('Fallback parser')],
+        [llamaWeatherTool()],
+        ['tool_parser_failure_policy' => 'content'],
+    ), false);
+
+    expect($events)->toEqual([
+        new TextDelta('{"tool_calls":['),
+        new Finish(ProviderFinishReason::Stop, 'tool_use', null, 'events-model'),
+    ]);
+});
+
+test('streamEvents maps a cancelled runtime finish to Error and keeps the raw reason', function () {
+    $provider = llamaEventsProvider([
+        new RuntimeCompletionChunk(content: 'Partial'),
+        new RuntimeCompletionChunk(finishReason: RuntimeFinishReason::Cancelled),
+    ]);
+
+    $events = iterator_to_array($provider->streamEvents([new UserMessage('Hi')]), false);
+
+    expect($events)->toEqual([
+        new TextDelta('Partial'),
+        new Finish(ProviderFinishReason::Error, 'cancelled', null, 'events-model'),
+    ]);
+});
+
+test('streamEvents finishes with Stop when the runtime reports no finish reason', function () {
+    $provider = llamaEventsProvider([new RuntimeCompletionChunk(content: 'seen')]);
+
+    $events = iterator_to_array($provider->streamEvents([new UserMessage('Hi')]), false);
+
+    expect($events)->toEqual([
+        new TextDelta('seen'),
+        new Finish(ProviderFinishReason::Stop, '', null, 'events-model'),
+    ])->and(array_filter($events, static fn(object $event): bool => $event instanceof Tick))->toBe([]);
+});
+
+test('stream projects the events: deltas, then one terminal chunk with reason, usage and tool calls', function () {
+    $provider = llamaEventsProvider([
+        new RuntimeCompletionChunk(reasoning: 'Thinking...'),
+        new RuntimeCompletionChunk(content: 'Hello '),
+        new RuntimeCompletionChunk(
+            content: 'world',
+            toolCalls: [new ToolCall('call_1', 'lookup_weather', ['city' => 'Miami'])],
+            finishReason: RuntimeFinishReason::ToolUse,
+        ),
+        new RuntimeCompletionChunk(usage: new Usage(10, 4, 14)),
+    ]);
+
+    $chunks = iterator_to_array($provider->stream([new UserMessage('Hello runtime')]), false);
+
+    expect($chunks)->toHaveCount(4)
+        ->and($chunks[0]->reasoning)->toBe('Thinking...')
+        ->and($chunks[1]->content)->toBe('Hello ')
+        ->and($chunks[2]->content)->toBe('world')
+        ->and($chunks[2]->toolCalls)->toBe([])
+        ->and($chunks[2]->usage)->toBeNull()
+        ->and($chunks[3]->content)->toBe('')
+        ->and($chunks[3]->finishReason)->toBe(ProviderFinishReason::ToolUse)
+        ->and($chunks[3]->toolCalls)->toHaveCount(1)
+        ->and($chunks[3]->toolCalls[0]->id)->toBe('call_1')
+        ->and($chunks[3]->usage?->totalTokens)->toBe(14)
+        ->and($chunks[3]->model)->toBe('events-model');
+});
+
+test('streamEvents flushes buffered parser-path text before runtime tool calls', function () {
+    $provider = llamaEventsProvider([
+        new RuntimeCompletionChunk(content: 'Let me check. '),
+        new RuntimeCompletionChunk(
+            content: 'Now.',
+            toolCalls: [new ToolCall('call_3', 'lookup_weather', [])],
+            finishReason: RuntimeFinishReason::ToolUse,
+        ),
+    ]);
+
+    $events = iterator_to_array($provider->streamEvents([new UserMessage('Weather?')], [llamaWeatherTool()]), false);
+
+    expect($events)->toEqual([
+        new TextDelta('Let me check. Now.'),
+        new ToolInputStart(0, 'call_3', 'lookup_weather'),
+        new ToolInputDelta(0, 'call_3', '{}'),
+        new ToolInputEnd(0, 'call_3', 'lookup_weather', []),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'events-model'),
+    ]);
 });
