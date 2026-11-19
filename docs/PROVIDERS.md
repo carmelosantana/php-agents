@@ -666,6 +666,7 @@ Two requests are outside `RequestLimits`:
 | `maxDuration` | `600.0` | Seconds for the whole request, stream included (`max_duration`); `0.0` sends none, leaving the client's default |
 | `maxResponseBytes` | `33_554_432` | Bytes of response body (32 MiB); `0` means no cap |
 | `maxRedirects` | `0` | Redirects followed; any caller `max_redirects` is replaced |
+| `tickInterval` | `0.25` | Seconds between polls of a silent stream, each yielding a `Tick` event; `0.0` turns ticks off. Not sent to the client |
 
 Embedding providers (`OpenAIEmbeddingProvider`, `OllamaEmbeddingProvider`) use the same defaults with `idleTimeout` `60.0`. Some requests keep a shorter idle timeout of their own: `isAvailable()` waits 5 s, and `models()` on Anthropic and Gemini and Ollama's `/api/show` model lookup wait 10 s. Ollama `pull()` keeps the provider's idle timeout and refuses redirects, but has no total limit and no byte cap, because a model download can run far longer than 600 s.
 

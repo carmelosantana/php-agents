@@ -4,10 +4,16 @@ declare(strict_types=1);
 
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Provider\SseStreamParser;
+use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
+use Symfony\Component\HttpClient\Chunk\DataChunk;
+use Symfony\Component\HttpClient\Chunk\FirstChunk;
+use Symfony\Component\HttpClient\Chunk\LastChunk;
+use Symfony\Component\HttpClient\Exception\TimeoutException;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 use Symfony\Contracts\HttpClient\Exception\ClientExceptionInterface;
 use Symfony\Contracts\HttpClient\Exception\ServerExceptionInterface;
+use Tests\Support\Http\ScriptedStreamClient;
 
 /**
  * Build an SseStreamParser from a list of raw HTTP chunk strings.
@@ -197,4 +203,142 @@ test('a 5xx stream answer propagates the Symfony server exception', function () 
     $parser = makeParser(['oops'], responseInfo: ['http_code' => 503]);
 
     expect(sseParserCatch($parser))->toBeInstanceOf(ServerExceptionInterface::class);
+});
+
+// Idle ticks. MockResponse turns a '' body chunk into a timeout chunk at once; ScriptedStreamClient
+// plays chunks back in wall-clock time, one poll per stream() call.
+
+/**
+ * Build a ticking SseStreamParser over a MockResponse body.
+ *
+ * @param list<string> $chunks
+ * @param array<string, mixed> $responseInfo
+ */
+function makeTickingParser(array $chunks, float $tickInterval = 0.25, float $idleTimeout = 0.0, array $responseInfo = []): SseStreamParser
+{
+    $client = new MockHttpClient([new MockResponse((static fn() => yield from $chunks)(), $responseInfo + ['http_code' => 200])]);
+    $response = $client->request('GET', 'https://example.com/stream');
+
+    return new SseStreamParser($client, $response, SseStreamParser::DEFAULT_MAX_LINE_BYTES, $tickInterval, $idleTimeout);
+}
+
+/**
+ * Drain events into a list, writing each Tick as the string 'tick'.
+ *
+ * @return list<mixed>
+ */
+function sseParserDrain(SseStreamParser $parser): array
+{
+    $seen = [];
+    foreach ($parser->events() as $event) {
+        $seen[] = $event instanceof Tick ? 'tick' : $event;
+    }
+
+    return $seen;
+}
+
+test('ticks while waiting for headers, then yields the data', function () {
+    $client = new ScriptedStreamClient([
+        [ScriptedStreamClient::TIMEOUT],
+        [ScriptedStreamClient::TIMEOUT],
+        [new FirstChunk(), new DataChunk(0, "data: {\"n\":1}\n\n"), new LastChunk()],
+    ]);
+    $parser = new SseStreamParser($client, $client->response, SseStreamParser::DEFAULT_MAX_LINE_BYTES, 0.25, 300.0);
+
+    expect(sseParserDrain($parser))->toBe(['tick', 'tick', ['n' => 1]])
+        ->and($client->timeouts)->toBe([0.25, 0.25, 0.25]);
+});
+
+test('silence between data yields ticks and the stream still completes', function () {
+    $parser = makeTickingParser(["data: {\"n\":1}\n\n", '', '', '', "data: {\"n\":2}\n\n"], idleTimeout: 300.0);
+
+    expect(sseParserDrain($parser))->toBe([['n' => 1], 'tick', 'tick', 'tick', ['n' => 2]]);
+});
+
+test('a line split by a silence is still reassembled', function () {
+    $parser = makeTickingParser(['data: {"msg":"a', '', "b\"}\n\n"]);
+
+    expect(sseParserDrain($parser))->toBe(['tick', ['msg' => 'ab']]);
+});
+
+test('silence past the idle timeout throws symfony\'s idle timeout after ticking', function () {
+    $client = new ScriptedStreamClient([
+        [new FirstChunk(), new DataChunk(0, "data: {\"n\":1}\n\n")],
+    ], tailWait: 0.02);
+    $parser = new SseStreamParser($client, $client->response, SseStreamParser::DEFAULT_MAX_LINE_BYTES, 0.02, 0.1);
+
+    $seen = [];
+    $thrown = null;
+    $start = hrtime(true) / 1e9;
+    try {
+        foreach ($parser->events() as $event) {
+            $seen[] = $event instanceof Tick ? 'tick' : $event;
+        }
+    } catch (Throwable $e) {
+        $thrown = $e;
+    }
+    $elapsed = hrtime(true) / 1e9 - $start;
+
+    expect($thrown)->toBeInstanceOf(TimeoutException::class)
+        ->and($thrown?->getMessage())->toBe(sprintf('Idle timeout reached for "%s".', ScriptedStreamClient::URL))
+        ->and($seen[0])->toBe(['n' => 1])
+        ->and(count($seen))->toBeGreaterThan(2)
+        ->and(array_slice($seen, 1))->each->toBe('tick')
+        ->and($elapsed)->toBeGreaterThanOrEqual(0.1)
+        ->and($elapsed)->toBeLessThan(1.0);
+});
+
+test('comment lines reset the idle deadline without yielding an event', function () {
+    // Four polls of 80 ms, each with a keep-alive comment halfway: 320 ms in all, never 100 ms
+    // without a chunk. Counting only `data:` lines would time out on the second poll.
+    $polls = [];
+    for ($i = 0; $i < 4; $i++) {
+        $polls[] = [0.04, new DataChunk(0, ": keep-alive\n"), 0.04, ScriptedStreamClient::TIMEOUT];
+    }
+    array_unshift($polls[0], new FirstChunk());
+    $polls[] = [new DataChunk(0, "data: {\"n\":1}\n\n"), new LastChunk()];
+    $client = new ScriptedStreamClient($polls);
+    $parser = new SseStreamParser($client, $client->response, SseStreamParser::DEFAULT_MAX_LINE_BYTES, 0.02, 0.1);
+
+    expect(sseParserDrain($parser))->toBe(['tick', 'tick', 'tick', 'tick', ['n' => 1]]);
+});
+
+test('ticks never extend the idle deadline when no idle timeout is set', function () {
+    $parser = makeTickingParser(['', '', "data: {\"n\":1}\n\n"], idleTimeout: 0.0);
+
+    expect(sseParserDrain($parser))->toBe(['tick', 'tick', ['n' => 1]]);
+});
+
+test('a zero tick interval polls without a timeout and yields no ticks', function () {
+    $client = new ScriptedStreamClient([
+        [new FirstChunk(), new DataChunk(0, "data: {\"n\":1}\n\n"), new DataChunk(0, "data: {\"n\":2}\n\n"), new LastChunk()],
+    ]);
+    $parser = new SseStreamParser($client, $client->response);
+
+    expect(sseParserDrain($parser))->toBe([['n' => 1], ['n' => 2]])
+        ->and($client->timeouts)->toBe([null]);
+});
+
+test('a zero tick interval still throws on a timeout chunk, as before', function () {
+    $parser = makeTickingParser(["data: {\"n\":1}\n\n", '', "data: {\"n\":2}\n\n"], tickInterval: 0.0);
+
+    expect(fn() => sseParserDrain($parser))->toThrow(TimeoutException::class, 'Idle timeout reached');
+});
+
+test('a 4xx answer still throws the Symfony client exception when ticking', function () {
+    $parser = makeTickingParser(['{"error":"bad key"}'], responseInfo: ['http_code' => 401]);
+
+    $thrown = sseParserCatch($parser);
+
+    expect($thrown)->toBeInstanceOf(ClientExceptionInterface::class)
+        ->and($thrown?->getMessage())->toContain('401');
+});
+
+test('a 3xx answer is still refused when ticking', function () {
+    $parser = makeTickingParser(["data: {}\n\n"], responseInfo: [
+        'http_code' => 302,
+        'response_headers' => ['Location: https://evil.example/'],
+    ]);
+
+    expect(sseParserCatch($parser)?->getMessage())->toContain('redirect not followed');
 });

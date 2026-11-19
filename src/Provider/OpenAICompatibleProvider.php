@@ -8,6 +8,7 @@ use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -89,6 +90,10 @@ class OpenAICompatibleProvider extends AbstractProvider
         $parser = new SseStreamParser($this->httpClient, $response);
 
         foreach ($parser->events() as $json) {
+            if ($json instanceof Tick) {
+                continue; // A tick carries no data.
+            }
+
             $model = $json['model'] ?? $model;
             $choice = $json['choices'][0] ?? [];
             $delta = $choice['delta'] ?? [];

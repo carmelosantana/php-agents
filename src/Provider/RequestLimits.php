@@ -17,6 +17,8 @@ use CarmeloSantana\PHPAgents\Exception\ProviderException;
  * - $maxRedirects goes out as `max_redirects`, replacing any caller value, so by default
  *   no redirect is followed and request headers such as an API key never reach a host
  *   a 3xx names.
+ * - $tickInterval is how often, in seconds, a streaming request polls while no data arrives,
+ *   yielding a Tick each time; 0.0 turns ticks off. apply() leaves it out.
  *
  * Any negative value throws \InvalidArgumentException.
  *
@@ -34,8 +36,9 @@ final readonly class RequestLimits
         public float $maxDuration = 600.0,
         public int $maxResponseBytes = self::DEFAULT_MAX_RESPONSE_BYTES,
         public int $maxRedirects = 0,
+        public float $tickInterval = 0.25,
     ) {
-        foreach (['idleTimeout' => $idleTimeout, 'maxDuration' => $maxDuration, 'maxResponseBytes' => $maxResponseBytes, 'maxRedirects' => $maxRedirects] as $name => $value) {
+        foreach (['idleTimeout' => $idleTimeout, 'maxDuration' => $maxDuration, 'maxResponseBytes' => $maxResponseBytes, 'maxRedirects' => $maxRedirects, 'tickInterval' => $tickInterval] as $name => $value) {
             if ($value < 0) {
                 throw new \InvalidArgumentException(sprintf('RequestLimits $%s must not be negative, got %s.', $name, $value));
             }

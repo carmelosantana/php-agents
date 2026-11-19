@@ -10,6 +10,7 @@ use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Image\Internal\PublicImageDownloader;
+use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use CarmeloSantana\PHPAgents\Schema\JsonSchemaRepair;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
@@ -124,6 +125,10 @@ final class GeminiProvider extends AbstractProvider
         $finished = false;
 
         foreach ($parser->events() as $json) {
+            if ($json instanceof Tick) {
+                continue; // A tick carries no data.
+            }
+
             // A terminal candidate ended the answer: later parts and tool calls are ignored.
             if ($finished) {
                 $usage = $this->parseUsageMetadata($json);

@@ -10,6 +10,7 @@ use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
+use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -88,6 +89,10 @@ final class OpenAIResponsesProvider extends AbstractProvider
         $parser = new SseStreamParser($this->httpClient, $response);
 
         foreach ($parser->events() as $json) {
+            if ($json instanceof Tick) {
+                continue; // A tick carries no data.
+            }
+
             if (!isset($json['type'])) {
                 continue;
             }

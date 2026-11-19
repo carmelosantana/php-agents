@@ -13,6 +13,7 @@ use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
+use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -142,6 +143,10 @@ final class AnthropicProvider extends AbstractProvider
         $parser = new SseStreamParser($this->httpClient, $response);
 
         foreach ($parser->events() as $json) {
+            if ($json instanceof Tick) {
+                continue; // A tick carries no data.
+            }
+
             $eventType = $json['type'] ?? null;
 
             if ($eventType === 'content_block_start') {
