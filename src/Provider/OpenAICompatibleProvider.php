@@ -261,7 +261,7 @@ class OpenAICompatibleProvider extends AbstractProvider
      *
      * @param array<mixed> $usage
      */
-    private function parseUsage(array $usage): ?Usage
+    protected function parseUsage(array $usage): ?Usage
     {
         $count = static fn(mixed $value): ?int => is_int($value) ? $value : null;
         $prompt = $count($usage['prompt_tokens'] ?? null);

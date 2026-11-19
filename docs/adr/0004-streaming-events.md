@@ -204,8 +204,7 @@ Tests pin each sequence.
 - `promptTokens` counts all input tokens, cache reads and writes included. `completionTokens`
   counts all output tokens, reasoning included. `totalTokens` is the provider's total when given,
   else prompt plus completion.
-- One usage parser per provider serves `chat()` and streaming, so both report the same figures
-  (`MistralProvider::chat()` keeps its own prompt, completion and total parser).
+- One usage parser per provider serves `chat()` and streaming, so both report the same figures.
 - Sources: Anthropic cache read/write (reasoning stays `null`); OpenAI Chat
   `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens`;
   Responses `input_tokens_details.cached_tokens` and `output_tokens_details.reasoning_tokens`;

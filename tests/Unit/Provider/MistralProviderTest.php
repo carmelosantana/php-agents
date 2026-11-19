@@ -600,3 +600,87 @@ test('streamEvents payload omits OpenAI stream_options extension and still finis
         ->and($finish->reason)->toBe(ProviderFinishReason::Stop)
         ->and($finish->usage)->toBeNull();
 });
+
+/**
+ * A Magistral chat() body: message content as typed chunks, with the given tool calls,
+ * finish reason and usage.
+ *
+ * @param list<array<string, mixed>> $toolCalls
+ * @param array<string, mixed>|null $usage
+ */
+function magistralResponse(array $toolCalls = [], string $finishReason = 'stop', ?array $usage = null): MockResponse
+{
+    $message = [
+        'role' => 'assistant',
+        'content' => [
+            ['type' => 'thinking', 'thinking' => [['type' => 'text', 'text' => 'Hmm.']]],
+            ['type' => 'text', 'text' => 'Answer.'],
+        ],
+    ];
+    if ($toolCalls !== []) {
+        $message['tool_calls'] = $toolCalls;
+    }
+
+    return mockMistralResponse([
+        'choices' => [['index' => 0, 'message' => $message, 'finish_reason' => $finishReason]],
+        'usage' => $usage,
+    ]);
+}
+
+function magistralProvider(MockResponse $response): MistralProvider
+{
+    return new MistralProvider(model: 'magistral-medium-latest', apiKey: 'test-key', httpClient: new MockHttpClient([$response]));
+}
+
+test('Magistral chat() usage is normalised like the OpenAI parser, cache and reasoning included', function () {
+    $response = magistralProvider(magistralResponse(usage: [
+        'prompt_tokens' => 100,
+        'completion_tokens' => 40,
+        'total_tokens' => 140,
+        'prompt_tokens_details' => ['cached_tokens' => 60],
+        'completion_tokens_details' => ['reasoning_tokens' => 25],
+    ]))->chat([new UserMessage('Hi')]);
+
+    expect($response->usage)->toEqual(new \CarmeloSantana\PHPAgents\Provider\Usage(100, 40, 140, cacheReadTokens: 60, reasoningTokens: 25))
+        ->and($response->reasoning)->toBe('Hmm.')
+        ->and($response->content)->toBe('Answer.');
+});
+
+test('Magistral chat() usage is null when the usage object has no token counts', function () {
+    $response = magistralProvider(magistralResponse(usage: []))->chat([new UserMessage('Hi')]);
+
+    expect($response->usage)->toBeNull();
+});
+
+test('Magistral chat() decodes empty tool arguments as an empty object', function () {
+    $response = magistralProvider(magistralResponse(
+        [['id' => 'abc123XYZ', 'type' => 'function', 'function' => ['name' => 'now', 'arguments' => '']]],
+        'tool_calls',
+    ))->chat([new UserMessage('Time?')]);
+
+    expect($response->finishReason)->toBe(ProviderFinishReason::ToolUse)
+        ->and($response->toolCalls)->toEqual([new ToolCall('abc123XYZ', 'now', [])]);
+});
+
+test('Magistral chat() drops a call whose arguments are not a JSON object and ends a tool stop as Error', function () {
+    $response = magistralProvider(magistralResponse(
+        [
+            ['id' => 'abc123XYZ', 'type' => 'function', 'function' => ['name' => 'get_weather', 'arguments' => '{"city": "Par']],
+            ['id' => 'def456UVW', 'type' => 'function', 'function' => ['name' => 'now', 'arguments' => '{}']],
+        ],
+        'tool_calls',
+    ))->chat([new UserMessage('Weather?')]);
+
+    expect($response->finishReason)->toBe(ProviderFinishReason::Error)
+        ->and($response->toolCalls)->toEqual([new ToolCall('def456UVW', 'now', [])]);
+});
+
+test('Magistral chat() keeps a MaxTokens stop when it drops a truncated call', function () {
+    $response = magistralProvider(magistralResponse(
+        [['id' => 'abc123XYZ', 'type' => 'function', 'function' => ['name' => 'get_weather', 'arguments' => '[1]']]],
+        'length',
+    ))->chat([new UserMessage('Weather?')]);
+
+    expect($response->finishReason)->toBe(ProviderFinishReason::MaxTokens)
+        ->and($response->toolCalls)->toBe([]);
+});

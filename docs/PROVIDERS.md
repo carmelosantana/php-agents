@@ -736,9 +736,6 @@ data it throws symfony's idle-timeout `TimeoutException`, up to one `tickInterva
 | `LlamaCppProvider` | Prompt and generated token counts from the runtime | `null` | `null` |
 | `CliProvider` | The CLI's input plus cache tokens, and output tokens | `null` | `null` |
 
-`MistralProvider::chat()` keeps its own parser: prompt, completion and total only, never `null`
-when the body has a `usage` object. Its streamed usage follows the OpenAI row.
-
 ### Raw finish reasons
 
 `Finish->rawReason` (and `StepFinish->rawReason` on the agent event) is the provider's own reason,
