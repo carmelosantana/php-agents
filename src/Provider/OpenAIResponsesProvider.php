@@ -161,8 +161,8 @@ final class OpenAIResponsesProvider extends AbstractProvider
                         $position = count($calls);
                         $callAt[$outputIndex] = $position;
                         $calls[$position] = [
-                            'id' => (string) ($item['call_id'] ?? ''),
-                            'name' => (string) ($item['name'] ?? ''),
+                            'id' => is_string($item['call_id'] ?? null) ? $item['call_id'] : '',
+                            'name' => is_string($item['name'] ?? null) ? $item['name'] : '',
                             'arguments' => '',
                             'ended' => false,
                         ];
