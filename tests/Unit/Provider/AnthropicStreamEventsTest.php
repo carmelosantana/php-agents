@@ -226,9 +226,18 @@ test('streamEvents ends with Finish Error when the stream stops before message_s
     expect(array_filter($events, fn($e) => $e instanceof Finish))->toHaveCount(1)
         ->and($finish)->toBeInstanceOf(Finish::class)
         ->and($finish->reason)->toBe(ProviderFinishReason::Error)
-        ->and($finish->rawReason)->toBe('')
+        ->and($finish->rawReason)->toBe('tool_use')
         ->and($finish->contentBlocks)->toBe([])
         ->and(array_filter($events, fn($e) => $e instanceof ToolInputEnd))->toBe([]);
+});
+
+test('streamEvents reports an empty raw reason when the stream ends before any stop_reason', function () {
+    $events = anthropicStreamEvents(anthropicEvStart());
+    $finish = end($events);
+
+    expect($finish)->toBeInstanceOf(Finish::class)
+        ->and($finish->reason)->toBe(ProviderFinishReason::Error)
+        ->and($finish->rawReason)->toBe('');
 });
 
 test('streamEvents yields a Tick during a silent gap', function () {

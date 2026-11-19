@@ -278,7 +278,7 @@ final class AnthropicProvider extends AbstractProvider
             }
 
             // EOF before message_stop: the message is incomplete, whatever arrived.
-            yield new Finish(ProviderFinishReason::Error, usage: $this->parseUsage($usage), model: $model);
+            yield new Finish(ProviderFinishReason::Error, rawReason: $stopReason ?? '', usage: $this->parseUsage($usage), model: $model);
         } catch (\Throwable $e) {
             $thrown = true;
 
