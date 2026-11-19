@@ -465,6 +465,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
         $reasoning = '';
         $toolCalls = [];
         $refused = false;
+        $droppedCalls = false;
 
         foreach ($data['output'] ?? [] as $item) {
             $type = $item['type'] ?? '';
@@ -486,15 +487,27 @@ final class OpenAIResponsesProvider extends AbstractProvider
                     $reasoning .= $block['text'] ?? '';
                 }
             } elseif ($type === 'function_call') {
+                $arguments = ToolArguments::fromDecoded($item['arguments'] ?? null);
+                if ($arguments === null) {
+                    $this->logger?->debug('Tool {tool} arguments are not a JSON object; the call is dropped', ['tool' => $item['name'] ?? '']);
+                    $droppedCalls = true;
+
+                    continue;
+                }
+
                 $toolCalls[] = new ToolCall(
                     id: $item['call_id'] ?? '',
                     name: $item['name'] ?? '',
-                    arguments: json_decode($item['arguments'] ?? '{}', true) ?? [],
+                    arguments: $arguments,
                 );
             }
         }
 
-        $finishReason = $this->mapStatus($data, !empty($toolCalls), $refused);
+        // A dropped call turns what would have been a tool stop into Error, as in the stream.
+        $finishReason = $this->mapStatus($data, $toolCalls !== [] || $droppedCalls, $refused);
+        if ($droppedCalls && $finishReason === ProviderFinishReason::ToolUse) {
+            $finishReason = ProviderFinishReason::Error;
+        }
 
         // Tool calls run only from a completed response that is not a
         // refusal; an incomplete or failed one may carry truncated arguments

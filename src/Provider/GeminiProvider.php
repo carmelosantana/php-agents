@@ -796,6 +796,7 @@ final class GeminiProvider extends AbstractProvider
         $toolCalls = [];
 
         $callIndex = 0;
+        $droppedCalls = false;
         foreach ($parts as $part) {
             if (isset($part['text'])) {
                 // Thought parts (thinkingConfig.includeThoughts = true) have thought: true
@@ -810,10 +811,19 @@ final class GeminiProvider extends AbstractProvider
                 if (isset($part['thoughtSignature'])) {
                     $metadata['thoughtSignature'] = $part['thoughtSignature'];
                 }
+                $id = sprintf('g%08x', $callIndex++);
+                $arguments = ToolArguments::fromDecoded($part['functionCall']['args'] ?? null);
+                if ($arguments === null) {
+                    $this->logger?->debug('Gemini tool {tool} arguments are not a JSON object; the call is dropped', ['tool' => $name]);
+                    $droppedCalls = true;
+
+                    continue;
+                }
+
                 $toolCalls[] = new ToolCall(
-                    id: sprintf('g%08x', $callIndex++),
+                    id: $id,
                     name: $name,
-                    arguments: $part['functionCall']['args'] ?? [],
+                    arguments: $arguments,
                     metadata: $metadata,
                 );
             }
@@ -823,8 +833,11 @@ final class GeminiProvider extends AbstractProvider
 
         // Tool calls make it ToolUse, unless the candidate was blocked,
         // failed or cut off at MAX_TOKENS: then no tool calls are emitted.
+        // A dropped call makes what would have been ToolUse an Error, as in the stream.
         if ($this->dropsToolCalls($finishReason)) {
             $toolCalls = [];
+        } elseif ($droppedCalls) {
+            $finishReason = ProviderFinishReason::Error;
         } elseif (!empty($toolCalls)) {
             $finishReason = ProviderFinishReason::ToolUse;
         }

@@ -56,7 +56,7 @@ Alternatives considered, one line each:
 - Empty or whitespace-only arguments, and an empty object, decode as `{}`. Any other arguments
   that do not decode to a JSON object get no `ToolInputEnd` and the call is dropped, on every
   provider. A response that would have finished with `ToolUse` then finishes with `Error`; any
-  other reason (`MaxTokens`, for example) is kept.
+  other reason (`MaxTokens`, for example) is kept. `chat()` applies the same rule.
 - `ToolInputEnd` is emitted as soon as each call's arguments are complete. The tool calls are the
   `ToolInputEnd` events; the agent runs them only when `Finish->reason` is `ToolUse`.
 - Per-call metadata such as Gemini's `thoughtSignature` rides on `ToolInputEnd->metadata`, with
@@ -224,7 +224,7 @@ Breaking changes, hence 0.18.0:
 | `stream()` normalised: deltas, then exactly one terminal chunk with finish reason, usage and tool calls | direct `stream()` callers on OpenAI-compatible, Gemini and Responses providers | read the finish reason and usage from the last chunk; summing usage across chunks still works |
 | Anthropic `promptTokens` includes cache tokens | cost and usage tallies | read `cacheReadTokens` and `cacheWriteTokens` for the old figure |
 | Agent iterates `streamEvents()`; `AbstractProvider::stream()` is `final` | subclasses overriding `stream()` | move the override to `streamEvents()` |
-| Unparseable tool arguments drop the call on every provider, and a `ToolUse` finish becomes `Error` (empty → `{}`) | OpenAI-family callers relying on the `[]` fallback | none for valid models; truncated calls no longer run |
+| Unparseable tool arguments drop the call on every provider, in `stream()` and `chat()`, and a `ToolUse` finish becomes `Error` (empty → `{}`) | callers relying on the `[]` fallback | none for valid models; truncated calls no longer run |
 | Gemini `completionTokens` includes thought tokens; Responses `totalTokens` is the provider's total; `chat()` usage normalised the same way | usage tallies | read the new fields for the old split |
 
 Behaviour changes that ship with these:

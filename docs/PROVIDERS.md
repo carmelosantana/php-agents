@@ -679,7 +679,7 @@ foreach ($provider->streamEvents($messages, $tools) as $event) {
 - Empty or whitespace-only arguments and an empty object decode to empty arguments (`{}`). Arguments
   that do not decode to a JSON object get no `ToolInputEnd`; the call is dropped, and when the response
   would otherwise have finished with `ToolUse` the `Finish` reason is `Error`. Another reason, such
-  as `MaxTokens`, is kept.
+  as `MaxTokens`, is kept. `chat()` applies the same rule to its `toolCalls` and finish reason.
 - A stream that throws (`ProviderException`, symfony HTTP exceptions) has no `Finish`.
 - Per-call metadata, such as Gemini's `thoughtSignature`, is on `ToolInputEnd->metadata`.
 

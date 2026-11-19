@@ -28,3 +28,16 @@ test('toJson keeps wire strings and re-encodes object-shaped arguments', functio
     'list' => [[1, 2], '[1,2]'],
     'scalar' => [42, '42'],
 ]);
+
+test('fromDecoded reads arguments from a decoded response body', function (mixed $value, ?array $expected) {
+    expect(ToolArguments::fromDecoded($value))->toBe($expected);
+})->with([
+    'missing' => [null, []],
+    'empty object decoded as []' => [[], []],
+    'object' => [['city' => 'NYC'], ['city' => 'NYC']],
+    'wire string' => ['{"city":"NYC"}', ['city' => 'NYC']],
+    'empty string' => ['', []],
+    'truncated string' => ['{"city":', null],
+    'list' => [[1, 2], null],
+    'scalar' => [42, null],
+]);

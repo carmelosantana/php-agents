@@ -17,7 +17,7 @@ usage tallies and exhaustive matches on `AgentFinishReason`.
 | `stream()` is normalised: one chunk per delta, then exactly one terminal chunk with the finish reason, usage, model and tool calls | Direct `stream()` callers on the OpenAI-compatible, Gemini and Responses providers | Read the finish reason, usage and model from the last chunk. Delta chunks carry no model. Summing usage across chunks still works |
 | Anthropic `promptTokens` includes cache reads and writes | Cost and usage tallies | Subtract `cacheReadTokens` and `cacheWriteTokens` for the old figure |
 | Gemini `completionTokens` includes thought tokens; Responses `totalTokens` is the provider's total; `chat()` usage is normalised the same way as streaming, and `null` when the provider reports no counts | Usage tallies | Read `reasoningTokens` and the cache fields for the old split |
-| Tool arguments that are not a JSON object drop the call, on every provider. A response that would have finished `ToolUse` finishes `Error`; another reason, such as `MaxTokens`, is kept. Empty arguments and an empty object are `{}` | OpenAI-family callers that relied on the `[]` fallback | None for valid models; truncated calls no longer run |
+| Tool arguments that are not a JSON object drop the call, on every provider, in `stream()` and `chat()`. A response that would have finished `ToolUse` finishes `Error`; another reason, such as `MaxTokens`, is kept. Empty arguments and an empty object are `{}` | Callers that relied on the `[]` fallback (OpenAI-family streams, every provider's `chat()`) | None for valid models; truncated calls no longer run |
 
 A class that implements `ProviderInterface` and already has a `stream()`:
 

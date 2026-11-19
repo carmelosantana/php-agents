@@ -1128,6 +1128,7 @@ final class AnthropicProvider extends AbstractProvider
         $content = '';
         $reasoning = '';
         $toolCalls = [];
+        $droppedCalls = false;
 
         foreach ($data['content'] ?? [] as $block) {
             if ($block['type'] === 'text') {
@@ -1135,15 +1136,27 @@ final class AnthropicProvider extends AbstractProvider
             } elseif ($block['type'] === 'thinking') {
                 $reasoning .= $block['thinking'] ?? '';
             } elseif ($block['type'] === 'tool_use') {
+                $arguments = ToolArguments::fromDecoded($block['input'] ?? null);
+                if ($arguments === null) {
+                    $this->logger?->debug('Anthropic tool {tool} arguments are not a JSON object; the call is dropped', ['tool' => $block['name'] ?? '']);
+                    $droppedCalls = true;
+
+                    continue;
+                }
+
                 $toolCalls[] = new ToolCall(
                     id: $block['id'] ?? '',
                     name: $block['name'] ?? '',
-                    arguments: $block['input'] ?? [],
+                    arguments: $arguments,
                 );
             }
         }
 
+        // A dropped call turns a tool stop into Error, as in the stream.
         $finishReason = $this->mapStopReason($data['stop_reason'] ?? null);
+        if ($droppedCalls && $finishReason === ProviderFinishReason::ToolUse) {
+            $finishReason = ProviderFinishReason::Error;
+        }
 
         $usage = is_array($data['usage'] ?? null) ? $this->parseUsage($data['usage']) : null;
 

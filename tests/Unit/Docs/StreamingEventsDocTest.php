@@ -117,6 +117,7 @@ test('the upgrade notes cover each 0.18 breaking change', function () use ($root
         ->and($doc)->toContain('## Upgrading to 0.18')
         ->and($doc)->toContain('use StreamsEventsFromResponses;')
         ->and($doc)->toContain('yield from $this->inner->streamEvents($messages, $tools, $options);')
+        ->and($doc)->toContain('drop the call, on every provider, in `stream()` and `chat()`')
         ->and($doc)->toContain('AgentFinishReason::Cancelled')
         ->and($doc)->toContain('cacheReadTokens');
 });

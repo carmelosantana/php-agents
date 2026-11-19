@@ -429,13 +429,25 @@ class OpenAICompatibleProvider extends AbstractProvider
         $message = $choice['message'] ?? [];
         $finishReason = $this->mapFinishReason($choice['finish_reason'] ?? 'stop');
 
+        // A call whose arguments are not a JSON object is dropped, and a tool stop then
+        // becomes Error, as in the stream.
         $toolCalls = [];
         foreach ($message['tool_calls'] ?? [] as $tc) {
-            $arguments = $tc['function']['arguments'] ?? '{}';
+            $name = $tc['function']['name'] ?? '';
+            $arguments = ToolArguments::fromDecoded($tc['function']['arguments'] ?? null);
+            if ($arguments === null) {
+                $this->logger?->debug('Tool {tool} arguments are not a JSON object; the call is dropped', ['tool' => $name]);
+                if ($finishReason === ProviderFinishReason::ToolUse) {
+                    $finishReason = ProviderFinishReason::Error;
+                }
+
+                continue;
+            }
+
             $toolCalls[] = new ToolCall(
                 id: $tc['id'] ?? '',
-                name: $tc['function']['name'] ?? '',
-                arguments: json_decode($arguments, true) ?? [],
+                name: $name,
+                arguments: $arguments,
             );
         }
 
