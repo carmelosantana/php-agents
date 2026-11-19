@@ -14,6 +14,7 @@ use CarmeloSantana\PHPAgents\Provider\Stream\StreamProjector;
 use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolArguments;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
@@ -153,14 +154,8 @@ class OpenAICompatibleProvider extends AbstractProvider
                     foreach ($delta['tool_calls'] ?? [] as $fragment) {
                         $index = (int) ($fragment['index'] ?? 0);
                         $id = $fragment['id'] ?? null;
-                        $argumentsDelta = $fragment['function']['arguments'] ?? '';
-                        // Some servers send arguments as a JSON object; the parser decodes it to an
-                        // array, so `{}` arrives as [] and is re-encoded as an object.
-                        $argumentsDelta = match (true) {
-                            is_string($argumentsDelta) => $argumentsDelta,
-                            $argumentsDelta === [] => '{}',
-                            default => (string) json_encode($argumentsDelta),
-                        };
+                        // Some servers send arguments as a JSON object rather than a string.
+                        $argumentsDelta = ToolArguments::toJson($fragment['function']['arguments'] ?? null);
 
                         if (is_string($id) && $id !== '' && (!isset($openCallAt[$index]) || $calls[$openCallAt[$index]]['id'] !== $id)) {
                             $position = count($calls);
@@ -250,22 +245,15 @@ class OpenAICompatibleProvider extends AbstractProvider
      */
     private function endToolInput(int $position, array $call): ?ToolInputEnd
     {
-        $json = $call['arguments'];
-        if (trim($json) === '') {
-            return new ToolInputEnd($position, $call['id'], $call['name'], []);
-        }
-
-        if (!json_decode($json) instanceof \stdClass) {
+        $arguments = ToolArguments::decode($call['arguments']);
+        if ($arguments === null) {
             $this->logger?->debug('Tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [
                 'tool' => $call['name'],
-                'length' => strlen($json),
+                'length' => strlen($call['arguments']),
             ]);
 
             return null;
         }
-
-        /** @var array<string, mixed> $arguments */
-        $arguments = json_decode($json, true);
 
         return new ToolInputEnd($position, $call['id'], $call['name'], $arguments);
     }

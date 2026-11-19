@@ -19,6 +19,7 @@ use CarmeloSantana\PHPAgents\Provider\Stream\StreamProjector;
 use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolArguments;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
@@ -305,7 +306,7 @@ final class AnthropicProvider extends AbstractProvider
      */
     private function endToolInput(int $position, array $block): ?ToolInputEnd
     {
-        $arguments = $this->decodeToolArguments($block['json']);
+        $arguments = ToolArguments::decode($block['json']);
         if ($arguments === null) {
             $this->logger?->debug('Anthropic tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [
                 'tool' => $block['name'],
@@ -424,26 +425,6 @@ final class AnthropicProvider extends AbstractProvider
         return $input instanceof \stdClass
             ? ['type' => 'tool_use', 'id' => $block['id'], 'name' => $block['name'], 'input' => $input]
             : null;
-    }
-
-    /**
-     * Decode a tool's accumulated `partial_json`. An empty or whitespace string
-     * is `{}`; anything that is not a JSON object (truncated, array, scalar) is null.
-     *
-     * @return array<string, mixed>|null
-     */
-    private function decodeToolArguments(string $json): ?array
-    {
-        if (trim($json) === '') {
-            return [];
-        }
-
-        if (!json_decode($json) instanceof \stdClass) {
-            return null;
-        }
-
-        /** @var array<string, mixed> */
-        return json_decode($json, true);
     }
 
     private function mapStopReason(?string $stopReason): ProviderFinishReason

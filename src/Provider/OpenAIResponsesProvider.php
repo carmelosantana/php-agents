@@ -16,6 +16,7 @@ use CarmeloSantana\PHPAgents\Provider\Stream\StreamProjector;
 use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolArguments;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
@@ -176,7 +177,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
                             continue;
                         }
 
-                        $itemArguments = $this->argumentsString($item['arguments'] ?? '');
+                        $itemArguments = ToolArguments::toJson($item['arguments'] ?? null);
                         if ($call['arguments'] === '' && $itemArguments !== '') {
                             $call['arguments'] = $itemArguments;
                             yield new ToolInputDelta($position, $call['id'], $itemArguments);
@@ -193,7 +194,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
                     }
                 } elseif ($eventType === 'response.function_call_arguments.delta') {
                     $position = $callAt[(int) ($json['output_index'] ?? 0)] ?? null;
-                    $delta = $this->argumentsString($json['delta'] ?? '');
+                    $delta = ToolArguments::toJson($json['delta'] ?? null);
                     if ($position === null || $calls[$position]['ended'] || $delta === '') {
                         continue; // Fragments for a call that is not open carry nothing usable.
                     }
@@ -268,20 +269,6 @@ final class OpenAIResponsesProvider extends AbstractProvider
     }
 
     /**
-     * Argument JSON as a string. Arguments sent as a JSON object arrive decoded, so an
-     * empty object arrives as [] and is re-encoded as `{}`.
-     */
-    private function argumentsString(mixed $arguments): string
-    {
-        return match (true) {
-            is_string($arguments) => $arguments,
-            $arguments === [] => '{}',
-            is_array($arguments) => (string) json_encode($arguments),
-            default => '',
-        };
-    }
-
-    /**
      * The ToolInputEnd for a finished call, or null (logged) when its arguments
      * are not a JSON object. Empty or whitespace arguments decode as `{}`.
      *
@@ -289,22 +276,15 @@ final class OpenAIResponsesProvider extends AbstractProvider
      */
     private function endToolInput(int $position, array $call): ?ToolInputEnd
     {
-        $json = $call['arguments'];
-        if (trim($json) === '') {
-            return new ToolInputEnd($position, $call['id'], $call['name'], []);
-        }
-
-        if (!json_decode($json) instanceof \stdClass) {
+        $arguments = ToolArguments::decode($call['arguments']);
+        if ($arguments === null) {
             $this->logger?->debug('Tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [
                 'tool' => $call['name'],
-                'length' => strlen($json),
+                'length' => strlen($call['arguments']),
             ]);
 
             return null;
         }
-
-        /** @var array<string, mixed> $arguments */
-        $arguments = json_decode($json, true);
 
         return new ToolInputEnd($position, $call['id'], $call['name'], $arguments);
     }
