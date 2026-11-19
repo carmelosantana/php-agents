@@ -177,6 +177,14 @@ final class OpenAIResponsesProvider extends AbstractProvider
                             continue;
                         }
 
+                        // An id or name the added item lacked comes from the done item.
+                        if ($call['id'] === '' && is_string($item['call_id'] ?? null)) {
+                            $call['id'] = $item['call_id'];
+                        }
+                        if ($call['name'] === '' && is_string($item['name'] ?? null)) {
+                            $call['name'] = $item['name'];
+                        }
+
                         $itemArguments = ToolArguments::toJson($item['arguments'] ?? null);
                         if ($call['arguments'] === '' && $itemArguments !== '') {
                             $call['arguments'] = $itemArguments;
