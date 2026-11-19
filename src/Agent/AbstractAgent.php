@@ -364,7 +364,9 @@ abstract class AbstractAgent implements AgentInterface
             $startedCalls = [];
             /** @var array<int, ToolInputEnd> $endedCalls */
             $endedCalls = [];
-            // The first `done` call to open in this response streams its answer live.
+            // The first `done` call to open in this response streams its answer live. The call
+            // that finishes the run is resolved later in toolCalls order, which is the order
+            // arguments completed; the two differ only when `done` calls interleave.
             $donePreview = null;
             $donePreviewIndex = null;
 

@@ -11,9 +11,9 @@ use CarmeloSantana\PHPAgents\Provider\Response;
  * Projects typed stream events onto the stream() Response shape.
  *
  * One Response per TextDelta or ReasoningDelta (finish reason Stop, no usage, no tool
- * calls), then exactly one terminal Response built from Finish: its reason, usage, model
- * and content blocks, plus the ToolInputEnd calls when the reason is ToolUse. Tick and
- * tool-input events produce no Response of their own.
+ * calls), then exactly one terminal Response when the events end with Finish, built from
+ * it: its reason, usage, model and content blocks, plus the ToolInputEnd calls when the
+ * reason is ToolUse. Tick and tool-input events produce no Response of their own.
  */
 final class StreamProjector
 {
