@@ -8,6 +8,7 @@ use CarmeloSantana\PHPAgents\Contract\CliRuntimeInterface;
 use CarmeloSantana\PHPAgents\Contract\CliVendorAdapterInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
 
 /**
  * Generic provider that drives a CLI binary as an LLM backend.
@@ -20,6 +21,8 @@ use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
  */
 final class CliProvider implements ProviderInterface
 {
+    use StreamsEventsFromResponses;
+
     public function __construct(
         private string $model,
         private readonly CliVendorAdapterInterface $adapter,

@@ -15,6 +15,7 @@ use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
 use CarmeloSantana\PHPAgents\Provider\Usage;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
@@ -25,6 +26,8 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  */
 final class FinishReasonScriptedProvider implements ProviderInterface
 {
+    use StreamsEventsFromResponses;
+
     /** @var list<list<MessageInterface>> */
     public array $streamCalls = [];
 

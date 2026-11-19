@@ -17,6 +17,7 @@ use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\OpenAICompatibleProvider;
 use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
@@ -29,6 +30,8 @@ use Symfony\Component\HttpClient\Response\MockResponse;
 
 final class RedactionScriptedProvider implements ProviderInterface
 {
+    use StreamsEventsFromResponses;
+
     /** @param list<list<Response>|\Throwable> $streams */
     public function __construct(private array $streams) {}
 

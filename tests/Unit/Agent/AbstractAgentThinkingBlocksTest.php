@@ -16,6 +16,7 @@ use CarmeloSantana\PHPAgents\Message\Conversation;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
@@ -27,6 +28,8 @@ use Symfony\Component\HttpClient\Response\MockResponse;
  */
 final class ThinkingBlocksScriptedProvider implements ProviderInterface
 {
+    use StreamsEventsFromResponses;
+
     /** @var list<list<MessageInterface>> */
     public array $streamCalls = [];
 

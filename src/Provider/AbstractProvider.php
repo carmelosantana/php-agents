@@ -8,6 +8,7 @@ use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\Exception\RedirectionExceptionInterface;
@@ -16,6 +17,8 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 
 abstract class AbstractProvider implements ProviderInterface
 {
+    use StreamsEventsFromResponses;
+
     protected const int OPENAI_MAX_TOOLS = 128;
 
     protected string $model;

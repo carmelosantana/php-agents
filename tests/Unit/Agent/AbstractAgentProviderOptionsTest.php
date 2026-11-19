@@ -10,6 +10,7 @@ use CarmeloSantana\PHPAgents\Enum\ModelCapability;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
@@ -19,6 +20,8 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  */
 final class ProviderOptionsRecordingProvider implements ProviderInterface
 {
+    use StreamsEventsFromResponses;
+
     /** @var list<Response> */
     private array $scripts;
 

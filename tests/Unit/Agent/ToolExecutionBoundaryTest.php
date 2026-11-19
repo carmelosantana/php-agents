@@ -16,6 +16,7 @@ use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\ToolResultStatus;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
@@ -29,6 +30,8 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  */
 final class BoundaryScriptedProvider implements ProviderInterface
 {
+    use StreamsEventsFromResponses;
+
     /** @var list<list<string>> */
     public array $advertised = [];
 

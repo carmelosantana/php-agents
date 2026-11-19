@@ -22,6 +22,7 @@ use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppStructuredOutputNormalize
 use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppToolCallParser;
 use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppToolPromptInjector;
 use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppToolSchemaNormalizer;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
 use CarmeloSantana\PHPAgents\Runtime\RuntimeCompletionChunk;
 use CarmeloSantana\PHPAgents\Runtime\RuntimeCompletionRequest;
 use CarmeloSantana\PHPAgents\Runtime\RuntimeCompletionResult;
@@ -29,6 +30,8 @@ use CarmeloSantana\PHPAgents\Runtime\RuntimeModelMetadata;
 
 final class LlamaCppProvider implements ProviderInterface
 {
+    use StreamsEventsFromResponses;
+
     private const INTERNAL_REQUEST_OPTION_KEYS = [
         'sequence_id',
         'sequenceId',
