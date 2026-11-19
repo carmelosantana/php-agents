@@ -32,3 +32,13 @@ test('AGENTS.md says the first failure reason of a turn is sticky', function () 
     expect($doc)->not->toContain("The run's accumulated reason is the last chunk reason that is not `Stop`;")
         ->and($doc)->toContain('The first failure reason a chunk carries (`Error`, `Refusal`, `ContentFilter`, `ContextWindowExceeded`, `PauseTurn` or `MaxTokens`) is the turn\'s reason: no later chunk changes it to `ToolUse` or `Stop`, and every tool call of the turn is dropped.');
 });
+
+test('AGENTS.md documents how a cancel ends the run', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../docs/AGENTS.md');
+
+    expect($doc)->not->toContain('The cancellation check happens at the top of each iteration')
+        ->and($doc)->toContain("after `agent.error` with `'Task cancelled'`")
+        ->and($doc)->toContain("`content` is `'Task was cancelled.'`; the provider is not called")
+        ->and($doc)->toContain('each started call gets `agent.tool_input_discarded` with reason `cancelled`')
+        ->and($doc)->toContain("Every call that did not start gets an error `ToolResult` with content `'Cancelled before it ran.'` and `errorCode` `'cancelled'`");
+});

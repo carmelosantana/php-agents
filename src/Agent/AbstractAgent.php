@@ -302,16 +302,7 @@ abstract class AbstractAgent implements AgentInterface
 
             // Check cooperative cancellation before each iteration
             if ($this->cancellationToken?->isCancelled()) {
-                $this->notify('agent.error', 'Task cancelled');
-
-                return new Output(
-                    content: 'Task was cancelled.',
-                    toolResults: $allToolResults,
-                    usage: $totalUsage,
-                    iterations: $i + 1,
-                    conversation: $conversation,
-                    finishReason: AgentFinishReason::Error,
-                );
+                return $this->cancelledOutput('', $conversation, $allToolResults, $totalUsage, $i + 1);
             }
 
             if ($this->runTimeExceeded($runStartedNs)) {
@@ -439,6 +430,14 @@ abstract class AbstractAgent implements AgentInterface
                 );
             }
 
+            // A cancel mid-stream abandons the response: no call of it runs, and the text
+            // streamed so far is the run's answer.
+            if ($cancelled) {
+                $this->discardCalls($startedCalls, 'cancelled');
+
+                return $this->cancelledOutput(implode('', $contentParts), $conversation, $allToolResults, $totalUsage, $i + 1);
+            }
+
             if ($streamLimit !== null) {
                 $this->discardCalls($startedCalls, 'run_limit');
 
@@ -448,17 +447,12 @@ abstract class AbstractAgent implements AgentInterface
             if ($finish !== null) {
                 $this->discardUnrunCalls($startedCalls, $endedCalls, $finish->reason);
                 $this->notify('agent.step_finish', new StepFinish($i + 1, $finish->reason, $finish->rawReason, $finish->usage, $finish->model));
-            } elseif (!$cancelled) {
+            } else {
                 $this->discardCalls($startedCalls, 'provider_error');
             }
 
-            // A cancelled stream has no Finish: it keeps the calls that completed. A stream
-            // that ended without a Finish otherwise is a provider error.
-            $finishReason = $finish->reason ?? match (true) {
-                !$cancelled => ProviderFinishReason::Error,
-                $endedCalls !== [] => ProviderFinishReason::ToolUse,
-                default => ProviderFinishReason::Stop,
-            };
+            // A stream that ended without a Finish is a provider error.
+            $finishReason = $finish->reason ?? ProviderFinishReason::Error;
 
             // Tool calls run only on a ToolUse stop. A MaxTokens stop keeps
             // its text and drops any (possibly truncated) tool calls. Calls keep
@@ -585,6 +579,11 @@ abstract class AbstractAgent implements AgentInterface
                         finishReason: AgentFinishReason::Error,
                         providerFinishReason: $response->finishReason,
                     );
+                }
+
+                // A cancel during tools ends the run after every call has a result.
+                if ($this->cancellationToken?->isCancelled()) {
+                    return $this->cancelledOutput('', $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
                 }
 
                 if ($runTimeReached) {
@@ -720,6 +719,48 @@ abstract class AbstractAgent implements AgentInterface
             conversation: $conversation,
             finishReason: AgentFinishReason::BudgetExhausted,
         );
+    }
+
+    /**
+     * End the run on a cancel. $streamedText is the text the cancelled response streamed:
+     * when non-empty it is the content and is appended to the conversation as an assistant
+     * message with no tool calls; otherwise the content is 'Task was cancelled.'. agent.error
+     * carries 'Task cancelled' for observers that predate AgentFinishReason::Cancelled.
+     *
+     * @param ToolResult[] $allToolResults
+     */
+    private function cancelledOutput(
+        string $streamedText,
+        Conversation $conversation,
+        array $allToolResults,
+        Usage $totalUsage,
+        int $iterations,
+        string $model = '',
+    ): Output {
+        if ($streamedText !== '') {
+            $conversation->add(new AssistantMessage($streamedText));
+        }
+
+        $this->notify('agent.error', 'Task cancelled');
+
+        return new Output(
+            content: $streamedText !== '' ? $streamedText : 'Task was cancelled.',
+            toolResults: $allToolResults,
+            usage: $totalUsage,
+            model: $model,
+            iterations: $iterations,
+            conversation: $conversation,
+            finishReason: AgentFinishReason::Cancelled,
+        );
+    }
+
+    /**
+     * The result of a call that a cancel stopped before it ran.
+     */
+    private function cancelledToolResult(ToolCall $toolCall): ToolResult
+    {
+        return (new ToolResult(ToolResultStatus::Error, 'Cancelled before it ran.', errorCode: 'cancelled'))
+            ->withCallId($toolCall->id);
     }
 
     /**
@@ -982,7 +1023,10 @@ abstract class AbstractAgent implements AgentInterface
      *    unknown, with the same text as a name that does not exist.
      * 2. Execution (batch or serial): if the executor supports batch execution
      *    and multiple approved tools exist, delegates to executeBatch().
-     *    Otherwise executes each tool serially.
+     *    Otherwise executes each tool serially. A cancel seen before a call starts
+     *    (in pre-flight, before the batch, or before a serial call) answers that call
+     *    and every later one with 'Cancelled before it ran.' (error code 'cancelled');
+     *    a running batch or tool is not interrupted.
      * 3. Post-flight (serial): adds ToolResultMessages to conversation in call
      *    order, emits agent.tool_result events, then adds the names granted by
      *    ToolGrantInterface tools that ran and succeeded to $executableToolIndex.
@@ -1026,6 +1070,7 @@ abstract class AbstractAgent implements AgentInterface
         /** @var array<int, ToolResult> Pre-resolved results (capped, denied, not found) keyed by position */
         $preResolved = [];
 
+        $cancelled = false;
         $turnToolCalls = 0;
         $turnLimitReached = false;
         $perTurn = $this->runLimits->maxToolCallsPerTurn;
@@ -1034,8 +1079,11 @@ abstract class AbstractAgent implements AgentInterface
         foreach ($toolCalls as $position => $toolCall) {
             $this->tickCallback->tick();
 
-            if ($this->cancellationToken?->isCancelled()) {
-                break;
+            // Once cancelled, every remaining call is answered without running.
+            if ($cancelled || $this->cancellationToken?->isCancelled()) {
+                $cancelled = true;
+                $preResolved[$position] = $this->cancelledToolResult($toolCall);
+                continue;
             }
 
             $this->notify('agent.tool_call', $toolCall);
@@ -1093,7 +1141,11 @@ abstract class AbstractAgent implements AgentInterface
         $executedResults = [];
         $terminationException = null;
 
-        if ($useBatch && $this->runTimeExceeded($runStartedNs)) {
+        if ($useBatch && $this->cancellationToken?->isCancelled()) {
+            foreach ($approved as $position => $entry) {
+                $executedResults[$position] = $this->cancelledToolResult($entry['toolCall']);
+            }
+        } elseif ($useBatch && $this->runTimeExceeded($runStartedNs)) {
             $runTimeReached = true;
             foreach ($approved as $position => $entry) {
                 $executedResults[$position] = ToolResult::error(self::RUN_TIME_LIMIT_REACHED)
@@ -1143,8 +1195,10 @@ abstract class AbstractAgent implements AgentInterface
         } else {
             // Serial execution (single tool or non-batch executor)
             foreach ($approved as $position => $entry) {
-                if ($this->cancellationToken?->isCancelled()) {
-                    break;
+                if ($cancelled || $this->cancellationToken?->isCancelled()) {
+                    $cancelled = true;
+                    $executedResults[$position] = $this->cancelledToolResult($entry['toolCall']);
+                    continue;
                 }
 
                 if ($runTimeReached || $this->runTimeExceeded($runStartedNs)) {
@@ -1177,7 +1231,7 @@ abstract class AbstractAgent implements AgentInterface
             $result = $preResolved[$position] ?? $executedResults[$position] ?? null;
 
             if ($result === null) {
-                // Tool was skipped (cancellation during pre-flight)
+                // A TerminationException stopped execution before this call ran
                 continue;
             }
 

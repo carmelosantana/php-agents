@@ -334,7 +334,13 @@ $agent = new MyAgent(
 // Agent will stop after 30 seconds, even mid-loop
 ```
 
-The cancellation check happens at the top of each iteration, so the current iteration always completes before stopping.
+The token is checked at the top of each iteration, on every stream event (including the idle `Tick`s, so a silent model can be stopped), before each tool call and before a batch starts. Every cancel ends the run with `AgentFinishReason::Cancelled`, after `agent.error` with `'Task cancelled'`:
+
+| When | Outcome |
+|---|---|
+| Top of an iteration | `content` is `'Task was cancelled.'`; the provider is not called |
+| Mid-stream | The stream is abandoned (the HTTP response is cancelled). `content` is the text streamed so far in this step, appended to the conversation as an `AssistantMessage` with no tool calls, or `'Task was cancelled.'` when none arrived. No call of the response runs: each started call gets `agent.tool_input_discarded` with reason `cancelled` |
+| During tools | Calls that finished keep their results. Every call that did not start gets an error `ToolResult` with content `'Cancelled before it ran.'` and `errorCode` `'cancelled'`, so every call in the conversation has a result and `repairToolPairing()` keeps the group. A running tool or batch is not interrupted; a batch's results are all kept. `content` is `'Task was cancelled.'` |
 
 ## Pending Input Injection
 
@@ -428,6 +434,7 @@ $output->providerFinishReason; // ProviderFinishReason|null — the provider's s
 | `AgentFinishReason::Refusal` | The provider refused the request; `content` is the text received |
 | `AgentFinishReason::ContentFilter` | The provider's content filter stopped the response; `content` is the text received |
 | `AgentFinishReason::ContextWindowExceeded` | The request did not fit the model's context window |
+| `AgentFinishReason::Cancelled` | The cancellation token was set; see [Cooperative Cancellation](#cooperative-cancellation) |
 
 Provider responses use `ProviderFinishReason` instead. That enum represents normalized model/API stop reasons: `Stop`, `ToolUse`, `MaxTokens`, `Error`, `Refusal`, `ContentFilter`, `PauseTurn` and `ContextWindowExceeded`. `Output::$providerFinishReason` carries the reason for the last provider response, or `null` on an output not built from a provider response (cancellation, budget exhaustion, max iterations or a thrown provider error).
 
