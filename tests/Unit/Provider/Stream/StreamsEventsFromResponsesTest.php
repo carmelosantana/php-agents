@@ -124,3 +124,49 @@ it('max-merges usage per field and keeps the last non-empty model and content bl
 it('emits only Finish for an empty stream', function () {
     expect(eventsFromChunks([]))->toEqual([new Finish(ProviderFinishReason::Stop)]);
 });
+
+it('refuses to run on an AbstractProvider subclass, whose final stream() calls streamEvents()', function () {
+    $provider = new class('m', 'http://localhost') extends CarmeloSantana\PHPAgents\Provider\AbstractProvider {
+        use StreamsEventsFromResponses;
+
+        public function chat(array $messages, array $tools = [], array $options = []): Response
+        {
+            return new Response('');
+        }
+
+        public function structured(array $messages, string $schema, array $options = []): mixed
+        {
+            return [];
+        }
+
+        public function models(): array
+        {
+            return [];
+        }
+
+        public function isAvailable(): bool
+        {
+            return true;
+        }
+
+        protected function formatTools(array $tools): array
+        {
+            return [];
+        }
+
+        protected function formatMessages(array $messages): array
+        {
+            return [];
+        }
+
+        protected function parseResponse(array $data): Response
+        {
+            return new Response('');
+        }
+    };
+
+    expect(fn() => iterator_to_array($provider->streamEvents([]), false))
+        ->toThrow(LogicException::class, 'implement streamEvents() natively')
+        ->and(fn() => iterator_to_array($provider->stream([]), false))
+        ->toThrow(LogicException::class, 'implement streamEvents() natively');
+});

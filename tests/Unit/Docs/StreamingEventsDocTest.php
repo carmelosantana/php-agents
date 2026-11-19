@@ -106,7 +106,8 @@ test('PROVIDERS.md documents streaming events per provider', function () use ($r
         ->and($doc)->toContain('### Cancellation and idle ticks')
         ->and($doc)->toContain('### Usage')
         ->and($doc)->toContain('### Raw finish reasons')
-        ->and($doc)->toContain('`AbstractProvider::stream()` is `final`');
+        ->and($doc)->toContain('`AbstractProvider::stream()` is `final`')
+        ->and($doc)->toContain('never on an `AbstractProvider` subclass');
 });
 
 test('the upgrade notes cover each 0.18 breaking change', function () use ($root) {
@@ -119,7 +120,9 @@ test('the upgrade notes cover each 0.18 breaking change', function () use ($root
         ->and($doc)->toContain('yield from $this->inner->streamEvents($messages, $tools, $options);')
         ->and($doc)->toContain('drop the call, on every provider, in `stream()` and `chat()`')
         ->and($doc)->toContain('AgentFinishReason::Cancelled')
-        ->and($doc)->toContain('cacheReadTokens');
+        ->and($doc)->toContain('cacheReadTokens')
+        ->and($doc)->toContain('| Every subclass of `AbstractProvider`: a 0.17 subclass defines `stream()`')
+        ->and($doc)->toContain('never on an `AbstractProvider` subclass');
 });
 
 test('ADR 0004 is accepted', function () use ($root) {

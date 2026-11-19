@@ -7,6 +7,7 @@ namespace CarmeloSantana\PHPAgents\Provider\Stream;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Provider\AbstractProvider;
 use CarmeloSantana\PHPAgents\Provider\Response;
 use CarmeloSantana\PHPAgents\Provider\Usage;
 
@@ -19,6 +20,10 @@ use CarmeloSantana\PHPAgents\Provider\Usage;
  * other than ToolUse) is sticky, otherwise the last reason that is not Stop wins; with no
  * such reason it is ToolUse when any call arrived, else Stop. Usage is max-merged per field,
  * and the last non-empty model and content blocks are kept.
+ *
+ * For classes that implement ProviderInterface directly. An AbstractProvider subclass
+ * implements streamEvents() natively: its final stream() is projected from streamEvents(),
+ * so this trait throws a LogicException there.
  */
 trait StreamsEventsFromResponses
 {
@@ -38,6 +43,13 @@ trait StreamsEventsFromResponses
      */
     public function streamEvents(array $messages, array $tools = [], array $options = []): iterable
     {
+        if ($this instanceof AbstractProvider) {
+            throw new \LogicException(sprintf(
+                '%s extends AbstractProvider, whose stream() is built from streamEvents(): implement streamEvents() natively. StreamsEventsFromResponses is only for classes that implement ProviderInterface directly.',
+                static::class,
+            ));
+        }
+
         $reason = null;
         $usage = null;
         $model = '';

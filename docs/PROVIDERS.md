@@ -880,11 +880,13 @@ $schema = SchemaUtils::flattenCombinator($schema, 'anyOf');
 
 Extend `AbstractProvider` to get `stream()` for free: implement `streamEvents()` (plus `chat()`,
 `structured()`, `models()`, `isAvailable()` and the message and tool formatting hooks), and
-`stream()` is projected from it. `stream()` is `final` there, so an override fails loudly.
+`stream()` is projected from it. `stream()` is `final` there, so an override fails loudly: a
+subclass written for 0.17, which defines `stream()`, implements `streamEvents()` natively instead.
 
 A class that implements `ProviderInterface` directly can keep writing `stream()` and take
 `streamEvents()` from the `StreamsEventsFromResponses` trait, which turns each chunk into events
-and merges the chunks' finish reasons and usage into one `Finish`:
+and merges the chunks' finish reasons and usage into one `Finish`. The trait is only for such
+classes, never on an `AbstractProvider` subclass, where it throws a `LogicException`:
 
 ```php
 <?php
