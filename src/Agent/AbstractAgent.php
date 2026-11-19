@@ -449,7 +449,7 @@ abstract class AbstractAgent implements AgentInterface
 
             // A cancelled stream has no Finish: it keeps the calls that completed. A stream
             // that ended without a Finish otherwise is a provider error.
-            $finishReason = $finish?->reason ?? match (true) {
+            $finishReason = $finish->reason ?? match (true) {
                 !$cancelled => ProviderFinishReason::Error,
                 $endedCalls !== [] => ProviderFinishReason::ToolUse,
                 default => ProviderFinishReason::Stop,
@@ -465,10 +465,10 @@ abstract class AbstractAgent implements AgentInterface
                 toolCalls: $finishReason === ProviderFinishReason::ToolUse
                     ? array_map(static fn(ToolInputEnd $end): ToolCall => $end->toToolCall(), $completedCalls)
                     : [],
-                model: $finish?->model ?? '',
+                model: $finish->model ?? '',
                 usage: $finish?->usage,
                 reasoning: implode('', $reasoningParts),
-                contentBlocks: $finish?->contentBlocks ?? [],
+                contentBlocks: $finish->contentBlocks ?? [],
             );
 
             // The response counts as at least one token per 4 bytes received,
