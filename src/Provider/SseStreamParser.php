@@ -33,7 +33,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  */
 final class SseStreamParser
 {
-    /** Largest incomplete SSE line, in bytes, held while waiting for its newline. */
+    /** Largest SSE line, in bytes and without its newline, complete or still waiting for its newline. */
     public const int DEFAULT_MAX_LINE_BYTES = 1_048_576;
 
     private string $lineBuffer = '';
@@ -59,9 +59,9 @@ final class SseStreamParser
      * Checks the status on the first chunk: a 3xx throws a ProviderException
      * refusing the redirect, and a 4xx or 5xx throws Symfony's ClientException
      * or ServerException unchanged, so callers can still read the API error
-     * body from it. Also throws a ProviderException when an incomplete line
-     * grows past the line cap, and symfony's TimeoutException when the idle
-     * deadline passes.
+     * body from it. Also throws a ProviderException when any line, complete
+     * or still incomplete, grows past the line cap (before it is decoded), and
+     * symfony's TimeoutException when the idle deadline passes.
      *
      * With a $tickInterval of 0.0 it waits on symfony's own `timeout` and
      * yields no Tick.
@@ -105,29 +105,33 @@ final class SseStreamParser
     }
 
     /**
-     * Buffer $content onto any held partial line and yield the payload of
-     * each complete `data: ` line.
+     * Scan $content for newlines, joining its first line to any held partial line,
+     * and yield the payload of each complete `data: ` line. A trailing partial line is
+     * held for the next chunk. Every line, complete or partial, is measured against the
+     * line cap before it is built or decoded, and the chunk is never split into an array.
      *
      * @return \Generator<int, array<string, mixed>>
      */
     private function parseLines(string $content): \Generator
     {
-        $data = $this->lineBuffer . $content;
-        $this->lineBuffer = '';
+        $offset = 0;
+        $length = strlen($content);
 
-        $lines = explode("\n", $data);
+        while ($offset < $length) {
+            $newline = strpos($content, "\n", $offset);
 
-        // If the data doesn't end with a newline, the last element
-        // is an incomplete line — buffer it for the next chunk.
-        if (!str_ends_with($data, "\n")) {
-            $this->lineBuffer = array_pop($lines);
+            if ($newline === false) {
+                $this->assertLineFits(strlen($this->lineBuffer) + $length - $offset);
+                $this->lineBuffer .= substr($content, $offset);
 
-            if (strlen($this->lineBuffer) > $this->maxLineBytes) {
-                throw ProviderException::requestRefused(sprintf('SSE line exceeded %d bytes', $this->maxLineBytes));
+                return;
             }
-        }
 
-        foreach ($lines as $line) {
+            $this->assertLineFits(strlen($this->lineBuffer) + $newline - $offset);
+            $line = $this->lineBuffer . substr($content, $offset, $newline - $offset);
+            $this->lineBuffer = '';
+            $offset = $newline + 1;
+
             if (!str_starts_with($line, 'data: ')) {
                 continue;
             }
@@ -144,6 +148,16 @@ final class SseStreamParser
             }
 
             yield $json;
+        }
+    }
+
+    /**
+     * Throw when a line of $bytes (its newline excluded) is over the line cap.
+     */
+    private function assertLineFits(int $bytes): void
+    {
+        if ($bytes > $this->maxLineBytes) {
+            throw ProviderException::requestRefused(sprintf('SSE line exceeded %d bytes', $this->maxLineBytes));
         }
     }
 

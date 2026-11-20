@@ -171,6 +171,57 @@ test('an unterminated line at exactly the cap is still buffered', function () {
     expect(sseParserCatch($parser))->toBeNull();
 });
 
+test('a newline-terminated line over the cap throws before it is decoded', function () {
+    // 65 bytes, ending in a newline, in one chunk.
+    $line = 'data: {"v":"' . str_repeat('x', 65 - 14) . '"}';
+    expect(strlen($line))->toBe(65);
+    $parser = makeParser([$line . "\n\n"], maxLineBytes: 64);
+
+    $thrown = sseParserCatch($parser);
+
+    expect($thrown)->toBeInstanceOf(ProviderException::class)
+        ->and($thrown?->getMessage())->toContain('SSE line exceeded 64 bytes');
+});
+
+test('a newline-terminated line at exactly the cap is decoded', function () {
+    $line = 'data: {"v":"' . str_repeat('x', 64 - 14) . '"}';
+    $parser = makeParser([$line . "\n\n"], maxLineBytes: 64);
+
+    expect(iterator_to_array($parser->events()))->toHaveCount(1);
+});
+
+test('a line over the cap that is completed by a later chunk throws', function () {
+    $parser = makeParser([str_repeat('a', 40), str_repeat('b', 40) . "\n"], maxLineBytes: 64);
+
+    expect(sseParserCatch($parser)?->getMessage())->toContain('SSE line exceeded 64 bytes');
+});
+
+test('events before an oversized line are still yielded first', function () {
+    $parser = makeParser(["data: {\"n\":1}\n" . str_repeat('a', 65) . "\n"], maxLineBytes: 64);
+    $seen = [];
+
+    try {
+        foreach ($parser->events() as $event) {
+            $seen[] = $event;
+        }
+    } catch (ProviderException) {
+    }
+
+    expect($seen)->toBe([['n' => 1]]);
+});
+
+test('a chunk of many short lines is scanned without splitting it into an array', function () {
+    // explode() on 2M newlines allocates a 2M-element array (tens of MiB); scanning does not.
+    $parser = makeParser([str_repeat("\n", 2_000_000) . "data: {\"n\":1}\n"]);
+    $before = memory_get_usage();
+    memory_reset_peak_usage();
+
+    $events = iterator_to_array($parser->events());
+
+    expect($events)->toBe([['n' => 1]])
+        ->and(memory_get_peak_usage() - $before)->toBeLessThan(16 * 1024 * 1024);
+});
+
 test('the default line cap is 1048576 bytes', function () {
     $parser = makeParser([str_repeat('a', 1_048_576), 'b']);
 

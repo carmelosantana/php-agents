@@ -794,7 +794,7 @@ $provider = $provider->withRequestLimits(new RequestLimits(maxDuration: 45.0));
 $provider->requestLimits()->maxDuration; // 45.0
 ```
 
-A response over the byte cap is aborted with a `ProviderException` whose message contains `exceeded`. symfony/http-client wraps it in its own `TransportExceptionInterface`, so look for the `ProviderException` as the previous exception. `SseStreamParser` also caps a stream line that has no newline yet at 1_048_576 bytes.
+A response over the byte cap is aborted with a `ProviderException` whose message contains `exceeded`. symfony/http-client wraps it in its own `TransportExceptionInterface`, so look for the `ProviderException` as the previous exception. `SseStreamParser` also caps every stream line, complete or still waiting for its newline, at 1_048_576 bytes, and refuses a longer one before decoding it.
 
 ### No Redirects
 

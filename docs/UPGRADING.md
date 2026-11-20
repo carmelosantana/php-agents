@@ -63,6 +63,9 @@ public function streamEvents(array $messages, array $tools = [], array $options 
 - In `Conversation::estimateTokens()` (and so `maxInputTokens` and `maxEstimatedTokens`) an image part
   counts as `Conversation::IMAGE_TOKENS` (1,000) instead of one token per 4 bytes of its base64. A
   workaround that raised `maxInputTokens` to fit images can go.
+- `SseStreamParser` applies its 1 MiB line cap (`maxLineBytes`) to every line, not only to one
+  still waiting for its newline: a provider stream with a longer complete line now throws a
+  `ProviderException` (`SSE line exceeded … bytes`) instead of decoding it.
 
 ### New and not breaking
 
