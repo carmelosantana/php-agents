@@ -815,3 +815,22 @@ test('a start named done cannot carry an ordinary tool past the per-turn cap', f
         ->and($output->toolResults[0]->content)->toBe('echo: a')
         ->and($output->toolResults[1]->content)->not->toBe('echo: b');
 });
+
+test('content blocks kept in the conversation drop the tool_use blocks of calls past the cap', function () {
+    $blocks = [
+        ['type' => 'thinking', 'thinking' => 'Two.', 'signature' => 'sig'],
+        ['type' => 'tool_use', 'id' => 'c1', 'name' => 'echo', 'input' => ['text' => 'a']],
+        ['type' => 'tool_use', 'id' => 'c2', 'name' => 'echo', 'input' => ['text' => str_repeat('b', 1000)]],
+    ];
+    [$agent] = streamEventsAgent([[
+        ...streamEventsCall(0, 'c1', 'echo', ['text' => 'a']),
+        ...streamEventsCall(1, 'c2', 'echo', ['text' => str_repeat('b', 1000)]),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model', $blocks),
+    ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxToolCallsPerTurn: 1)]);
+
+    $output = $agent->run(new UserMessage('Echo.'));
+    $assistant = array_values(array_filter($output->conversation->messages(), fn($m) => $m instanceof \CarmeloSantana\PHPAgents\Message\AssistantMessage && $m->contentBlocks() !== []));
+
+    expect($assistant)->toHaveCount(1)
+        ->and($assistant[0]->contentBlocks())->toBe([$blocks[0], $blocks[1]]);
+});

@@ -146,8 +146,9 @@ A negative value throws `\InvalidArgumentException`. The first `done` call of a 
 - **Per turn.** The cap is applied while the response streams. A call that opens past
   `maxToolCallsPerTurn` is discarded at once with `agent.tool_input_discarded` reason
   `tool_call_limit`, and its arguments are never kept: it is not shown to the policy, not run, and
-  not added to the conversation, so it has no tool result (Anthropic's replayed content blocks drop
-  its `tool_use` block too). After the response's tool results, `agent.warning` fires once with
+  not added to the conversation, so it has no tool result. Its `tool_use` block is also removed from
+  the provider content blocks the `AssistantMessage` keeps, and `AnthropicProvider` drops any
+  `tool_use` block without a matching call when it replays a conversation. After the response's tool results, `agent.warning` fires once with
   `Tool call limit reached: at most N calls per turn.`
 - **Per run.** Calls beyond `maxToolCallsPerRun` get `Tool call limit reached: at most N calls per run.`
   After that round the run ends with `AgentFinishReason::BudgetExhausted` and the content

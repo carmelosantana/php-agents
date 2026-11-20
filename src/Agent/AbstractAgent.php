@@ -551,7 +551,7 @@ abstract class AbstractAgent implements AgentInterface
                 model: $finish->model ?? '',
                 usage: $finish?->usage,
                 reasoning: implode('', $reasoningParts),
-                contentBlocks: $finish->contentBlocks ?? [],
+                contentBlocks: self::withoutDroppedToolUse($finish->contentBlocks ?? [], $limitedCalls),
             );
 
             // The response counts as at least one token per 4 bytes received,
@@ -975,6 +975,27 @@ abstract class AbstractAgent implements AgentInterface
         }
 
         return 0;
+    }
+
+    /**
+     * $blocks without the provider-native `tool_use` blocks (Anthropic's shape) of the calls
+     * discarded under the per-turn cap, so those calls' arguments are not kept in the
+     * conversation. Other blocks, thinking and its signature included, keep their order.
+     *
+     * @param list<array<string, mixed>> $blocks
+     * @param array<int, string> $limitedCalls Ids of the discarded calls, by index
+     * @return list<array<string, mixed>>
+     */
+    private static function withoutDroppedToolUse(array $blocks, array $limitedCalls): array
+    {
+        if ($limitedCalls === [] || $blocks === []) {
+            return $blocks;
+        }
+
+        return array_values(array_filter(
+            $blocks,
+            static fn(array $block): bool => ($block['type'] ?? null) !== 'tool_use' || !in_array($block['id'] ?? null, $limitedCalls, true),
+        ));
     }
 
     /**
