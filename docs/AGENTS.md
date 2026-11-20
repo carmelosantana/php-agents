@@ -127,7 +127,7 @@ time, response data and tokens it may use whatever the provider reports:
 | `maxToolCallsPerRun` | `0` | Tool calls sent to the policy and executor across the run; `0` means no cap |
 | `executeUnadvertisedTools` | `false` | `true` lets the model execute any registered tool, even one `maxTools` left out |
 | `maxRunSeconds` | `0.0` | Wall time of the run in seconds, from the start of `run()`; `0.0` means no limit |
-| `maxResponseBytes` | `0` | Bytes received from the provider across the run; `0` means no limit |
+| `maxResponseBytes` | `33_554_432` | Bytes received from the provider across the run (32 MiB, `RunLimits::DEFAULT_MAX_RESPONSE_BYTES`); `0` means no limit |
 | `maxEstimatedTokens` | `0` | Local token estimate across the run; `0` means no limit |
 | `maxInputTokens` | `0` | Estimated tokens of the new input message; `0` means no limit |
 
@@ -188,7 +188,9 @@ returns that fixed content:
   [call identity](#streaming-tool-input-and-usage)); the JSON of a call's final arguments
   beyond the bytes its deltas already brought (so a provider that sends no deltas is still counted,
   and one that does is not counted twice) and of its metadata; and the finish's raw reason, model
-  and content-block JSON. The total runs across every provider call of the run.
+  and content-block JSON, less the thinking, text and tool input those blocks repeat from what the
+  response streamed (Anthropic's blocks carry them again, so its responses are not counted twice).
+  The total runs across every provider call of the run.
 - **Estimated tokens.** Before each provider call the request estimate is
   `Conversation::estimateTokens()` plus one token per 4 bytes of the tool schemas' JSON. If the
   tokens spent so far plus that estimate exceed the limit, the run ends before the request is sent.
@@ -457,7 +459,8 @@ when the run ends for another reason.
 
 Rows that start with `error` follow whatever the step already fired: a cancel or time limit during
 tools comes after that response's `step_finish` and tool events. An exception that escapes `run()`
-(thrown by an observer, for example) skips `agent.finish`.
+(thrown by an observer, for example) skips `agent.finish`. An observer's exception escapes even
+while a response streams; the agent does not report it as a provider error.
 
 ### Error text is redacted and bounded
 
@@ -499,7 +502,7 @@ $agent = new MyAgent(
 // Agent will stop after 30 seconds, even mid-loop
 ```
 
-The token is checked at the top of each iteration, on every stream event (including the idle `Tick`s, so a silent model can be stopped), after the response finishes (after `agent.step_finish`, after the execution policy allows `done`, after `agent.empty_response`, and just before a text answer is accepted), before each tool call and before a batch starts. Which providers tick during silence, and which only check per chunk, is listed under [Streaming Events](PROVIDERS.md#streaming-events). A cancel ends the run with `AgentFinishReason::Cancelled`, after `agent.error` with `'Task cancelled'`, except one that lands after a refusal, content-filter, context-window or provider-error finish: that run keeps its own finish reason, since it ends anyway and the reason is information the caller needs:
+The token is checked at the top of each iteration, on every stream event (including the idle `Tick`s, so a silent model can be stopped), after the response finishes (after `agent.step_finish`, after the execution policy allows `done`, after `agent.empty_response`, and just before a text answer is accepted), before each tool call and before a batch starts. Once the token reports a cancel, the run stays cancelled until it returns, even if a later `isCancelled()` would say `false`; the next `run()` reads the token afresh. Which providers tick during silence, and which only check per chunk, is listed under [Streaming Events](PROVIDERS.md#streaming-events). A cancel ends the run with `AgentFinishReason::Cancelled`, after `agent.error` with `'Task cancelled'`, except one that lands after a refusal, content-filter, context-window or provider-error finish: that run keeps its own finish reason, since it ends anyway and the reason is information the caller needs:
 
 | When | Outcome |
 |---|---|

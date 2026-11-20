@@ -145,6 +145,39 @@ test('streamEvents ends calls from an earlier chunk at once and finishes ToolUse
         ->and($events[3]->reason)->toBe(ProviderFinishReason::ToolUse);
 });
 
+test('streamEvents keeps the MAX_TOKENS reason when valid calls ended in an earlier chunk', function () {
+    $events = geminiStreamEvents([
+        geminiChunk([['functionCall' => ['name' => 'x', 'args' => ['a' => 1]]]]),
+        geminiChunk([['text' => 'cut']], 'MAX_TOKENS'),
+    ]);
+
+    // The calls already ended; Finish keeps the provider's reason, so the agent runs none of them.
+    expect($events)->toEqual([
+        new ToolInputStart(0, 'g00000000', 'x'),
+        new ToolInputDelta(0, 'g00000000', '{"a":1}'),
+        new ToolInputEnd(0, 'g00000000', 'x', ['a' => 1]),
+        new TextDelta('cut'),
+        new Finish(ProviderFinishReason::MaxTokens, 'MAX_TOKENS', null, 'gemini-2.5-flash'),
+    ]);
+});
+
+test('streamEvents drops a functionCall with no name and finishes with Error', function () {
+    $events = geminiStreamEvents([
+        geminiChunk([
+            ['functionCall' => ['args' => ['a' => 1]]],
+            ['functionCall' => ['name' => 'now', 'args' => new stdClass()]],
+        ], 'STOP'),
+    ]);
+
+    expect($events)->toEqual([
+        new ToolInputStart(0, 'g00000000', ''),
+        new ToolInputStart(1, 'g00000001', 'now'),
+        new ToolInputDelta(1, 'g00000001', '{}'),
+        new ToolInputEnd(1, 'g00000001', 'now', []),
+        new Finish(ProviderFinishReason::Error, 'STOP', null, 'gemini-2.5-flash'),
+    ]);
+});
+
 test('streamEvents emits no tool events when the finish reason drops tool calls', function (string $raw, ProviderFinishReason $reason) {
     $events = geminiStreamEvents([
         geminiChunk([['text' => 'Part'], ['functionCall' => ['name' => 'x', 'args' => ['a' => 1]]]], $raw),

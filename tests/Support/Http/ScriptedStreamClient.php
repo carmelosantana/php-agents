@@ -35,9 +35,9 @@ final class ScriptedStreamClient implements HttpClientInterface
     /**
      * @param list<list<ChunkInterface|float|string|\Closure(): mixed>> $polls
      */
-    public function __construct(private array $polls, private readonly float $tailWait = 0.01)
+    public function __construct(private array $polls, private readonly float $tailWait = 0.01, int $status = 200)
     {
-        $this->response = new ScriptedResponse(self::URL);
+        $this->response = new ScriptedResponse(self::URL, $status);
     }
 
     public function request(string $method, string $url, array $options = []): ResponseInterface

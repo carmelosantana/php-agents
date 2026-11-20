@@ -302,6 +302,26 @@ test('response parsing extracts tool calls from functionCall parts', function ()
         ->and($response->toolCalls[0]->arguments)->toBe(['city' => 'London']);
 });
 
+test('response parsing drops a functionCall with no name and finishes Error', function () {
+    $mockClient = new MockHttpClient([
+        mockGeminiResponse([
+            'candidates' => [[
+                'content' => ['role' => 'model', 'parts' => [
+                    ['functionCall' => ['args' => ['a' => 1]]],
+                    ['functionCall' => ['name' => 'now', 'args' => new stdClass()]],
+                ]],
+                'finishReason' => 'STOP',
+            ]],
+        ]),
+    ]);
+    $provider = new GeminiProvider(model: 'gemini-2.5-flash', apiKey: 'test-key', httpClient: $mockClient);
+
+    $response = $provider->chat([new UserMessage('Hi')]);
+
+    expect($response->finishReason)->toBe(ProviderFinishReason::Error)
+        ->and($response->toolCalls)->toEqual([new ToolCall('g00000001', 'now', [])]);
+});
+
 test('finish reason mapping: STOP', function () {
     $mockClient = new MockHttpClient([
         mockGeminiResponse(['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'ok']]], 'finishReason' => 'STOP']]]),

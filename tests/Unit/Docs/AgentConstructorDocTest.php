@@ -41,8 +41,10 @@ test('the ready-made Agent section matches the Agent constructor', function () {
 
     expect($trailing)->toBe([['runLimits', null], ['cancellationToken', null], ['providerOptions', []]]);
 
+    preg_match('/### The ready-made `Agent`.*?(?=\n#)/s', $doc, $section);
+    expect($section[0] ?? '')->toContain('| Parameter | Type | Default |');
     foreach ($parameters as $parameter) {
-        expect($doc)->toContain('| `' . $parameter->getName() . '` |');
+        expect($section[0] ?? '')->toContain('| `' . $parameter->getName() . '` |');
     }
 
     preg_match('/### The ready-made `Agent`.*?```php\n(.*?)```/s', $doc, $m);

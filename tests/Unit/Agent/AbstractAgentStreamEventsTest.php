@@ -965,6 +965,20 @@ test('an empty start id is filled from the first delta that carries one', functi
     expect(array_map(fn(ToolInputDelta $d): string => $d->id, $events->dataFor('agent.tool_input_delta')))->toBe(['c1', 'c1']);
 });
 
+test('a non-empty start id wins over a delta that carries a different non-empty id', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, 'c1', 'echo'),
+        new ToolInputDelta(0, 'c9', '{"text":"hi"}'),
+        new ToolInputEnd(0, 'c1', 'echo', ['text' => 'hi']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')]);
+
+    $output = $agent->run(new UserMessage('Echo hi.'));
+
+    expect($events->dataFor('agent.tool_input_delta'))->toEqual([new ToolInputDelta(0, 'c1', '{"text":"hi"}')])
+        ->and($output->toolResults[0]->callId)->toBe('c1');
+});
+
 test('a non-empty start id and name still win over an end that differs', function () {
     [$agent, $events] = streamEventsAgent([[
         new ToolInputStart(0, 'c1', 'echo'),

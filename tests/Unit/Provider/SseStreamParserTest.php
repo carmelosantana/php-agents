@@ -6,9 +6,11 @@ use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Provider\SseStreamParser;
 use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use Symfony\Component\HttpClient\Chunk\DataChunk;
+use Symfony\Component\HttpClient\Chunk\ErrorChunk;
 use Symfony\Component\HttpClient\Chunk\FirstChunk;
 use Symfony\Component\HttpClient\Chunk\LastChunk;
 use Symfony\Component\HttpClient\Exception\TimeoutException;
+use Symfony\Component\HttpClient\Exception\TransportException;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 use Symfony\Contracts\HttpClient\Exception\ClientExceptionInterface;
@@ -404,6 +406,50 @@ test('a 4xx answer still throws the Symfony client exception when ticking', func
 
     expect($thrown)->toBeInstanceOf(ClientExceptionInterface::class)
         ->and($thrown?->getMessage())->toContain('401');
+});
+
+test('a 4xx answer that never sends a first chunk still throws on its first data chunk', function () {
+    $client = new ScriptedStreamClient([
+        [ScriptedStreamClient::TIMEOUT],
+        [new DataChunk(0, "data: {\"error\":\"bad key\"}\n\n"), new LastChunk()],
+    ], status: 401);
+    $parser = new SseStreamParser($client, $client->response, SseStreamParser::DEFAULT_MAX_LINE_BYTES, 0.25);
+
+    $seen = [];
+    $thrown = null;
+    try {
+        foreach ($parser->events() as $event) {
+            $seen[] = $event instanceof Tick ? 'tick' : $event;
+        }
+    } catch (Throwable $e) {
+        $thrown = $e;
+    }
+
+    expect($thrown)->toBeInstanceOf(ClientExceptionInterface::class)
+        ->and($thrown?->getMessage())->toContain('401')
+        ->and($seen)->toBe(['tick']);
+});
+
+test('a non-timeout error chunk while ticking propagates', function () {
+    $client = new ScriptedStreamClient([
+        [new FirstChunk(), new DataChunk(0, "data: {\"n\":1}\n\n")],
+        [new ErrorChunk(0, new TransportException('Max duration was reached.'))],
+    ]);
+    $parser = new SseStreamParser($client, $client->response, SseStreamParser::DEFAULT_MAX_LINE_BYTES, 0.25, 300.0);
+
+    $seen = [];
+    $thrown = null;
+    try {
+        foreach ($parser->events() as $event) {
+            $seen[] = $event instanceof Tick ? 'tick' : $event;
+        }
+    } catch (Throwable $e) {
+        $thrown = $e;
+    }
+
+    expect($thrown)->toBeInstanceOf(TransportException::class)
+        ->and($thrown?->getMessage())->toBe('Max duration was reached.')
+        ->and($seen)->toBe([['n' => 1], 'tick']);
 });
 
 test('a 3xx answer is still refused when ticking', function () {

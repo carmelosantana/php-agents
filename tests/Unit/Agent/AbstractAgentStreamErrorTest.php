@@ -66,3 +66,109 @@ test('a stream error event reaches the agent output and agent.error sanitised an
         ->and(preg_match('/\p{Cc}/u', $output->content))->toBe(0)
         ->and($errors)->toBe([substr($output->content, strlen('Provider error: '))]);
 });
+
+test('an observer that throws mid-stream escapes run() instead of reading as a provider error', function (string $event, bool $cancel) {
+    $token = new class implements \CarmeloSantana\PHPAgents\Contract\CancellationTokenInterface {
+        public bool $cancelled = false;
+
+        public function isCancelled(): bool
+        {
+            return $this->cancelled;
+        }
+
+        public function cancel(): void
+        {
+            $this->cancelled = true;
+        }
+    };
+    $agent = new StreamErrorTestAgent(
+        provider: new \Tests\Support\Agent\ScriptedProvider([new \CarmeloSantana\PHPAgents\Provider\Response(
+            content: 'Hello',
+            finishReason: \CarmeloSantana\PHPAgents\Enum\ProviderFinishReason::Stop,
+        )]),
+        cancellationToken: $token,
+    );
+    $events = [];
+    $agent->attach(new \CarmeloSantana\PHPAgents\Agent\CallbackObserver(function (string $name) use (&$events, $event, $cancel, $token): void {
+        $events[] = $name;
+        if ($name === $event) {
+            if ($cancel) {
+                $token->cancel();
+            }
+            throw new \DomainException('observer broke');
+        }
+    }));
+
+    expect(fn() => $agent->run(new UserMessage('Hi')))->toThrow(\DomainException::class, 'observer broke')
+        ->and($events)->not->toContain('agent.error');
+})->with([
+    'text delta' => ['agent.text_delta', false],
+    'step finish' => ['agent.step_finish', false],
+    'text delta after a cancel' => ['agent.text_delta', true],
+]);
+
+test('an observer exception is forgotten once its run ends', function () {
+    $broken = new \DomainException('observer broke');
+    $provider = new class ($broken) implements \CarmeloSantana\PHPAgents\Contract\ProviderInterface {
+        use \CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
+
+        public int $calls = 0;
+
+        public function __construct(private \Throwable $reused) {}
+
+        public function chat(array $messages, array $tools = [], array $options = []): \CarmeloSantana\PHPAgents\Provider\Response
+        {
+            throw new LogicException('unused');
+        }
+
+        public function stream(array $messages, array $tools = [], array $options = []): iterable
+        {
+            $this->calls++;
+            yield new \CarmeloSantana\PHPAgents\Provider\Response(content: 'Hello', finishReason: \CarmeloSantana\PHPAgents\Enum\ProviderFinishReason::Stop);
+            if ($this->calls === 2) {
+                // A provider that rethrows the same object must still read as a provider error.
+                throw $this->reused;
+            }
+        }
+
+        public function structured(array $messages, string $schema, array $options = []): mixed
+        {
+            throw new LogicException('unused');
+        }
+
+        public function models(): array
+        {
+            return [];
+        }
+
+        public function isAvailable(): bool
+        {
+            return true;
+        }
+
+        public function getModel(): string
+        {
+            return 'test-model';
+        }
+
+        public function withModel(string $model): static
+        {
+            return $this;
+        }
+    };
+    $agent = new StreamErrorTestAgent(provider: $provider);
+    $throwing = true;
+    $agent->attach(new \CarmeloSantana\PHPAgents\Agent\CallbackObserver(function (string $name) use (&$throwing, $broken): void {
+        if ($throwing && $name === 'agent.text_delta') {
+            throw $broken;
+        }
+    }));
+
+    expect(fn() => $agent->run(new UserMessage('Hi')))->toThrow(\DomainException::class);
+
+    $throwing = false;
+    $output = $agent->run(new UserMessage('Again'));
+
+    expect($output->finishReason)->toBe(\CarmeloSantana\PHPAgents\Enum\AgentFinishReason::Error)
+        ->and($output->content)->toContain('observer broke');
+});

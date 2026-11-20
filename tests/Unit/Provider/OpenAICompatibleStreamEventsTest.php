@@ -258,6 +258,19 @@ test('streamEvents holds Finish for the usage-only chunk and reads cached and re
         ->and($finishes[0]->usage)->toEqual(new Usage(20, 10, 30, cacheReadTokens: 8, reasoningTokens: 3));
 });
 
+test('streamEvents yields nothing for a tool_calls fragment that arrives after finish_reason', function () {
+    $events = openAIStreamEvents([
+        openAIToolChunk([['index' => 0, 'id' => 'c1', 'function' => ['name' => 'x', 'arguments' => '{}']]]),
+        openAIFinishChunk('tool_calls'),
+        openAIToolChunk([['index' => 1, 'id' => 'c2', 'function' => ['name' => 'late', 'arguments' => '{}']]]),
+        ['model' => 'gpt-4o-2024', 'choices' => [], 'usage' => ['prompt_tokens' => 1, 'completion_tokens' => 1, 'total_tokens' => 2]],
+    ]);
+
+    expect(openAIEventClasses($events))->toBe([ToolInputStart::class, ToolInputDelta::class, ToolInputEnd::class, Finish::class])
+        ->and($events[2]->id)->toBe('c1')
+        ->and($events[3]->reason)->toBe(ProviderFinishReason::ToolUse);
+});
+
 test('streamEvents finishes on the finish chunk when it carries usage itself', function () {
     $events = openAIStreamEvents([
         ['choices' => [['delta' => ['content' => 'Hi'], 'finish_reason' => 'stop']], 'usage' => ['prompt_tokens' => 5, 'completion_tokens' => 2, 'total_tokens' => 7]],
