@@ -723,3 +723,18 @@ test('a stream limit after the Finish arrived keeps that Finish\'s usage and rep
         ->and($output->usage?->totalTokens)->toBe(5_000)
         ->and($window->usedTokens())->toBe(5_000);
 });
+
+test('a cancel on agent.step_finish still scrubs the raw reason and model in the finish events', function () {
+    $model = "evil\u{202E}model sk-" . str_repeat('A1b2', 6);
+    [$agent, $events] = cancellationAgent(
+        [[new TextDelta('Hello'), new Finish(ProviderFinishReason::Stop, "stop\e[0m", null, $model)]],
+        fn(string $event): bool => $event === 'agent.step_finish',
+    );
+
+    $output = $agent->run(new UserMessage('Say hello.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($events->dataFor('agent.step_finish')[0]->rawReason)->toBe('stop [0m')
+        ->and($events->dataFor('agent.step_finish')[0]->model)->toBe('evil model [redacted]')
+        ->and($events->dataFor('agent.finish')[0]->model)->toBe('evil model [redacted]');
+});

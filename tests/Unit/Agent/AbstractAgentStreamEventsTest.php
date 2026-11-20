@@ -871,3 +871,16 @@ test('deltas that came without a start are credited to the call\'s end, not coun
     expect($run(56)->content)->toBe('Done.')
         ->and($run(55)->content)->toBe('Response size limit reached.');
 });
+
+test('a token limit after the response still scrubs the model in agent.finish', function () {
+    $model = "evil\u{202E}model sk-" . str_repeat('A1b2', 6);
+    [$agent, $events] = streamEventsAgent(
+        [[new TextDelta('Hi.'), new Finish(ProviderFinishReason::Stop, 'stop', new Usage(10, 1_000_000, 1_000_010), $model)]],
+        ['runLimits' => new RunLimits(maxEstimatedTokens: 100_000)],
+    );
+
+    $output = $agent->run(new UserMessage('Hi.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::BudgetExhausted)
+        ->and($events->dataFor('agent.finish')[0]->model)->toBe('evil model [redacted]');
+});
