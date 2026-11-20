@@ -76,8 +76,13 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   run with a tight byte cap reaches it slightly sooner.
 - `agent.step_finish` and `agent.finish` pass the provider's raw finish reason and model id through
   `UntrustedText::forDisplay()`: credential shapes become `[redacted]`, control and bidi characters
-  become spaces, and the text is cut to 128 characters. `Finish` from `streamEvents()` and
-  `Output::$model` stay verbatim.
+  become spaces, whitespace is collapsed and trimmed, and the text is cut to 128 characters plus a
+  `…` (129 at most). Compare `StepFinish::$rawReason` with the normalised `reason`, not with a raw
+  value. `Finish` from `streamEvents()`, `Output::$model` and `Response::$model` stay verbatim.
+- `UntrustedText::forDisplay()` (provider and tool error text, finish telemetry) also redacts a
+  credential split by a control or format character, and `redactSecrets()` (MCP results too) a key
+  glued to `_` or punctuation, such as `reason_sk-…`. `scrub()` also blanks the Hangul fillers and
+  never cuts a letter off its combining mark.
 - `SseStreamParser` applies its 1 MiB line cap (`maxLineBytes`) to every line, not only to one
   still waiting for its newline: a provider stream with a longer complete line now throws a
   `ProviderException` (`SSE line exceeded … bytes`) instead of decoding it.

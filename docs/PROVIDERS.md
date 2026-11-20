@@ -740,8 +740,8 @@ data it throws symfony's idle-timeout `TimeoutException`, up to one `tickInterva
 
 `Finish->rawReason` (and `StepFinish->rawReason` on the agent event) is the provider's own reason,
 before it is mapped to `ProviderFinishReason`. It is `''` when a stream ended without one.
-`Finish->rawReason` and `Finish->model` are verbatim; on `StepFinish` the agent redacts them and cuts
-them to 128 characters (see [Error text is redacted and bounded](AGENTS.md#error-text-is-redacted-and-bounded)).
+`Finish->rawReason` and `Finish->model` are verbatim; on `StepFinish` the agent redacts them, turns control
+and bidi characters into spaces and cuts them to 128 characters plus `…` (see [Error text is redacted and bounded](AGENTS.md#error-text-is-redacted-and-bounded)).
 
 | Provider | `rawReason` |
 |----------|-------------|

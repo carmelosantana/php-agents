@@ -121,8 +121,9 @@ payloads and order. New events:
 | `agent.finish` | `RunFinish{AgentFinishReason reason, Usage usage, int iterations, string model}` | exactly once, on every exit path, just before `run()` returns |
 
 `StepFinish::$rawReason`, `StepFinish::$model` and `RunFinish::$model` are provider-controlled, so the
-agent passes them through `UntrustedText::forDisplay()` (redacted, control and bidi characters
-removed, at most 128 characters) before notifying. `Finish` on the provider stream stays verbatim.
+agent passes them through `UntrustedText::forDisplay()` before notifying: credential shapes are
+redacted, control and bidi characters become spaces, whitespace is collapsed and trimmed, and the
+text is cut to 128 characters plus a `…` (129 at most). `Finish` on the provider stream stays verbatim.
 
 - `agent.tool_input_discarded` carries one of these reasons, and a UI uses it to retract a card or
   a preview:
