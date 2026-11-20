@@ -17,6 +17,7 @@ use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\Conversation;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
 use CarmeloSantana\PHPAgents\Provider\Usage;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
@@ -32,6 +33,8 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
  */
 final class RunLimitsScriptedProvider implements ProviderInterface
 {
+    use StreamsEventsFromResponses;
+
     public int $calls = 0;
 
     public int $chunksConsumed = 0;

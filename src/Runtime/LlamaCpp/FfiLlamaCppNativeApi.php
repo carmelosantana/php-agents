@@ -15,6 +15,11 @@ use CarmeloSantana\PHPAgents\Runtime\RuntimeModelMetadata;
 /**
  * @phpstan-type NativeModelHandle object{path: string, pointer: mixed}&\stdClass
  * @phpstan-type NativeContextHandle object{pointer: mixed, batchSize: int, threads: int, mtmd: mixed, mtmdProjectorPath: ?string}&\stdClass
+ *
+ * @deprecated 0.18 Use \CarmeloSantana\PHPAgents\Provider\LlamaServerProvider (llama.cpp's llama-server).
+ *             The FFI binding matches llama.h only up to llama.cpp b9174 (newer builds segfault)
+ *             and, with tools (always under Agent), buffers the whole generation. Removed or
+ *             fixed in 0.19.
  */
 final class FfiLlamaCppNativeApi implements LlamaCppNativeApiInterface
 {

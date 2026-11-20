@@ -10,6 +10,14 @@ use CarmeloSantana\PHPAgents\Enum\Role;
 
 final class Conversation
 {
+    /**
+     * Tokens one image part adds to estimateTokens(). Providers bill an image by its pixel
+     * size, not its base64 length (about 85 to 1,600 tokens across them), so a flat
+     * estimate is closer than counting the bytes, which made any real photo trip
+     * RunLimits::$maxInputTokens.
+     */
+    public const int IMAGE_TOKENS = 1_000;
+
     /** @var MessageInterface[] */
     private array $messages = [];
 
@@ -79,14 +87,22 @@ final class Conversation
      * Estimate total tokens (rough: 1 token ≈ 4 chars).
      *
      * Structured content and tool calls are measured as JSON; invalid UTF-8 is substituted
-     * rather than dropping the whole message from the estimate.
+     * rather than dropping the whole message from the estimate. An image part
+     * (`image_url`, or an Anthropic-style `image` block) counts as IMAGE_TOKENS instead
+     * of the length of its base64 or URL.
      */
     public function estimateTokens(): int
     {
         $flags = \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR;
         $chars = 0;
+        $images = 0;
         foreach ($this->messages as $msg) {
             $content = $msg->content();
+            if (is_array($content)) {
+                $parts = array_filter($content, fn($part) => !self::isImagePart($part));
+                $images += count($content) - count($parts);
+                $content = array_values($parts);
+            }
             $chars += is_string($content) ? strlen($content) : strlen(json_encode($content, $flags) ?: '');
 
             // Account for tool call schemas in assistant messages
@@ -98,7 +114,12 @@ final class Conversation
             }
         }
 
-        return (int) ceil($chars / 4);
+        return (int) ceil($chars / 4) + $images * self::IMAGE_TOKENS;
+    }
+
+    private static function isImagePart(mixed $part): bool
+    {
+        return is_array($part) && in_array($part['type'] ?? null, ['image_url', 'image'], true);
     }
 
     /**

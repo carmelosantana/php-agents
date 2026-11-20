@@ -13,12 +13,15 @@ use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
 
 /**
  * Scripted provider that yields one Response per stream() call.
  */
 final class EmptyResponseScriptedProvider implements ProviderInterface
 {
+    use StreamsEventsFromResponses;
+
     /** @var list<Response> */
     private array $scripts;
 

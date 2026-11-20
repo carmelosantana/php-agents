@@ -122,3 +122,59 @@ test('an unclosed quoted value is redacted to the end of the text', function () 
     expect(UntrustedText::redactSecrets('{"password": "pa\\"ss word leaks'))->toBe('{"password": "[redacted]')
         ->and(UntrustedText::redactSecrets("secret='never closed"))->toBe("secret='[redacted]");
 });
+
+// A hostile sender can split a credential with a control or format character that scrub()
+// later turns into a space; forDisplay() must still redact it.
+dataset('split_secrets', [
+    'bidi between Bearer and its token' => ["denied: Bearer\u{202E}abcdefghijkl", 'abcdefghijkl'],
+    'ESC between Bearer and its token' => ["denied: Bearer\eabcdefghijkl", 'abcdefghijkl'],
+    'zero-width space inside an sk- key' => ["bad key sk-AAAAAAAAAAAAAAA\u{200B}BBBBBBBBB here", 'AAAAAAAAAAAAAAA'],
+    'ESC inside an sk- key' => ["bad key sk-AAAAAAAA\eBBBBBBBBBBBB here", 'BBBBBBBBBBBB'],
+    'bidi isolate inside a GitHub token' => ["token ghp_AAAAAAAAAA\u{2066}BBBBBBBBBBBBBBBBBBBB", 'BBBBBBBBBBBBBBBBBBBB'],
+    'C1 CSI inside an AWS key id' => ["id AKIAABCDEFGH\u{009B}IJKLMNOP denied", 'IJKLMNOP'],
+]);
+
+test('forDisplay redacts a credential split by a control or format character', function (string $in, string $fragment) {
+    $out = UntrustedText::forDisplay($in, 300);
+
+    expect($out)->not->toContain($fragment)
+        ->and($out)->toContain('[redacted]')
+        ->and(preg_match('/[\p{Cc}\p{Cf}]/u', $out))->toBe(0);
+})->with('split_secrets');
+
+test('forDisplay still turns control characters into spaces when nothing is split', function () {
+    expect(UntrustedText::forDisplay("stop\e[31m red\u{202E}x", 300))->toBe('stop [31m red x');
+});
+
+dataset('glued_secrets', [
+    'sk- after an underscore' => ['reason_sk-' . str_repeat('A1b2', 6), 'reason_[redacted]'],
+    'AIza after an underscore' => ['x_AIza' . str_repeat('B', 35), 'x_[redacted]'],
+    'xai- after an underscore' => ['model_xai-' . str_repeat('C', 20), 'model_[redacted]'],
+    'GitHub token after an underscore' => ['id_ghp_' . str_repeat('D', 36), 'id_[redacted]'],
+    'AWS key id after an underscore' => ['key_AKIAABCDEFGHIJKLMNOP', 'key_[redacted]'],
+]);
+
+test('redactSecrets catches a key glued to a word character', function (string $in, string $out) {
+    expect(UntrustedText::redactSecrets($in))->toBe($out);
+})->with('glued_secrets');
+
+test('words that end in sk or contain gh_ are not keys', function () {
+    foreach ([
+        'task-abcdefghijklmnopqrstuvwxyz failed',
+        'risk-assessment-for-quarterly-review',
+        'desk-reservation-system-v2-beta-build',
+        'highAIzaconfiguration-is-not-a-google-key-at-all',
+        'laugh_abcdefghijklmnopqrstuvwxyz',
+    ] as $text) {
+        expect(UntrustedText::redactSecrets($text))->toBe($text);
+    }
+});
+
+test('scrub turns invisible Hangul fillers into spaces', function () {
+    expect(UntrustedText::scrub("a\u{3164}b\u{115F}c\u{1160}d\u{FFA0}e", 300))->toBe('a b c d e');
+});
+
+test('scrub does not separate a base letter from its combining mark at the cut', function () {
+    expect(UntrustedText::scrub(str_repeat('x', 9) . "e\u{0301}zz", 10))->toBe(str_repeat('x', 9) . '…')
+        ->and(UntrustedText::scrub(str_repeat('x', 8) . "e\u{0301}zz", 10))->toBe(str_repeat('x', 8) . "e\u{0301}…");
+});

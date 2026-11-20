@@ -28,6 +28,10 @@ usage() {
     cat <<EOF
 Usage: $0 [options]
 
+Deprecated in 0.18: the in-process FFI runtime works only with llama.cpp up to b9174 and is
+removed or fixed in 0.19. Run llama-server instead and use LlamaServerProvider
+(docs/PROVIDERS.md#llamaserverprovider).
+
 Run the native llama.cpp integration slice, the runtime benchmark, the cache benchmark,
 and an optional Ollama comparison suite covering both provider-surface and raw parity runs.
 
@@ -38,6 +42,8 @@ Options:
   --help                  Show this help text
 EOF
 }
+
+warn "Deprecated in 0.18: the FFI runtime works only with llama.cpp up to b9174; use llama-server and LlamaServerProvider."
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

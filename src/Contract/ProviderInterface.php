@@ -6,6 +6,7 @@ namespace CarmeloSantana\PHPAgents\Contract;
 
 use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
 
 /**
  * Abstraction for LLM API communication.
@@ -30,6 +31,16 @@ interface ProviderInterface
      * @return iterable<Response>
      */
     public function stream(array $messages, array $tools = [], array $options = []): iterable;
+
+    /**
+     * Stream a chat completion as typed events, ending with exactly one Finish.
+     *
+     * @param MessageInterface[] $messages
+     * @param ToolInterface[] $tools
+     * @param array<string, mixed> $options
+     * @return iterable<StreamEvent>
+     */
+    public function streamEvents(array $messages, array $tools = [], array $options = []): iterable;
 
     /**
      * Request structured output matching a JSON Schema.

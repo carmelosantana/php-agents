@@ -12,6 +12,7 @@ use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
 use CarmeloSantana\PHPAgents\Provider\OpenAICompatibleProvider;
 use CarmeloSantana\PHPAgents\Provider\OpenAIResponsesProvider;
 use CarmeloSantana\PHPAgents\Provider\RequestLimits;
+use CarmeloSantana\PHPAgents\Provider\LlamaServerProvider;
 use CarmeloSantana\PHPAgents\Provider\XAIProvider;
 use Symfony\Component\HttpClient\CurlHttpClient;
 use Symfony\Component\HttpClient\MockHttpClient;
@@ -30,6 +31,7 @@ function limitsTestProvider(string $name, HttpClientInterface $client): Abstract
         'ollama' => new OllamaProvider(httpClient: $client),
         'mistral' => new MistralProvider(apiKey: 'test-key', httpClient: $client),
         'xai' => new XAIProvider(model: 'grok-3', apiKey: 'test-key', httpClient: $client),
+        'llama-server' => new LlamaServerProvider(model: 'local', httpClient: $client),
     };
 }
 
@@ -132,6 +134,7 @@ dataset('limited providers', [
     'ollama',
     'mistral',
     'xai',
+    'llama-server',
 ]);
 
 test('chat() sends max_redirects 0 and max_duration 600.0', function (string $name) {

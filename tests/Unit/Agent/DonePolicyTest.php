@@ -15,6 +15,7 @@ use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
@@ -25,6 +26,8 @@ use CarmeloSantana\PHPAgents\Tool\ToolResult;
 
 final class DonePolicyProvider implements ProviderInterface
 {
+    use StreamsEventsFromResponses;
+
     public int $streams = 0;
 
     /** @param list<list<Response>> $rounds */

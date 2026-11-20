@@ -104,12 +104,12 @@ final class OllamaProvider extends OpenAICompatibleProvider
     }
 
     /**
-     * Override stream to inject Ollama-specific options.
+     * Override streamEvents to inject Ollama-specific options; stream() projects it.
      */
     #[\Override]
-    public function stream(array $messages, array $tools = [], array $options = []): iterable
+    public function streamEvents(array $messages, array $tools = [], array $options = []): iterable
     {
-        return parent::stream($messages, $tools, $this->injectOllamaOptions($options, $tools));
+        return parent::streamEvents($messages, $tools, $this->injectOllamaOptions($options, $tools));
     }
 
     /**

@@ -47,7 +47,9 @@ PHP 8.4+ with `curl`, `json` and `mbstring`.
 | Chat once, no agent loop | `$provider->chat([new UserMessage('Hi')])->content` |
 | An agent with tools | `new Agent($provider, instructions: '…', tools: [...], toolkits: [...])`, or extend `AbstractAgent` |
 | Stream the agent's text | `$agent->attach(new CallbackObserver(fn($event, $delta) => print $delta, 'agent.text_delta'))` |
-| Stream without an agent | `foreach ($provider->stream($messages) as $chunk) echo $chunk->content;` |
+| Stream tool input and usage | Observe `agent.tool_input_delta`, `agent.step_finish` and `agent.finish`, see [Agents](docs/AGENTS.md#streaming-tool-input-and-usage) |
+| Stop a run mid-stream | `new Agent($provider, cancellationToken: $token)`; the run ends `AgentFinishReason::Cancelled` |
+| Stream without an agent | `foreach ($provider->stream($messages) as $chunk) echo $chunk->content;`, or `streamEvents()` for typed events |
 | Typed data out | `StructuredOutput::extract($provider, $messages, ['type' => 'object', ...])` returns an array |
 | A remote MCP server's tools | `McpClient` + `McpToolkit` with pinned fingerprints, see [Tools & Toolkits](docs/TOOLS-AND-TOOLKITS.md) |
 | Pick a provider from config | `ProviderFactory::fromModelString('anthropic/claude-sonnet-5-5')` (reads the key from env) |
@@ -62,18 +64,20 @@ new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: getenv('OPENAI_API_KEY'));
 new GeminiProvider(model: 'gemini-2.5-flash', apiKey: getenv('GEMINI_API_KEY'));
 new XAIProvider(model: 'grok-3', apiKey: getenv('XAI_API_KEY'));
 new MistralProvider(model: 'mistral-large-latest', apiKey: getenv('MISTRAL_API_KEY'));
+new LlamaServerProvider(model: 'local');                                                   // llama.cpp llama-server, no key
 new OpenAICompatibleProvider(model: 'meta-llama/llama-3.1-70b-instruct',                    // OpenRouter, Groq, vLLM…
     apiKey: getenv('OPENROUTER_API_KEY'), baseUrl: 'https://openrouter.ai/api/v1');
 ```
 
 All classes live in `CarmeloSantana\PHPAgents\Provider`. The native llama.cpp runtime (FFI, no
-HTTP sidecar) and the Claude Code CLI provider are covered in [Local Runtime](docs/LOCAL-RUNTIME.md)
-and [Providers](docs/PROVIDERS.md).
+HTTP sidecar; deprecated in 0.18, use `LlamaServerProvider`) and the Claude Code CLI provider are
+covered in [Local Runtime](docs/LOCAL-RUNTIME.md) and [Providers](docs/PROVIDERS.md).
 
 | Feature | OpenAI Compatible | OpenAI Responses | Ollama | Anthropic | Gemini | xAI | Mistral |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `chat()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `stream()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `streamEvents()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `structured()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Tool calling | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Streaming + tool calls | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -101,8 +105,9 @@ parameter types and MCP are in [Tools & Toolkits](docs/TOOLS-AND-TOOLKITS.md).
 | [Providers](docs/PROVIDERS.md) | Feature matrix, streaming, structured output, images |
 | [Tools & Toolkits](docs/TOOLS-AND-TOOLKITS.md) | Parameters, execution policies, MCP client and server |
 | [Embeddings & Vector Stores](docs/MEMORY.md) | Embedding providers, similarity search |
-| [Local Runtime](docs/LOCAL-RUNTIME.md) | Native llama.cpp setup, benchmarks |
+| [Local Runtime](docs/LOCAL-RUNTIME.md) | Native llama.cpp setup, benchmarks (deprecated) |
 | [Architecture](docs/ARCHITECTURE.md) | Design, diagrams, extension points |
+| [Upgrading](docs/UPGRADING.md) | Breaking changes and migration notes per release |
 | [Decisions](docs/adr/) | Architecture decision records |
 
 Runnable examples are in [`examples/`](examples/) (repo only, not in the Composer dist).

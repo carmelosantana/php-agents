@@ -6,6 +6,7 @@ use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
 use CarmeloSantana\PHPAgents\Provider\StructuredOutput;
 
 function structuredReturning(mixed $raw, ?array &$seen = null): ProviderInterface
@@ -13,6 +14,8 @@ function structuredReturning(mixed $raw, ?array &$seen = null): ProviderInterfac
     $seen = [];
 
     return new class($raw, $seen) implements ProviderInterface {
+        use StreamsEventsFromResponses;
+
         public function __construct(private mixed $raw, private ?array &$seen) {}
 
         public function structured(array $messages, string $schema, array $options = []): mixed

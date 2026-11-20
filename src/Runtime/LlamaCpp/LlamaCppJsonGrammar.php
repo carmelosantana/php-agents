@@ -4,6 +4,12 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Runtime\LlamaCpp;
 
+/**
+ * @deprecated 0.18 Use \CarmeloSantana\PHPAgents\Provider\LlamaServerProvider (llama.cpp's llama-server).
+ *             The FFI binding matches llama.h only up to llama.cpp b9174 (newer builds segfault)
+ *             and, with tools (always under Agent), buffers the whole generation. Removed or
+ *             fixed in 0.19.
+ */
 final class LlamaCppJsonGrammar
 {
     public const string ROOT_RULE = 'root';

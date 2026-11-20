@@ -16,6 +16,7 @@ use CarmeloSantana\PHPAgents\Message\Conversation;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
@@ -27,6 +28,8 @@ use Symfony\Component\HttpClient\Response\MockResponse;
  */
 final class ThinkingBlocksScriptedProvider implements ProviderInterface
 {
+    use StreamsEventsFromResponses;
+
     /** @var list<list<MessageInterface>> */
     public array $streamCalls = [];
 
@@ -263,4 +266,47 @@ test('fallbackToReasoning adds its answer without content blocks', function () {
     expect($output->content)->toBe('The answer is 42.')
         ->and($final)->toHaveCount(1)
         ->and($final[0]->contentBlocks())->toBe([]);
+});
+
+test('a tool_use block for a call past maxToolCallsPerTurn is not sent back to Anthropic', function () {
+    $bodies = [];
+    $toolUse = fn(int $index, string $id): array => [
+        ['type' => 'content_block_start', 'index' => $index, 'content_block' => ['type' => 'tool_use', 'id' => $id, 'name' => 'ping', 'input' => []]],
+        ['type' => 'content_block_delta', 'index' => $index, 'delta' => ['type' => 'input_json_delta', 'partial_json' => '{}']],
+        ['type' => 'content_block_stop', 'index' => $index],
+    ];
+    $responses = [
+        thinkingBlocksSse(...[
+            ['type' => 'message_start', 'message' => ['model' => 'claude-test', 'usage' => ['input_tokens' => 5, 'output_tokens' => 1]]],
+            ['type' => 'content_block_start', 'index' => 0, 'content_block' => ['type' => 'thinking', 'thinking' => '', 'signature' => '']],
+            ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'thinking_delta', 'thinking' => 'Two pings.']],
+            ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'signature_delta', 'signature' => 'sig-capped']],
+            ['type' => 'content_block_stop', 'index' => 0],
+            ...$toolUse(1, 'toolu_1'),
+            ...$toolUse(2, 'toolu_2'),
+            ['type' => 'message_delta', 'delta' => ['stop_reason' => 'tool_use'], 'usage' => ['output_tokens' => 3]],
+            ['type' => 'message_stop'],
+        ]),
+        textAnswerSse('Answer.'),
+    ];
+    $client = new MockHttpClient(function (string $method, string $url, array $options) use (&$bodies, &$responses): MockResponse {
+        $bodies[] = $options['body'];
+
+        return array_shift($responses);
+    });
+    $agent = new ThinkingBlocksTestAgent(
+        provider: new AnthropicProvider(apiKey: 'test-key', httpClient: $client),
+        runLimits: new \CarmeloSantana\PHPAgents\Agent\RunLimits(maxToolCallsPerTurn: 1),
+    );
+
+    $output = $agent->run(new UserMessage('Hi'));
+    $messages = json_decode($bodies[1], true)['messages'];
+    $assistant = array_values(array_filter($messages, fn(array $m): bool => $m['role'] === 'assistant'));
+
+    expect($output->content)->toBe('Answer.')
+        ->and($assistant)->toHaveCount(1)
+        ->and(array_column($assistant[0]['content'], 'type'))->toBe(['thinking', 'tool_use'])
+        ->and($assistant[0]['content'][0]['signature'])->toBe('sig-capped')
+        ->and($assistant[0]['content'][1]['id'])->toBe('toolu_1')
+        ->and($bodies[1])->not->toContain('toolu_2');
 });

@@ -110,7 +110,16 @@ test('a negative limit is refused', function (array $arguments) {
     'maxDuration' => [['maxDuration' => -0.5]],
     'maxResponseBytes' => [['maxResponseBytes' => -1]],
     'maxRedirects' => [['maxRedirects' => -1]],
+    'tickInterval' => [['tickInterval' => -0.25]],
 ]);
+
+test('the tick interval defaults to a quarter second, 0.0 turns ticks off, and apply() leaves it out', function () {
+    $off = new RequestLimits(tickInterval: 0.0);
+
+    expect((new RequestLimits())->tickInterval)->toBe(0.25)
+        ->and($off->tickInterval)->toBe(0.0)
+        ->and($off->apply([]))->toEqual((new RequestLimits())->apply([]));
+});
 
 test('zero limits are accepted', function () {
     $limits = new RequestLimits(idleTimeout: 0.0, maxDuration: 0.0, maxResponseBytes: 0, maxRedirects: 0);

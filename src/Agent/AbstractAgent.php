@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Agent;
 
+use CarmeloSantana\PHPAgents\Agent\Event\DonePreview;
+use CarmeloSantana\PHPAgents\Agent\Event\RunFinish;
+use CarmeloSantana\PHPAgents\Agent\Event\StepFinish;
+use CarmeloSantana\PHPAgents\Agent\Event\ToolInputDiscarded;
 use CarmeloSantana\PHPAgents\Contract\AgentInterface;
 use CarmeloSantana\PHPAgents\Contract\BatchToolExecutorInterface;
 use CarmeloSantana\PHPAgents\Contract\BudgetPruningStrategyInterface;
@@ -31,7 +35,15 @@ use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Prompt\SystemPrompt;
+use CarmeloSantana\PHPAgents\Provider\RequestLimits;
 use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
+use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
+use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
 use CarmeloSantana\PHPAgents\Provider\Usage;
 use CarmeloSantana\PHPAgents\Security\UntrustedText;
 use CarmeloSantana\PHPAgents\Tool\DoneTool;
@@ -51,6 +63,23 @@ abstract class AbstractAgent implements AgentInterface
      */
     public const int DEFAULT_MAX_ITERATIONS = 25;
 
+    /**
+     * With no RunLimits::$maxToolCallsPerTurn, how many calls of one response may wait for a
+     * name at once (they opened with an empty name; the end names them). Calls opened past it
+     * are discarded with reason `tool_call_limit`.
+     */
+    public const int MAX_PENDING_NAMELESS_CALLS = 128;
+
+    /**
+     * RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE, the one bound shared with the providers: how
+     * many tool calls of one response the agent tracks (kept, waiting for a name, or
+     * discarded under the per-turn cap). A call that opens (or ends without a start) past it is
+     * not forwarded or retained; the first such call gets agent.tool_input_discarded with reason
+     * `tool_call_overflow`, and every later event of an untracked call is ignored. Each index is
+     * tracked once: a repeated start for a known index, or a repeated end, is ignored.
+     */
+    public const int MAX_TOOL_CALLS_PER_RESPONSE = RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE;
+
     /** Characters of a provider exception message, and of an API error message, that reach Output and agent.error. */
     private const int PROVIDER_ERROR_MAX_CHARS = 300;
 
@@ -61,6 +90,9 @@ abstract class AbstractAgent implements AgentInterface
     private const int TOOL_ERROR_MAX_CHARS = 500;
 
     private const int ERROR_CODE_MAX_CHARS = 64;
+
+    /** Characters of a provider's raw finish reason, or model id, that reach agent.step_finish and agent.finish. */
+    private const int FINISH_TELEMETRY_MAX_CHARS = 128;
 
     private const string RUN_TIME_LIMIT_REACHED = 'Run time limit reached.';
 
@@ -179,7 +211,26 @@ abstract class AbstractAgent implements AgentInterface
         return $this;
     }
 
+    /**
+     * Runs the agent loop, then fires agent.finish with a RunFinish built from the Output
+     * it returns, so every exit path ends with exactly one agent.finish. The model is scrubbed
+     * like a provider error, since a provider controls it.
+     */
     public function run(MessageInterface $input, ?Conversation $history = null): Output
+    {
+        $output = $this->runLoop($input, $history);
+
+        $this->notify('agent.finish', new RunFinish(
+            $output->finishReason,
+            $output->usage ?? new Usage(),
+            $output->iterations,
+            UntrustedText::forDisplay($output->model, self::FINISH_TELEMETRY_MAX_CHARS),
+        ));
+
+        return $output;
+    }
+
+    private function runLoop(MessageInterface $input, ?Conversation $history): Output
     {
         $runStartedNs = (float) hrtime(true);
         $this->notify('agent.start', $input);
@@ -274,16 +325,7 @@ abstract class AbstractAgent implements AgentInterface
 
             // Check cooperative cancellation before each iteration
             if ($this->cancellationToken?->isCancelled()) {
-                $this->notify('agent.error', 'Task cancelled');
-
-                return new Output(
-                    content: 'Task was cancelled.',
-                    toolResults: $allToolResults,
-                    usage: $totalUsage,
-                    iterations: $i + 1,
-                    conversation: $conversation,
-                    finishReason: AgentFinishReason::Error,
-                );
+                return $this->cancelledOutput('', $conversation, $allToolResults, $totalUsage, $i + 1);
             }
 
             if ($this->runTimeExceeded($runStartedNs)) {
@@ -334,33 +376,89 @@ abstract class AbstractAgent implements AgentInterface
 
             $callBytes = 0;
             $streamLimit = null;
+            $cancelled = false;
+            $finish = null;
+            $contentParts = [];
+            $reasoningParts = [];
+            // Calls opened in this response, keyed by index, and the ones whose
+            // arguments completed, in the order they completed.
+            /** @var array<int, ToolInputStart> $startedCalls */
+            $startedCalls = [];
+            /** @var array<int, ToolInputEnd> $endedCalls */
+            $endedCalls = [];
+            // The first `done` call to open in this response streams its answer live. The call
+            // that finishes the run is resolved later in toolCalls order, which is the order
+            // arguments completed; the two differ only when `done` calls interleave.
+            $donePreview = null;
+            $donePreviewIndex = null;
+            // Whether the `done` preview has text held back because the call's id is not known
+            // yet. The reader keeps the only copy of that text; once a delta or the end brings
+            // the id, its text() so far goes out in one agent.done_delta, so the preview and the
+            // call's end or discard share one id.
+            $previewHeld = false;
+            // RunLimits::$maxToolCallsPerTurn while streaming: the first `done` call is outside
+            // it; a call opened past it is discarded at once and its later events are ignored,
+            // so it is never retained. A call whose end arrives without a start is admitted then,
+            // and so is a call that opened without a name: an empty start id or name is unknown,
+            // not a disagreement, and the end fills it in (see $nameless).
+            $perTurn = $this->runLimits->maxToolCallsPerTurn;
+            $turnCalls = 0;
+            $firstDoneIndex = null;
+            /** @var array<int, string> $limitedCalls ids of the calls discarded under the cap */
+            $limitedCalls = [];
+            // The index of each call, in the order it opened.
+            /** @var list<int> $callOrder */
+            $callOrder = [];
+            // Indexes of the calls that opened without a name, held out of the cap until the
+            // end names them.
+            /** @var array<int, true> $nameless */
+            $nameless = [];
+            // Calls given any state in this response, against MAX_TOOL_CALLS_PER_RESPONSE, and
+            // whether a call past it has been seen (its discard fires once).
+            $trackedCalls = 0;
+            $overflowed = false;
+            $admitCall = function (ToolInputStart|ToolInputEnd $call) use ($perTurn, &$turnCalls, &$firstDoneIndex, &$limitedCalls): bool {
+                if ($call->name === DoneTool::NAME && ($firstDoneIndex ?? $call->index) === $call->index) {
+                    $firstDoneIndex = $call->index;
+
+                    return true;
+                }
+                if ($perTurn > 0 && $turnCalls >= $perTurn) {
+                    $limitedCalls[$call->index] = $call->id;
+                    $this->discardCalls([$call], 'tool_call_limit');
+
+                    return false;
+                }
+                $turnCalls++;
+
+                return true;
+            };
+            // Argument bytes streamed per call index, for eventBytes().
+            /** @var array<int, int> $argumentBytes */
+            $argumentBytes = [];
 
             try {
-                $contentParts = [];
-                $reasoningParts = [];
-                $toolCalls = [];
-                $streamUsage = null;
-                $streamModel = '';
-                $contentBlocks = [];
-                // A failure reason is sticky: the first one seen ends the turn
-                // and no later chunk can turn it back into ToolUse or Stop.
-                // Otherwise the last reason that is not Stop wins.
-                $streamFinishReason = null;
-
-                foreach ($this->provider->stream($conversation->messages(), $advertisedTools, $this->providerOptions) as $chunk) {
+                foreach ($this->provider->streamEvents($conversation->messages(), $advertisedTools, $this->providerOptions) as $event) {
                     $this->tickCallback->tick();
 
-                    // Check cancellation between stream chunks so ESC/Ctrl+C returns
-                    // to the prompt immediately without waiting for the full response.
+                    // A Finish is recorded before the checks below, so a cancel or limit that
+                    // trips on it still counts its usage (spendEarlyFinishUsage).
+                    if ($event instanceof Finish) {
+                        $finish = $event;
+                    }
+
+                    // Check cancellation on every event, ticks included, so ESC/Ctrl+C
+                    // returns to the prompt without waiting for the full response.
                     if ($this->cancellationToken?->isCancelled()) {
+                        $cancelled = true;
                         break;
                     }
 
-                    // Cumulative limits, checked before the chunk is used. Breaking
+                    // Cumulative limits, checked before the event is used. Breaking
                     // abandons the stream.
-                    $chunkBytes = $this->chunkBytes($chunk);
-                    $callBytes += $chunkBytes;
-                    $runResponseBytes += $chunkBytes;
+                    $eventBytes = $this->eventBytes($event, $argumentBytes, $startedCalls, $limitedCalls);
+                    $callBytes += $eventBytes;
+                    $runResponseBytes += $eventBytes;
                     if ($this->runLimits->maxResponseBytes > 0 && $runResponseBytes > $this->runLimits->maxResponseBytes) {
                         $streamLimit = self::RESPONSE_SIZE_LIMIT_REACHED;
                         break;
@@ -375,91 +473,218 @@ abstract class AbstractAgent implements AgentInterface
                         break;
                     }
 
-                    if ($chunk->reasoning !== '') {
-                        $reasoningParts[] = $chunk->reasoning;
-                        $this->notify('agent.reasoning', $chunk->reasoning);
-                    }
-
-                    if ($chunk->content !== '') {
-                        $contentParts[] = $chunk->content;
-                        $this->notify('agent.text_delta', $chunk->content);
-                    }
-
-                    if (!empty($chunk->toolCalls)) {
-                        $toolCalls = array_merge($toolCalls, $chunk->toolCalls);
-                    }
-
-                    if ($chunk->usage !== null) {
-                        // Merge usage across chunks — some providers split
-                        // input/output tokens across separate events (e.g.
-                        // Anthropic sends input in message_start, output in
-                        // message_delta). Take the max of each field.
-                        if ($streamUsage === null) {
-                            $streamUsage = $chunk->usage;
-                        } else {
-                            $streamUsage = new Usage(
-                                promptTokens: max($streamUsage->promptTokens, $chunk->usage->promptTokens),
-                                completionTokens: max($streamUsage->completionTokens, $chunk->usage->completionTokens),
-                                totalTokens: max(
-                                    $streamUsage->totalTokens,
-                                    $chunk->usage->totalTokens,
-                                    max($streamUsage->promptTokens, $chunk->usage->promptTokens)
-                                        + max($streamUsage->completionTokens, $chunk->usage->completionTokens),
-                                ),
-                            );
+                    if ($event instanceof ReasoningDelta) {
+                        $reasoningParts[] = $event->delta;
+                        $this->notify('agent.reasoning', $event->delta);
+                    } elseif ($event instanceof TextDelta) {
+                        $contentParts[] = $event->delta;
+                        $this->notify('agent.text_delta', $event->delta);
+                    } elseif (
+                        ($event instanceof ToolInputStart && (isset($startedCalls[$event->index]) || isset($limitedCalls[$event->index]) || isset($endedCalls[$event->index])))
+                        || ($event instanceof ToolInputEnd && isset($endedCalls[$event->index]))
+                    ) {
+                        // A start for an index already known (started, ended or discarded), or a
+                        // second end for an ended call, adds nothing and is not forwarded: each
+                        // index is tracked once, so repeats cannot grow the bookkeeping.
+                        continue;
+                    } elseif (($event instanceof ToolInputStart || $event instanceof ToolInputDelta || $event instanceof ToolInputEnd)
+                        && !isset($startedCalls[$event->index]) && !isset($limitedCalls[$event->index]) && !isset($endedCalls[$event->index])
+                        && ($overflowed || (!$event instanceof ToolInputDelta && $trackedCalls >= self::MAX_TOOL_CALLS_PER_RESPONSE))) {
+                        // Past the per-response bound: nothing of an untracked call is kept or
+                        // forwarded. Only the first such call is reported.
+                        if (!$overflowed && !$event instanceof ToolInputDelta) {
+                            $overflowed = true;
+                            $this->discardCalls([$event], 'tool_call_overflow');
                         }
-                    }
-
-                    if ($chunk->model !== '') {
-                        $streamModel = $chunk->model;
-                    }
-
-                    if ($chunk->contentBlocks !== []) {
-                        $contentBlocks = $chunk->contentBlocks;
-                    }
-
-                    $failed = $streamFinishReason !== null
-                        && $streamFinishReason !== ProviderFinishReason::ToolUse;
-                    if (!$failed && $chunk->finishReason !== ProviderFinishReason::Stop) {
-                        $streamFinishReason = $chunk->finishReason;
+                        continue;
+                    } elseif ($event instanceof ToolInputStart) {
+                        $this->notify('agent.tool_input_start', $event);
+                        $trackedCalls++;
+                        if ($event->name === '') {
+                            // Calls waiting for a name are bounded as they open: the ordinary
+                            // slots left plus one for a possible first `done`, or, with no
+                            // per-turn cap, MAX_PENDING_NAMELESS_CALLS. Past that the call is
+                            // discarded now and its later events are ignored.
+                            $pendingLimit = $perTurn > 0
+                                ? max(0, $perTurn - $turnCalls) + ($firstDoneIndex === null ? 1 : 0)
+                                : self::MAX_PENDING_NAMELESS_CALLS;
+                            if (count($nameless) >= $pendingLimit) {
+                                // Not in $callOrder: a nameless call has no content block.
+                                $limitedCalls[$event->index] = $event->id;
+                                $this->discardCalls([$event], 'tool_call_limit');
+                            } else {
+                                $callOrder[] = $event->index;
+                                $startedCalls[$event->index] = $event;
+                                $nameless[$event->index] = true;
+                            }
+                        } else {
+                            $callOrder[] = $event->index;
+                            if ($admitCall($event)) {
+                                $startedCalls[$event->index] = $event;
+                                if ($donePreview === null && $event->name === DoneTool::NAME) {
+                                    $donePreview = new DonePreviewReader();
+                                    $donePreviewIndex = $event->index;
+                                }
+                            }
+                        }
+                    } elseif (($event instanceof ToolInputDelta || $event instanceof ToolInputEnd) && isset($limitedCalls[$event->index])) {
+                        continue;
+                    } elseif ($event instanceof ToolInputDelta) {
+                        // A delta goes by the id its call opened with; the first delta to carry
+                        // an id fills an empty one.
+                        $start = $startedCalls[$event->index] ?? null;
+                        if ($start !== null && $start->id === '' && $event->id !== '') {
+                            $start = $startedCalls[$event->index] = new ToolInputStart($start->index, $event->id, $start->name);
+                        }
+                        if ($start !== null && $start->id !== $event->id) {
+                            $event = new ToolInputDelta($event->index, $start->id, $event->delta);
+                        }
+                        $this->notify('agent.tool_input_delta', $event);
+                        if ($event->index === $donePreviewIndex) {
+                            $previewDelta = $donePreview?->push($event->delta) ?? '';
+                            if ($event->id === '') {
+                                $previewHeld = $previewHeld || $previewDelta !== '';
+                            } elseif ($previewHeld) {
+                                $previewHeld = false;
+                                $this->notify('agent.done_delta', new DonePreview($event->id, $donePreview?->text() ?? ''));
+                            } elseif ($previewDelta !== '') {
+                                $this->notify('agent.done_delta', new DonePreview($event->id, $previewDelta));
+                            }
+                        }
+                    } elseif ($event instanceof ToolInputEnd) {
+                        $start = $startedCalls[$event->index] ?? null;
+                        if ($start === null) {
+                            $callOrder[] = $event->index;
+                            $trackedCalls++;
+                            if (!$admitCall($event)) {
+                                continue;
+                            }
+                        } else {
+                            // A call keeps the id and name it opened with, the ones the cap and
+                            // the done preview went by; an end that names another is corrected.
+                            // An empty start id or name is unknown, and the end fills it in.
+                            $identity = new ToolInputStart(
+                                $event->index,
+                                $start->id !== '' ? $start->id : $event->id,
+                                $start->name !== '' ? $start->name : $event->name,
+                            );
+                            if ($identity->id !== $event->id || $identity->name !== $event->name) {
+                                $event = new ToolInputEnd($event->index, $identity->id, $identity->name, $event->arguments, $event->metadata);
+                            }
+                            if (isset($nameless[$event->index])) {
+                                // Admitted now that it has a name.
+                                unset($nameless[$event->index]);
+                                if (!$admitCall($event)) {
+                                    unset($startedCalls[$event->index]);
+                                    continue;
+                                }
+                                if ($donePreview === null && $event->name === DoneTool::NAME) {
+                                    // Its arguments are complete: the preview is the whole answer.
+                                    $donePreview = new DonePreviewReader();
+                                    $donePreviewIndex = $event->index;
+                                    $previewText = $donePreview->push(self::wireJson($event->arguments));
+                                    if ($previewText !== '') {
+                                        $this->notify('agent.done_delta', new DonePreview($event->id, $previewText));
+                                    }
+                                }
+                            }
+                            if ($identity->id !== $start->id || $identity->name !== $start->name) {
+                                $startedCalls[$event->index] = $identity;
+                            }
+                            if ($event->index === $donePreviewIndex && $previewHeld) {
+                                $previewHeld = false;
+                                $this->notify('agent.done_delta', new DonePreview($event->id, $donePreview?->text() ?? ''));
+                            }
+                        }
+                        $endedCalls[$event->index] = $event;
+                        $this->notify('agent.tool_input_end', $event);
                     }
                 }
 
                 $this->tickCallback->tick();
-
-                $content = implode('', $contentParts);
-                $finishReason = $streamFinishReason
-                    ?? (!empty($toolCalls) ? ProviderFinishReason::ToolUse : ProviderFinishReason::Stop);
-
-                // Tool calls run only on a ToolUse stop. A MaxTokens stop keeps
-                // its text and drops any (possibly truncated) tool calls.
-                $response = new Response(
-                    content: $content,
-                    finishReason: $finishReason,
-                    toolCalls: $finishReason === ProviderFinishReason::ToolUse ? $toolCalls : [],
-                    model: $streamModel,
-                    usage: $streamUsage,
-                    reasoning: implode('', $reasoningParts),
-                    contentBlocks: $contentBlocks,
-                );
             } catch (\Throwable $e) {
-                $errorMessage = $this->providerErrorMessage($e);
+                // A cancel that aborts the transport surfaces as a throw; it ends the run
+                // the way a cancel seen between events does.
+                if ($this->cancellationToken?->isCancelled()) {
+                    $cancelled = true;
+                } else {
+                    $errorMessage = $this->providerErrorMessage($e);
 
-                $this->notify('agent.error', $errorMessage);
+                    $this->discardCalls(self::openedCalls($startedCalls, $endedCalls), 'provider_error');
+                    // A Finish that arrived before the throw was spent all the same.
+                    $totalUsage = $this->spendEarlyFinishUsage($finish, $totalUsage);
+                    $this->notify('agent.error', $errorMessage);
 
-                return new Output(
-                    content: 'Provider error: ' . $errorMessage,
-                    toolResults: $allToolResults,
-                    usage: $totalUsage,
-                    iterations: $i + 1,
-                    conversation: $conversation,
-                    finishReason: AgentFinishReason::Error,
-                );
+                    return new Output(
+                        content: 'Provider error: ' . $errorMessage,
+                        toolResults: $allToolResults,
+                        usage: $totalUsage,
+                        iterations: $i + 1,
+                        conversation: $conversation,
+                        finishReason: AgentFinishReason::Error,
+                    );
+                }
+            }
+
+            // A stream cut short by a cancel can end without a Finish; that is the cancel, not a
+            // provider error.
+            if ($finish === null && $streamLimit === null && $this->cancellationToken?->isCancelled()) {
+                $cancelled = true;
+            }
+
+            // A cancel mid-stream abandons the response: no call of it runs, and the text
+            // streamed so far and any `done` preview, separated by a blank line when both
+            // are present, is the run's answer.
+            if ($cancelled) {
+                $this->discardCalls(self::openedCalls($startedCalls, $endedCalls), 'cancelled');
+                $totalUsage = $this->spendEarlyFinishUsage($finish, $totalUsage);
+
+                return $this->cancelledOutput(self::cancelledAnswer($contentParts, $donePreview), $conversation, $allToolResults, $totalUsage, $i + 1);
             }
 
             if ($streamLimit !== null) {
+                $this->discardCalls(self::openedCalls($startedCalls, $endedCalls), 'run_limit');
+                $totalUsage = $this->spendEarlyFinishUsage($finish, $totalUsage);
+
                 return $this->runLimitOutput($streamLimit, $conversation, $allToolResults, $totalUsage, $i + 1);
             }
+
+            if ($finish !== null) {
+                $this->discardUnrunCalls($startedCalls, $endedCalls, $finish->reason);
+                $this->notify('agent.step_finish', new StepFinish(
+                    $i + 1,
+                    $finish->reason,
+                    UntrustedText::forDisplay($finish->rawReason, self::FINISH_TELEMETRY_MAX_CHARS),
+                    $finish->usage,
+                    UntrustedText::forDisplay($finish->model, self::FINISH_TELEMETRY_MAX_CHARS),
+                ));
+            } else {
+                $this->discardCalls(self::openedCalls($startedCalls, $endedCalls), 'provider_error');
+            }
+
+            // A stream that ended without a Finish is a provider error.
+            $finishReason = $finish->reason ?? ProviderFinishReason::Error;
+
+            // Tool calls run only on a ToolUse stop. A MaxTokens stop keeps
+            // its text and drops any (possibly truncated) tool calls. Calls keep
+            // the order their arguments completed in, as stream() projects them.
+            $completedCalls = array_values($endedCalls);
+            $response = new Response(
+                content: implode('', $contentParts),
+                finishReason: $finishReason,
+                toolCalls: $finishReason === ProviderFinishReason::ToolUse
+                    ? array_map(static fn(ToolInputEnd $end): ToolCall => $end->toToolCall(), $completedCalls)
+                    : [],
+                model: $finish->model ?? '',
+                usage: $finish?->usage,
+                reasoning: implode('', $reasoningParts),
+                contentBlocks: self::withoutDroppedToolUse(
+                    $finish->contentBlocks ?? [],
+                    $callOrder,
+                    $limitedCalls,
+                    [...array_map(static fn(ToolInputStart $s): string => $s->id, $startedCalls), ...array_map(static fn(ToolInputEnd $e): string => $e->id, $endedCalls)],
+                ),
+            );
 
             // The response counts as at least one token per 4 bytes received,
             // whatever usage the provider reports.
@@ -468,17 +693,28 @@ abstract class AbstractAgent implements AgentInterface
             $this->contextWindow?->estimate($requestTokens + $responseTokens);
 
             if ($response->usage !== null) {
-                $totalUsage = new Usage(
-                    promptTokens: $totalUsage->promptTokens + $response->usage->promptTokens,
-                    completionTokens: $totalUsage->completionTokens + $response->usage->completionTokens,
-                    totalTokens: $totalUsage->totalTokens + $response->usage->totalTokens,
-                );
+                $totalUsage = $totalUsage->plus($response->usage);
 
                 // Report actual usage to context window for accurate tracking
                 $this->contextWindow?->report($response->usage);
             }
 
+            // A cancel after the stream (on agent.step_finish, say) still stops a final answer,
+            // text or `done`, from being accepted; the answer streamed so far is kept as on a
+            // mid-stream cancel. A response of ordinary tool calls goes on to executeToolCalls,
+            // which answers each call as cancelled; a refusal, filter, context-window or provider
+            // error finish keeps its own reason; an empty response is checked before a fallback.
+            if ($this->cancellationToken?->isCancelled() && $this->isFinalAnswer($response)) {
+                $this->discardCalls($response->toolCalls !== [] ? $completedCalls : [], 'cancelled');
+
+                return $this->cancelledOutput(self::cancelledAnswer($contentParts, $donePreview), $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
+            }
+
             if ($maxTokens > 0 && $spentTokens > $maxTokens) {
+                if ($response->toolCalls !== []) {
+                    $this->discardCalls($completedCalls, 'run_limit');
+                }
+
                 return $this->runLimitOutput(self::TOKEN_LIMIT_REACHED, $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
             }
 
@@ -511,10 +747,26 @@ abstract class AbstractAgent implements AgentInterface
 
             // The first `done` call is authorized by the policy and validated; when it passes
             // the run finishes. Otherwise it, and any later `done`, gets an error result that
-            // goes through executeToolCalls with the rest of the response.
+            // goes through executeToolCalls with the rest of the response; each is discarded
+            // first, so a UI retracts its preview before the run continues.
             $finishingCall = null;
-            $doneResults = $this->resolveDoneCalls($response->toolCalls, $finishingCall);
+            $doneDiscards = [];
+            $doneResults = $this->resolveDoneCalls($response->toolCalls, $finishingCall, $doneDiscards);
+            // The execution policy may cancel while it allows `done`.
+            if ($finishingCall !== null && $this->cancellationToken?->isCancelled()) {
+                $this->discardCalls($completedCalls, 'cancelled');
+
+                return $this->cancelledOutput(self::cancelledAnswer($contentParts, $donePreview), $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
+            }
             if ($finishingCall !== null) {
+                foreach ($response->toolCalls as $position => $toolCall) {
+                    if ($toolCall !== $finishingCall) {
+                        $end = $completedCalls[$position];
+                        $reason = $toolCall->name === DoneTool::NAME ? 'duplicate_done' : 'done_finished_run';
+                        $this->notify('agent.tool_input_discarded', new ToolInputDiscarded($end->index, $end->id, $end->name, $reason));
+                    }
+                }
+
                 $this->notify('agent.done', $finishingCall->arguments);
 
                 return new Output(
@@ -528,6 +780,11 @@ abstract class AbstractAgent implements AgentInterface
                     reasoning: $response->reasoning,
                     providerFinishReason: $response->finishReason,
                 );
+            }
+
+            foreach ($doneDiscards as $position => $reason) {
+                $end = $completedCalls[$position];
+                $this->notify('agent.tool_input_discarded', new ToolInputDiscarded($end->index, $end->id, $end->name, $reason));
             }
 
             if (!empty($response->toolCalls)) {
@@ -551,6 +808,7 @@ abstract class AbstractAgent implements AgentInterface
                     $conversation,
                     $allToolResults,
                     $doneResults,
+                    $limitedCalls !== [],
                 );
 
                 if ($executionResult !== null) {
@@ -563,6 +821,11 @@ abstract class AbstractAgent implements AgentInterface
                         finishReason: AgentFinishReason::Error,
                         providerFinishReason: $response->finishReason,
                     );
+                }
+
+                // A cancel during tools ends the run after every call has a result.
+                if ($this->cancellationToken?->isCancelled()) {
+                    return $this->cancelledOutput('', $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
                 }
 
                 if ($runTimeReached) {
@@ -590,6 +853,10 @@ abstract class AbstractAgent implements AgentInterface
             // Text-only response (no tool calls) — this IS the response.
             // The done tool is only needed after tool use to present results.
             if ($response->content !== '') {
+                if ($this->cancellationToken?->isCancelled()) {
+                    return $this->cancelledOutput($response->content, $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
+                }
+
                 $conversation->add(new AssistantMessage($response->content));
                 $this->notify('agent.done', ['response' => $response->content]);
 
@@ -615,6 +882,12 @@ abstract class AbstractAgent implements AgentInterface
                 'maxRetries' => $this->maxEmptyResponseRetries,
                 'hasReasoning' => $response->reasoning !== '',
             ]);
+
+            // A cancel on agent.step_finish or agent.empty_response ends the run before the
+            // empty-response policy can retry, fall back or give up.
+            if ($this->cancellationToken?->isCancelled()) {
+                return $this->cancelledOutput('', $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
+            }
 
             if (
                 $this->emptyResponseHandling === EmptyResponseHandling::Fallback
@@ -701,6 +974,98 @@ abstract class AbstractAgent implements AgentInterface
     }
 
     /**
+     * End the run on a cancel. $streamedText is the text the cancelled response streamed:
+     * when non-empty it is the content and is appended to the conversation as an assistant
+     * message with no tool calls; otherwise the content is 'Task was cancelled.'. agent.error
+     * carries 'Task cancelled' for observers that predate AgentFinishReason::Cancelled.
+     *
+     * @param ToolResult[] $allToolResults
+     */
+    private function cancelledOutput(
+        string $streamedText,
+        Conversation $conversation,
+        array $allToolResults,
+        Usage $totalUsage,
+        int $iterations,
+        string $model = '',
+    ): Output {
+        if ($streamedText !== '') {
+            $conversation->add(new AssistantMessage($streamedText));
+        }
+
+        $this->notify('agent.error', 'Task cancelled');
+
+        return new Output(
+            content: $streamedText !== '' ? $streamedText : 'Task was cancelled.',
+            toolResults: $allToolResults,
+            usage: $totalUsage,
+            model: $model,
+            iterations: $iterations,
+            conversation: $conversation,
+            finishReason: AgentFinishReason::Cancelled,
+        );
+    }
+
+    /**
+     * $totalUsage plus the usage of a Finish that arrived before the stream was abandoned (a
+     * transport abort throws on the read after it; a limit can trip on a later event), also
+     * reported to the context window as a completed response's usage is.
+     */
+    private function spendEarlyFinishUsage(?Finish $finish, Usage $totalUsage): Usage
+    {
+        if ($finish?->usage === null) {
+            return $totalUsage;
+        }
+
+        $this->contextWindow?->report($finish->usage);
+
+        return $totalUsage->plus($finish->usage);
+    }
+
+    /**
+     * The answer a cancelled response leaves: the text it streamed, then the `done` answer
+     * previewed so far, separated by a blank line when both are present.
+     *
+     * @param list<string> $contentParts
+     */
+    private static function cancelledAnswer(array $contentParts, ?DonePreviewReader $donePreview): string
+    {
+        return implode("\n\n", array_filter([implode('', $contentParts), $donePreview?->text() ?? ''], static fn(string $part): bool => $part !== ''));
+    }
+
+    /**
+     * Whether the run would accept $response as its answer: a response with a `done` call, or
+     * text with no tool calls under a finish that is not a failure (Stop, ToolUse, or MaxTokens).
+     */
+    private function isFinalAnswer(Response $response): bool
+    {
+        if ($response->toolCalls !== []) {
+            foreach ($response->toolCalls as $toolCall) {
+                if ($toolCall->name === DoneTool::NAME) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return $response->content !== '' && in_array(
+            $response->finishReason,
+            [ProviderFinishReason::Stop, ProviderFinishReason::ToolUse, ProviderFinishReason::MaxTokens],
+            true,
+        );
+    }
+
+    /**
+     * The result of a call that a cancel stopped before it ran.
+     */
+    private function cancelledToolResult(ToolCall $toolCall): ToolResult
+    {
+        return (new ToolResult(ToolResultStatus::Error, 'Cancelled before it ran.', errorCode: 'cancelled'))
+            ->withCallId($toolCall->id);
+    }
+
+    /**
      * Whether RunLimits::$maxRunSeconds has passed since $runStartedNs (hrtime(true)).
      */
     private function runTimeExceeded(float $runStartedNs): bool
@@ -711,19 +1076,167 @@ abstract class AbstractAgent implements AgentInterface
     }
 
     /**
-     * Bytes one stream chunk carries: content, reasoning and the JSON of its tool calls and
-     * content blocks.
+     * Bytes one stream event carries, counting every field the agent keeps: the text of a text
+     * or reasoning delta; a call's id and name on its ToolInputStart; each argument delta; on a
+     * ToolInputEnd, the JSON of its arguments beyond the bytes already streamed as deltas for
+     * that call, the JSON of its metadata, and its id and name when no start came first, or
+     * each one that differs from the start's (an end that fills an empty start id or name, or
+     * names another); the id of a delta that fills its start's empty id; and a Finish's raw
+     * reason, model and the JSON of its content blocks.
+     *
+     * @param array<int, int> $argumentBytes Argument bytes streamed per call index so far, with
+     *                                       or without a start; credited against the call's end
+     * @param array<int, ToolInputStart> $startedCalls Calls kept so far, by index
+     * @param array<int, string> $limitedCalls Ids of calls discarded under the per-turn cap, by index
      */
-    private function chunkBytes(Response $chunk): int
+    private function eventBytes(StreamEvent $event, array &$argumentBytes, array $startedCalls, array $limitedCalls): int
     {
-        $bytes = strlen($chunk->content) + strlen($chunk->reasoning);
-        foreach ([$chunk->toolCalls, $chunk->contentBlocks] as $structured) {
-            if ($structured !== []) {
-                $bytes += strlen(json_encode($structured, \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR) ?: '');
+        if ($event instanceof TextDelta || $event instanceof ReasoningDelta) {
+            return strlen($event->delta);
+        }
+
+        if ($event instanceof ToolInputStart) {
+            return strlen($event->id) + strlen($event->name);
+        }
+
+        if ($event instanceof ToolInputDelta) {
+            $bytes = strlen($event->delta);
+            // The credit map is bounded like the calls themselves; a delta past it is counted
+            // but not credited against a later end (which counts in full, erring high).
+            if (isset($argumentBytes[$event->index]) || count($argumentBytes) < self::MAX_TOOL_CALLS_PER_RESPONSE) {
+                $argumentBytes[$event->index] = ($argumentBytes[$event->index] ?? 0) + $bytes;
+            }
+            $start = $startedCalls[$event->index] ?? null;
+
+            return $bytes + ($start !== null && $start->id === '' ? strlen($event->id) : 0);
+        }
+
+        if ($event instanceof ToolInputEnd) {
+            $bytes = max(0, self::jsonBytes($event->arguments) - ($argumentBytes[$event->index] ?? 0))
+                + ($event->metadata === [] ? 0 : self::jsonBytes($event->metadata));
+            $start = $startedCalls[$event->index] ?? null;
+            $idAndName = strlen($event->id) + strlen($event->name);
+
+            return $bytes + match (true) {
+                $start !== null => ($start->id === $event->id ? 0 : strlen($event->id)) + ($start->name === $event->name ? 0 : strlen($event->name)),
+                isset($limitedCalls[$event->index]) => 0,
+                default => $idAndName,
+            };
+        }
+
+        if ($event instanceof Finish) {
+            return strlen($event->rawReason) + strlen($event->model)
+                + ($event->contentBlocks === [] ? 0 : self::jsonBytes($event->contentBlocks));
+        }
+
+        return 0;
+    }
+
+    /**
+     * $blocks without the provider-native `tool_use` blocks (Anthropic's shape) of the calls
+     * discarded under the per-turn cap, so those calls' arguments are not kept in the
+     * conversation. Other blocks, thinking and its signature included, keep their order.
+     *
+     * When the blocks hold one `tool_use` per call that opened, the k-th block belongs to the
+     * k-th call, so a discarded call that shares an id with a kept one loses only its own block.
+     * Otherwise a block is dropped by id, and only when no kept call has that id.
+     *
+     * @param list<array<string, mixed>> $blocks
+     * @param list<int> $callOrder The index of each call, in the order it opened
+     * @param array<int, string> $limitedCalls Ids of the discarded calls, by index
+     * @param list<string> $keptIds Ids of the calls kept
+     * @return list<array<string, mixed>>
+     */
+    private static function withoutDroppedToolUse(array $blocks, array $callOrder, array $limitedCalls, array $keptIds): array
+    {
+        if ($limitedCalls === [] || $blocks === []) {
+            return $blocks;
+        }
+
+        $toolUses = count(array_filter($blocks, static fn(array $block): bool => ($block['type'] ?? null) === 'tool_use'));
+        $kept = [];
+        $position = 0;
+        foreach ($blocks as $block) {
+            if (($block['type'] ?? null) !== 'tool_use') {
+                $kept[] = $block;
+                continue;
+            }
+            $dropped = $toolUses === count($callOrder)
+                ? isset($limitedCalls[$callOrder[$position]])
+                : in_array($block['id'] ?? null, $limitedCalls, true) && !in_array($block['id'] ?? null, $keptIds, true);
+            $position++;
+            if (!$dropped) {
+                $kept[] = $block;
             }
         }
 
-        return $bytes;
+        return $kept;
+    }
+
+    /**
+     * Length of $value as JSON in its wire form: UTF-8 and slashes unescaped, so it matches the
+     * bytes the same value streams as. Bytes that are not UTF-8 count as substitutes.
+     */
+    private static function jsonBytes(mixed $value): int
+    {
+        return strlen(self::wireJson($value));
+    }
+
+    /**
+     * $value as JSON in its wire form (see jsonBytes()), or '' when it cannot be encoded.
+     */
+    private static function wireJson(mixed $value): string
+    {
+        return json_encode($value, \JSON_UNESCAPED_UNICODE | \JSON_UNESCAPED_SLASHES | \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR) ?: '';
+    }
+
+    /**
+     * Fire agent.tool_input_discarded with $reason for each call, in order.
+     *
+     * @param array<int, ToolInputStart|ToolInputEnd> $calls
+     */
+    private function discardCalls(array $calls, string $reason): void
+    {
+        foreach ($calls as $call) {
+            $this->notify('agent.tool_input_discarded', new ToolInputDiscarded($call->index, $call->id, $call->name, $reason));
+        }
+    }
+
+    /**
+     * Every call of a response the agent kept, by index: the ones that started, then the ones
+     * whose end came without a start.
+     *
+     * @param array<int, ToolInputStart> $startedCalls
+     * @param array<int, ToolInputEnd> $endedCalls
+     * @return array<int, ToolInputStart|ToolInputEnd>
+     */
+    private static function openedCalls(array $startedCalls, array $endedCalls): array
+    {
+        return $startedCalls + $endedCalls;
+    }
+
+    /**
+     * Fire agent.tool_input_discarded for each call of a finished response that will not run:
+     * a call whose arguments never completed is 'invalid_arguments' when the response finished
+     * with Error, else 'not_tool_use'; a completed call (one whose end came without a start
+     * included) is 'not_tool_use' when the response finished with a reason other than ToolUse.
+     *
+     * @param array<int, ToolInputStart> $startedCalls
+     * @param array<int, ToolInputEnd> $endedCalls
+     */
+    private function discardUnrunCalls(array $startedCalls, array $endedCalls, ProviderFinishReason $reason): void
+    {
+        foreach (self::openedCalls($startedCalls, $endedCalls) as $index => $start) {
+            $discardReason = match (true) {
+                !isset($endedCalls[$index]) => $reason === ProviderFinishReason::Error ? 'invalid_arguments' : 'not_tool_use',
+                $reason !== ProviderFinishReason::ToolUse => 'not_tool_use',
+                default => null,
+            };
+
+            if ($discardReason !== null) {
+                $this->notify('agent.tool_input_discarded', new ToolInputDiscarded($start->index, $start->id, $start->name, $discardReason));
+            }
+        }
     }
 
     /**
@@ -925,7 +1438,10 @@ abstract class AbstractAgent implements AgentInterface
      *    unknown, with the same text as a name that does not exist.
      * 2. Execution (batch or serial): if the executor supports batch execution
      *    and multiple approved tools exist, delegates to executeBatch().
-     *    Otherwise executes each tool serially.
+     *    Otherwise executes each tool serially. A cancel seen before a call starts
+     *    (in pre-flight, before the batch, or before a serial call) answers that call
+     *    and every later one with 'Cancelled before it ran.' (error code 'cancelled');
+     *    a running batch or tool is not interrupted.
      * 3. Post-flight (serial): adds ToolResultMessages to conversation in call
      *    order, emits agent.tool_result events, then adds the names granted by
      *    ToolGrantInterface tools that ran and succeeded to $executableToolIndex.
@@ -944,7 +1460,10 @@ abstract class AbstractAgent implements AgentInterface
      * @param ToolResult[] $allToolResults Accumulated results (modified by reference)
      * @param array<int, ToolResult> $resolvedCalls Results already decided for calls at these
      *                                              positions (refused `done` calls); they skip the
-     *                                              caps, the policy and the executor
+     *                                              cap, the policy and the executor
+     * @param bool $turnLimitReached Calls of this response were discarded while streaming for
+     *                               RunLimits::$maxToolCallsPerTurn; agent.warning fires after
+     *                               the results
      */
     private function executeToolCalls(
         array $toolCalls,
@@ -957,6 +1476,7 @@ abstract class AbstractAgent implements AgentInterface
         Conversation $conversation,
         array &$allToolResults,
         array $resolvedCalls = [],
+        bool $turnLimitReached = false,
     ): ?TerminationException {
         // === Phase 1: Pre-flight (serial) ===
         // Process each tool call: emit events, check policy, resolve tool.
@@ -969,16 +1489,17 @@ abstract class AbstractAgent implements AgentInterface
         /** @var array<int, ToolResult> Pre-resolved results (capped, denied, not found) keyed by position */
         $preResolved = [];
 
-        $turnToolCalls = 0;
-        $turnLimitReached = false;
-        $perTurn = $this->runLimits->maxToolCallsPerTurn;
+        $cancelled = false;
         $perRun = $this->runLimits->maxToolCallsPerRun;
 
         foreach ($toolCalls as $position => $toolCall) {
             $this->tickCallback->tick();
 
-            if ($this->cancellationToken?->isCancelled()) {
-                break;
+            // Once cancelled, every remaining call is answered without running.
+            if ($cancelled || $this->cancellationToken?->isCancelled()) {
+                $cancelled = true;
+                $preResolved[$position] = $this->cancelledToolResult($toolCall);
+                continue;
             }
 
             $this->notify('agent.tool_call', $toolCall);
@@ -988,16 +1509,8 @@ abstract class AbstractAgent implements AgentInterface
                 continue;
             }
 
-            // Tool-call caps: a refused call is answered here and never
-            // reaches the policy or the executor.
-            if ($perTurn > 0 && $turnToolCalls >= $perTurn) {
-                $turnLimitReached = true;
-                $preResolved[$position] = ToolResult::error(
-                    sprintf('Tool call limit reached: at most %d calls per turn.', $perTurn),
-                )->withCallId($toolCall->id);
-                continue;
-            }
-
+            // The per-run cap: a refused call is answered here and never reaches the policy
+            // or the executor. The per-turn cap was applied while the response streamed.
             if ($perRun > 0 && $runToolCalls >= $perRun) {
                 $runLimitReached = true;
                 $preResolved[$position] = ToolResult::error(
@@ -1006,7 +1519,6 @@ abstract class AbstractAgent implements AgentInterface
                 continue;
             }
 
-            $turnToolCalls++;
             $runToolCalls++;
 
             $denied = $this->policyDenial($toolCall);
@@ -1036,7 +1548,11 @@ abstract class AbstractAgent implements AgentInterface
         $executedResults = [];
         $terminationException = null;
 
-        if ($useBatch && $this->runTimeExceeded($runStartedNs)) {
+        if ($useBatch && $this->cancellationToken?->isCancelled()) {
+            foreach ($approved as $position => $entry) {
+                $executedResults[$position] = $this->cancelledToolResult($entry['toolCall']);
+            }
+        } elseif ($useBatch && $this->runTimeExceeded($runStartedNs)) {
             $runTimeReached = true;
             foreach ($approved as $position => $entry) {
                 $executedResults[$position] = ToolResult::error(self::RUN_TIME_LIMIT_REACHED)
@@ -1086,8 +1602,10 @@ abstract class AbstractAgent implements AgentInterface
         } else {
             // Serial execution (single tool or non-batch executor)
             foreach ($approved as $position => $entry) {
-                if ($this->cancellationToken?->isCancelled()) {
-                    break;
+                if ($cancelled || $this->cancellationToken?->isCancelled()) {
+                    $cancelled = true;
+                    $executedResults[$position] = $this->cancelledToolResult($entry['toolCall']);
+                    continue;
                 }
 
                 if ($runTimeReached || $this->runTimeExceeded($runStartedNs)) {
@@ -1120,7 +1638,7 @@ abstract class AbstractAgent implements AgentInterface
             $result = $preResolved[$position] ?? $executedResults[$position] ?? null;
 
             if ($result === null) {
-                // Tool was skipped (cancellation during pre-flight)
+                // A TerminationException stopped execution before this call ran
                 continue;
             }
 
@@ -1137,7 +1655,7 @@ abstract class AbstractAgent implements AgentInterface
         }
 
         if ($turnLimitReached) {
-            $this->notify('agent.warning', sprintf('Tool call limit reached: at most %d calls per turn.', $perTurn));
+            $this->notify('agent.warning', sprintf('Tool call limit reached: at most %d calls per turn.', $this->runLimits->maxToolCallsPerTurn));
         }
 
         $this->applyToolGrants($approved, $executedResults, $executableToolIndex, $fullToolIndex);
@@ -1170,11 +1688,15 @@ abstract class AbstractAgent implements AgentInterface
      *
      * @param ToolCall[] $toolCalls
      * @param ToolCall|null $finishingCall Set to the `done` call that finishes the run
+     * @param array<string> $discardReasons Set, keyed by the position of each call given an error
+     *                                      result, to its agent.tool_input_discarded reason:
+     *                                      'denied', 'invalid_done' or 'duplicate_done'
      * @return array<int, ToolResult>
      */
-    private function resolveDoneCalls(array $toolCalls, ?ToolCall &$finishingCall): array
+    private function resolveDoneCalls(array $toolCalls, ?ToolCall &$finishingCall, array &$discardReasons): array
     {
         $finishingCall = null;
+        $discardReasons = [];
         $results = [];
         $first = true;
 
@@ -1186,11 +1708,17 @@ abstract class AbstractAgent implements AgentInterface
             if (!$first) {
                 $results[$position] = ToolResult::error('Only one done call is allowed per response.')
                     ->withCallId($toolCall->id);
+                $discardReasons[$position] = 'duplicate_done';
                 continue;
             }
 
             $first = false;
-            $error = $this->policyDenial($toolCall) ?? $this->doneArgumentsError($toolCall);
+            $error = $this->policyDenial($toolCall);
+            $reason = 'denied';
+            if ($error === null) {
+                $error = $this->doneArgumentsError($toolCall);
+                $reason = 'invalid_done';
+            }
             if ($error === null) {
                 $finishingCall = $toolCall;
 
@@ -1198,6 +1726,7 @@ abstract class AbstractAgent implements AgentInterface
             }
 
             $results[$position] = $error;
+            $discardReasons[$position] = $reason;
         }
 
         return $results;

@@ -15,4 +15,5 @@ enum AgentFinishReason: string
     case Refusal = 'refusal';
     case ContentFilter = 'content_filter';
     case ContextWindowExceeded = 'context_window_exceeded';
+    case Cancelled = 'cancelled';
 }

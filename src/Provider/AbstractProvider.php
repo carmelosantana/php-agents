@@ -8,6 +8,8 @@ use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamProjector;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\Exception\RedirectionExceptionInterface;
@@ -70,6 +72,31 @@ abstract class AbstractProvider implements ProviderInterface
     {
         return $this->requestLimits;
     }
+
+    /**
+     * The normalised projection of streamEvents(): one Response per text or reasoning delta,
+     * then exactly one terminal Response carrying the finish reason, usage, model, tool calls
+     * and content blocks. Providers implement streamEvents(); this shape is the same for all.
+     *
+     * @param MessageInterface[] $messages
+     * @param ToolInterface[] $tools
+     * @param array<string, mixed> $options
+     * @return iterable<Response>
+     */
+    final public function stream(array $messages, array $tools = [], array $options = []): iterable
+    {
+        return StreamProjector::toResponses($this->streamEvents($messages, $tools, $options));
+    }
+
+    /**
+     * Stream the reply as typed events, ending with exactly one Finish.
+     *
+     * @param MessageInterface[] $messages
+     * @param ToolInterface[] $tools
+     * @param array<string, mixed> $options
+     * @return iterable<StreamEvent>
+     */
+    abstract public function streamEvents(array $messages, array $tools = [], array $options = []): iterable;
 
     /**
      * Decode a JSON response body. A 3xx is not followed (max_redirects is 0 by default),

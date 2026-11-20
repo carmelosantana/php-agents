@@ -1,5 +1,12 @@
 # Local Runtime
 
+> **Deprecated in 0.18; removed or fixed in 0.19.** For llama.cpp, run `llama-server` and use
+> [`LlamaServerProvider`](PROVIDERS.md#llamaserverprovider). The native FFI runtime below matches
+> `llama.h` only up to llama.cpp **b9174** (a newer build segfaults on model load; `setup-llama-cpp.sh`
+> clones the latest llama.cpp, so check out `b9174` before building), and with tools, which `Agent`
+> always passes, it buffers the whole generation instead of streaming. See
+> [LlamaCppProvider](PROVIDERS.md#llamacppprovider).
+
 php-agents exposes a public local-runtime seam so providers can run directly against a local model runtime without going through an HTTP sidecar.
 
 The first concrete implementation is the native llama.cpp runtime under `src/Runtime/LlamaCpp/LlamaCppNativeRuntime.php`.

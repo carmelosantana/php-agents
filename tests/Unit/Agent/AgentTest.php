@@ -4,14 +4,20 @@ declare(strict_types=1);
 
 use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
 use CarmeloSantana\PHPAgents\Agent\Agent;
+use CarmeloSantana\PHPAgents\Agent\RunLimits;
+use CarmeloSantana\PHPAgents\Contract\CancellationTokenInterface;
+use CarmeloSantana\PHPAgents\Enum\AgentFinishReason;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\Response;
+use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
+use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
 use CarmeloSantana\PHPAgents\Tool\Parameter\NumberParameter;
 use CarmeloSantana\PHPAgents\Tool\Tool;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
+use Tests\Support\Agent\ScriptedEventsProvider;
 use Tests\Support\Agent\ScriptedProvider;
 
 function addTool(): Tool
@@ -71,4 +77,52 @@ test('addTool() adds a tool to any AbstractAgent, alongside tools()', function (
 
     expect($provider->calls[0]['tools'])->toContain('add')
         ->and($output->content)->toBe('100');
+});
+
+test('Agent passes runLimits, cancellationToken and providerOptions to AbstractAgent', function () {
+    $provider = new ScriptedEventsProvider([[new TextDelta('partial'), new Finish(ProviderFinishReason::Stop)]]);
+    // Cancels once the provider has been called, so the run reaches the stream first.
+    $token = new class($provider) implements CancellationTokenInterface {
+        public function __construct(private readonly ScriptedEventsProvider $provider) {}
+
+        public function isCancelled(): bool
+        {
+            return $this->provider->calls > 0;
+        }
+    };
+    $agent = new Agent(
+        $provider,
+        runLimits: new RunLimits(maxRunSeconds: 5),
+        cancellationToken: $token,
+        providerOptions: ['max_tokens' => 10],
+    );
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($provider->options)->toBe([['max_tokens' => 10]])
+        ->and($output->finishReason)->toBe(AgentFinishReason::Cancelled);
+});
+
+test('Agent applies the RunLimits it is given', function () {
+    $provider = new ScriptedEventsProvider([]);
+    $agent = new Agent($provider, runLimits: new RunLimits(maxInputTokens: 1));
+
+    $output = $agent->run(new UserMessage('A message far longer than one token.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::BudgetExhausted)
+        ->and($output->content)->toBe('Input is too large.')
+        ->and($provider->calls)->toBe(0);
+});
+
+test('an image does not push a short message over maxInputTokens', function () {
+    $provider = new ScriptedEventsProvider([[new TextDelta('A cat.'), new Finish(ProviderFinishReason::Stop)]]);
+    $agent = new Agent($provider, runLimits: new RunLimits(maxInputTokens: 2_000));
+
+    $output = $agent->run(new UserMessage([
+        ['type' => 'text', 'text' => 'What is in this picture?'],
+        ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . str_repeat('A', 4 * 1024 * 1024)]],
+    ]));
+
+    expect($output->finishReason)->not->toBe(AgentFinishReason::BudgetExhausted)
+        ->and($provider->calls)->toBe(1);
 });

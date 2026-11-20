@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Image;
 
+use CarmeloSantana\PHPAgents\Image\Internal\MimeSniffer;
+
 /**
  * What image bytes are accepted: at most $maxBytes, and a MIME type sniffed from the
- * bytes (finfo) that is in $allowedMimeTypes. $maxBytes is at least 1.
+ * bytes that is in $allowedMimeTypes. The sniff uses finfo, or getimagesizefromstring()
+ * when ext-fileinfo is not loaded (that fallback recognises image formats only). $maxBytes is at least 1.
  */
 final readonly class ImagePolicy
 {
@@ -39,9 +42,9 @@ final readonly class ImagePolicy
             throw new ImageInputException(sprintf('Image is larger than %d bytes.', $this->maxBytes));
         }
 
-        $mime = (new \finfo(FILEINFO_MIME_TYPE))->buffer($bytes);
-        if (!is_string($mime) || !in_array($mime, $this->allowedMimeTypes, true)) {
-            throw new ImageInputException(sprintf('Image type %s is not allowed.', is_string($mime) ? $mime : 'unknown'));
+        $mime = MimeSniffer::sniff($bytes);
+        if ($mime === null || !in_array($mime, $this->allowedMimeTypes, true)) {
+            throw new ImageInputException(sprintf('Image type %s is not allowed.', $mime ?? 'unknown'));
         }
 
         return $mime;

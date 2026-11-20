@@ -7,6 +7,7 @@ use CarmeloSantana\PHPAgents\Contract\ConfigInterface;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
 use CarmeloSantana\PHPAgents\Provider\LlamaCppProvider;
+use CarmeloSantana\PHPAgents\Provider\LlamaServerProvider;
 use CarmeloSantana\PHPAgents\Provider\MistralProvider;
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
 use CarmeloSantana\PHPAgents\Provider\OpenAICompatibleProvider;
@@ -106,6 +107,51 @@ test('fromModelString routes llama-cpp to LlamaCppProvider when a runtime is inj
     expect($provider)->toBeInstanceOf(LlamaCppProvider::class)
         ->and($provider->getModel())->toBe('local-llama');
 });
+
+test('fromModelString routes llama-cpp with a configured baseUrl to LlamaServerProvider', function (string $prefix) {
+    $requests = [];
+    $client = new MockHttpClient(function (string $method, string $url, array $options) use (&$requests): MockResponse {
+        $requests[] = ['url' => $url, 'headers' => $options['headers'] ?? []];
+
+        return new MockResponse(json_encode(['choices' => [['message' => ['content' => 'ok'], 'finish_reason' => 'stop']]]), ['http_code' => 200]);
+    });
+    $config = makeProviderFactoryConfig([$prefix => ['baseUrl' => 'http://127.0.0.1:18089/v1', 'apiKey' => 'server-key']]);
+    // A runtime injected alongside a baseUrl does not win: the configured server does.
+    $runtime = new FakeLocalModelRuntime();
+
+    $provider = ProviderFactory::fromModelString("{$prefix}/qwen2.5", $config, $client, $runtime);
+    $provider->chat([new UserMessage('hi')]);
+
+    expect($provider)->toBeInstanceOf(LlamaServerProvider::class)
+        ->and($provider->getModel())->toBe('qwen2.5')
+        ->and($requests[0]['url'])->toBe('http://127.0.0.1:18089/v1/chat/completions')
+        ->and($requests[0]['headers'])->toContain('Authorization: Bearer server-key');
+})->with(['llama-cpp', 'llamacpp']);
+
+test('a model llama-server discovers round-trips through fromModelString to the same server', function (?string $providerName) {
+    $requests = [];
+    $client = new MockHttpClient(function (string $method, string $url) use (&$requests): MockResponse {
+        $requests[] = $url;
+
+        return new MockResponse(json_encode(['object' => 'list', 'data' => [['id' => 'qwen.gguf', 'object' => 'model', 'meta' => ['n_ctx' => 4096]]]]), ['http_code' => 200]);
+    });
+    $config = makeProviderFactoryConfig(['llama-cpp' => ['baseUrl' => 'http://127.0.0.1:18089/v1']]);
+    $provider = $providerName === null
+        ? new LlamaServerProvider('qwen.gguf', 'http://127.0.0.1:18089/v1', httpClient: $client)
+        : ProviderFactory::fromModelString("{$providerName}/qwen.gguf", $config, $client);
+
+    $model = $provider->models()[0];
+    $again = ProviderFactory::fromModelString($model->provider . '/' . $model->id, $config, $client);
+    $again->models();
+
+    expect($again)->toBeInstanceOf(LlamaServerProvider::class)
+        ->and($again->getModel())->toBe('qwen.gguf')
+        ->and($requests[1])->toBe('http://127.0.0.1:18089/v1/models');
+})->with(['factory llama-cpp' => 'llama-cpp', 'factory llamacpp' => 'llamacpp', 'constructed directly' => null]);
+
+test('fromModelString without a baseUrl or a local runtime names both ways to configure llama-cpp', function () {
+    ProviderFactory::fromModelString('llama-cpp/qwen2.5');
+})->throws(\InvalidArgumentException::class, 'baseUrl');
 
 test('factory instance uses bound local runtime for llama-cpp models', function () {
     $runtime = new FakeLocalModelRuntime();

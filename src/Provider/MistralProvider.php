@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Provider;
 
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Provider\Stream\ToolArguments;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -57,11 +59,11 @@ final class MistralProvider extends OpenAICompatibleProvider
      * stream_options extension, so suppress it on inherited streaming calls.
      */
     #[\Override]
-    public function stream(array $messages, array $tools = [], array $options = []): iterable
+    public function streamEvents(array $messages, array $tools = [], array $options = []): iterable
     {
         $options['stream_options'] = null;
 
-        return parent::stream($messages, $tools, $options);
+        return parent::streamEvents($messages, $tools, $options);
     }
 
     /**
@@ -158,26 +160,30 @@ final class MistralProvider extends OpenAICompatibleProvider
             }
         }
 
-        // Tool calls are still at the top level (same as standard Mistral)
-        foreach ($message['tool_calls'] ?? [] as $tc) {
-            $arguments = $tc['function']['arguments'] ?? '{}';
-            $toolCalls[] = new ToolCall(
-                id: $tc['id'] ?? '',
-                name: $tc['function']['name'] ?? '',
-                arguments: json_decode($arguments, true) ?? [],
-            );
-        }
-
         $finishReason = $this->mapFinishReason($choice['finish_reason'] ?? 'stop');
 
-        $usage = null;
-        if (isset($data['usage'])) {
-            $usage = new Usage(
-                promptTokens: $data['usage']['prompt_tokens'] ?? 0,
-                completionTokens: $data['usage']['completion_tokens'] ?? 0,
-                totalTokens: $data['usage']['total_tokens'] ?? 0,
+        // Tool calls are still at the top level (same as standard Mistral). A call whose
+        // arguments are not a JSON object is dropped, and a tool stop then becomes Error.
+        foreach ($message['tool_calls'] ?? [] as $tc) {
+            $name = $tc['function']['name'] ?? '';
+            $arguments = ToolArguments::fromDecoded($tc['function']['arguments'] ?? null, $this->requestLimits);
+            if ($arguments === null) {
+                $this->logger?->debug('Tool {tool} arguments are not a JSON object; the call is dropped', ['tool' => $name]);
+                if ($finishReason === ProviderFinishReason::ToolUse) {
+                    $finishReason = ProviderFinishReason::Error;
+                }
+
+                continue;
+            }
+
+            $toolCalls[] = new ToolCall(
+                id: $tc['id'] ?? '',
+                name: $name,
+                arguments: $arguments,
             );
         }
+
+        $usage = is_array($data['usage'] ?? null) ? $this->parseUsage($data['usage']) : null;
 
         return new Response(
             content: $content,
