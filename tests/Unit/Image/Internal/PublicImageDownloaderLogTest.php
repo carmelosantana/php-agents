@@ -35,7 +35,7 @@ test('a refused image URL is logged as scheme, host and a redacted path only', f
         ->and($logger->lines[0])->not->toContain('frag');
 });
 
-test('a download failure logs its exception text through UntrustedText::forDisplay', function () {
+test('a download failure never logs a credential or control character from its exception text', function () {
     $logger = new ImageDownloaderLogRecorder();
     $secret = 'sk-' . str_repeat('A1b2', 8);
     $client = new MockHttpClient(function () use ($secret): never {
@@ -50,4 +50,24 @@ test('a download failure logs its exception text through UntrustedText::forDispl
         ->and($logger->lines[0])->not->toContain($secret)
         ->and($logger->lines[0])->not->toContain("\e")
         ->and($logger->lines[0])->toContain('[redacted]');
+});
+
+test('a download failure logs the exception class, a fixed reason and the loggable URL, never its message', function () {
+    $logger = new ImageDownloaderLogRecorder();
+    $client = new MockHttpClient(function (): never {
+        throw new TransportException('Idle timeout reached for "https://user:pass@img.example/private/photo.png?X-Amz-Signature=deadbeef1234&sig=s3cr3tvalue".');
+    });
+    $downloader = new PublicImageDownloader($client, $logger, static fn(string $host): array => ['93.184.216.34']);
+
+    $downloader->download('https://user:pass@img.example/private/photo.png?X-Amz-Signature=deadbeef1234&sig=s3cr3tvalue', new RequestLimits());
+
+    expect($logger->lines)->toHaveCount(1)
+        ->and($logger->lines[0])->toContain('TransportException')
+        ->and($logger->lines[0])->toContain('https://img.example/[redacted]')
+        ->and($logger->lines[0])->not->toContain('X-Amz-Signature')
+        ->and($logger->lines[0])->not->toContain('deadbeef1234')
+        ->and($logger->lines[0])->not->toContain('s3cr3tvalue')
+        ->and($logger->lines[0])->not->toContain('user:pass')
+        ->and($logger->lines[0])->not->toContain('private')
+        ->and($logger->lines[0])->not->toContain('Idle timeout');
 });

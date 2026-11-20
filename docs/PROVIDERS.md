@@ -916,8 +916,8 @@ $provider = new OllamaProvider(
 
 An image download (Gemini image URLs, `RemoteImageResolver`) logs a refused URL as its scheme, host
 and port with any path shown as `/[redacted]`; user info, query and fragment are left out, so a
-signed URL's credentials never reach the log. A failed download's exception text goes through
-`UntrustedText::forDisplay()` first.
+signed URL's credentials never reach the log. A failed download logs the exception class and that
+same URL form, never the exception message, since transport errors quote the full request URL.
 
 ### SseStreamParser
 

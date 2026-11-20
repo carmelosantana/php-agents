@@ -99,7 +99,12 @@ final class PublicImageDownloader
 
             return null;
         } catch (\Throwable $e) {
-            $this->logger?->debug('Failed to download image from URL: {error}', ['error' => UntrustedText::forDisplay($e->getMessage())]);
+            // The message is not logged: transport errors quote the request URL, signed query
+            // and user info included, which no pattern-based redaction reliably removes.
+            $this->logger?->debug('Failed to download image from {url}: {exception} (the transport refused or failed the request)', [
+                'url' => self::loggableUrl($url),
+                'exception' => $e::class,
+            ]);
 
             return null;
         }

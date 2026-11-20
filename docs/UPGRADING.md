@@ -109,8 +109,8 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   `streamEvents()` stops reading the process stream past it and `chat()` refuses a larger result,
   each with a `ProviderException` (`response exceeded N bytes`). Pass `maxResponseBytes: 0` for no cap.
 - Image downloads (Gemini image URLs, `RemoteImageResolver`) log a refused URL as scheme, host and
-  `/[redacted]` instead of the full URL, and pass a failure's exception text through
-  `UntrustedText::forDisplay()`.
+  `/[redacted]` instead of the full URL, and log a failure as the exception class plus that URL
+  form instead of the exception message.
 - `McpClient::CLIENT_VERSION`, sent as the MCP `clientInfo` version, is `0.18.0` (it still read
   `0.16.1` in 0.17).
 - `SseStreamParser` applies its 1 MiB line cap (`maxLineBytes`) to every line, not only to one
