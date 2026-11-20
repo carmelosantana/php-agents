@@ -12,6 +12,12 @@ use CarmeloSantana\PHPAgents\Provider\RequestLimits;
 final class ToolArguments
 {
     /**
+     * How arguments that arrive decoded are re-encoded: UTF-8 and slashes unescaped, so the
+     * byte cap measures them as the wire string decode() sees would be measured.
+     */
+    private const int JSON_FLAGS = \JSON_UNESCAPED_UNICODE | \JSON_UNESCAPED_SLASHES | \JSON_INVALID_UTF8_SUBSTITUTE;
+
+    /**
      * Decode a call's complete argument JSON. Empty or whitespace arguments (sent by
      * some servers for parameterless tools) are `{}`; anything that is not a JSON
      * object (truncated, array, scalar), or that is over $limits' tool-argument byte or
@@ -70,7 +76,7 @@ final class ToolArguments
     private static function withinLimits(array $arguments, RequestLimits $limits): bool
     {
         // json_encode() counts depth one lower than json_decode(): `{"a":1}` is 1 deep.
-        $json = json_encode($arguments, \JSON_INVALID_UTF8_SUBSTITUTE, self::decodeDepth($limits) - 1);
+        $json = json_encode($arguments, self::JSON_FLAGS, self::decodeDepth($limits) - 1);
 
         return $json !== false
             && ($limits->maxToolArgumentBytes === 0 || strlen($json) <= $limits->maxToolArgumentBytes);
@@ -89,7 +95,8 @@ final class ToolArguments
 
     /**
      * Argument JSON from a decoded SSE payload. Wire strings pass through; arguments
-     * sent as a JSON object arrive decoded, so they are re-encoded, with an empty
+     * sent as a JSON object arrive decoded, so they are re-encoded (UTF-8 and slashes
+     * unescaped), with an empty
      * object (decoded as []) becoming `{}`. A missing value is ''.
      */
     public static function toJson(mixed $arguments): string
@@ -98,7 +105,7 @@ final class ToolArguments
             is_string($arguments) => $arguments,
             $arguments === null => '',
             $arguments === [] => '{}',
-            default => (string) json_encode($arguments),
+            default => (string) json_encode($arguments, self::JSON_FLAGS),
         };
     }
 }

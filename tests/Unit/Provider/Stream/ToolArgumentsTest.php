@@ -95,3 +95,17 @@ test('fromDecoded applies the caps to arguments that arrive decoded', function (
         ->and(ToolArguments::fromDecoded('{"a":"xxx"}', $limits))->toBeNull()
         ->and(ToolArguments::fromDecoded(json_decode(nestedArgumentsJson(65), true)))->toBeNull();
 });
+
+test('the byte cap measures raw UTF-8 and slashes the same way in decode and fromDecoded', function () {
+    $limits = new RequestLimits(maxToolArgumentBytes: 4000);
+    $arguments = ['a' => 'x/y' . str_repeat('日', 1000)];
+    $json = (string) json_encode($arguments, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+    expect(strlen($json))->toBe(3011)
+        ->and(ToolArguments::decode($json, $limits))->toBe($arguments)
+        ->and(ToolArguments::fromDecoded($arguments, $limits))->toBe($arguments);
+});
+
+test('toJson re-encodes decoded arguments without escaping unicode or slashes', function () {
+    expect(ToolArguments::toJson(['a' => '日/x']))->toBe('{"a":"日/x"}');
+});

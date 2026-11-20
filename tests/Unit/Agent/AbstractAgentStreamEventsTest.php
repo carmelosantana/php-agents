@@ -834,3 +834,24 @@ test('content blocks kept in the conversation drop the tool_use blocks of calls 
     expect($assistant)->toHaveCount(1)
         ->and($assistant[0]->contentBlocks())->toBe([$blocks[0], $blocks[1]]);
 });
+
+test('non-ASCII and slashes in streamed arguments are counted once, as raw bytes', function () {
+    // Deltas {"text":"a/b" + 20 x 日 + "} are 74 raw bytes; + c1 echo tool_use test-model 24 = 98.
+    // Round 2: Done. stop test-model = 19. The run receives 117 bytes.
+    $json = '{"text":"a/b' . str_repeat('日', 20) . '"}';
+    $run = function (int $cap) use ($json): Output {
+        [$agent] = streamEventsAgent([[
+            new ToolInputStart(0, 'c1', 'echo'),
+            new ToolInputDelta(0, 'c1', substr($json, 0, 20)),
+            new ToolInputDelta(0, 'c1', substr($json, 20)),
+            new ToolInputEnd(0, 'c1', 'echo', json_decode($json, true)),
+            new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+        ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxResponseBytes: $cap)]);
+
+        return $agent->run(new UserMessage('Echo.'));
+    };
+
+    expect(strlen($json))->toBe(74)
+        ->and($run(117)->content)->toBe('Done.')
+        ->and($run(116)->content)->toBe('Response size limit reached.');
+});

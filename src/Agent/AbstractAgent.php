@@ -999,11 +999,12 @@ abstract class AbstractAgent implements AgentInterface
     }
 
     /**
-     * Length of $value as JSON; bytes that are not UTF-8 count as substitutes.
+     * Length of $value as JSON in its wire form: UTF-8 and slashes unescaped, so it matches the
+     * bytes the same value streams as. Bytes that are not UTF-8 count as substitutes.
      */
     private static function jsonBytes(mixed $value): int
     {
-        return strlen(json_encode($value, \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR) ?: '');
+        return strlen(json_encode($value, \JSON_UNESCAPED_UNICODE | \JSON_UNESCAPED_SLASHES | \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR) ?: '');
     }
 
     /**
