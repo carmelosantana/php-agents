@@ -97,9 +97,10 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   checked while a model is silent, on the providers listed under
   [Cancellation and idle ticks](PROVIDERS.md#cancellation-and-idle-ticks).
 - `RequestLimits::$maxToolArgumentBytes` (default 4 MiB) and `$maxToolArgumentDepth` (default `64`)
-  cap one tool call's arguments on the bundled HTTP providers and `CliProvider` (new optional
-  `requestLimits:` constructor argument); a call over either is dropped like one
-  whose arguments are not a JSON object (see [Request Limits](PROVIDERS.md#request-limits)). Raise
-  them with `withRequestLimits()` for a tool that really takes more.
+  cap one tool call's arguments on the bundled HTTP providers and `CliProvider`; a call over either
+  is dropped like one whose arguments are not a JSON object (see
+  [Request Limits](PROVIDERS.md#request-limits)). Raise them with `withRequestLimits()` for a tool
+  that really takes more; `CliProvider` gains `withRequestLimits()`, `requestLimits()` and an
+  optional `requestLimits:` constructor argument for this, and applies only these two caps.
 - `Agent` takes `runLimits`, `cancellationToken` and `providerOptions` (see
   [The ready-made `Agent`](AGENTS.md#the-ready-made-agent)).

@@ -41,8 +41,25 @@ final class CliProvider implements ProviderInterface
         private string $model,
         private readonly CliVendorAdapterInterface $adapter,
         private readonly CliRuntimeInterface $runtime,
-        private readonly RequestLimits $requestLimits = new RequestLimits(),
+        private RequestLimits $requestLimits = new RequestLimits(),
     ) {}
+
+    /**
+     * Return a copy whose later calls use $limits; of them only the tool-argument caps apply.
+     * The original keeps its limits.
+     */
+    public function withRequestLimits(RequestLimits $limits): static
+    {
+        $clone = clone $this;
+        $clone->requestLimits = $limits;
+
+        return $clone;
+    }
+
+    public function requestLimits(): RequestLimits
+    {
+        return $this->requestLimits;
+    }
 
     public function chat(array $messages, array $tools = [], array $options = []): Response
     {
@@ -62,7 +79,11 @@ final class CliProvider implements ProviderInterface
 
         return new Response(
             content: $response->content,
-            finishReason: $response->finishReason === ProviderFinishReason::ToolUse ? ProviderFinishReason::Error : $response->finishReason,
+            // As in streamEvents(): a Stop that carried tool calls is a tool-use stop, and a
+            // tool-use stop that drops a call is an Error.
+            finishReason: in_array($response->finishReason, [ProviderFinishReason::ToolUse, ProviderFinishReason::Stop], true)
+                ? ProviderFinishReason::Error
+                : $response->finishReason,
             toolCalls: $kept,
             model: $response->model,
             usage: $response->usage,

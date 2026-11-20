@@ -475,3 +475,26 @@ test('withModel keeps the request limits', function () {
 
     expect($provider->chat([new UserMessage('Hi')])->toolCalls)->toBe([]);
 });
+
+test('withRequestLimits returns a copy with new limits and requestLimits reads them', function () {
+    $adapter = cliToolCallAdapter([new ToolCall('c1', 'lookup', ['q' => str_repeat('x', 40)])]);
+    $original = new CliProvider('fake', $adapter, new FakeCliRuntime());
+    $limits = new RequestLimits(maxToolArgumentBytes: 32);
+    $capped = $original->withRequestLimits($limits);
+
+    expect($capped)->not->toBe($original)
+        ->and($capped->requestLimits())->toBe($limits)
+        ->and($original->requestLimits()->maxToolArgumentBytes)->toBe(RequestLimits::DEFAULT_MAX_TOOL_ARGUMENT_BYTES)
+        ->and($capped->chat([new UserMessage('Hi')])->toolCalls)->toBe([])
+        ->and($original->chat([new UserMessage('Hi')])->toolCalls)->toHaveCount(1);
+});
+
+test('chat and streamEvents agree on Error when a Stop with tool calls drops one', function () {
+    $adapter = cliToolCallAdapter([new ToolCall('c1', 'lookup', ['q' => str_repeat('x', 40)])], ProviderFinishReason::Stop);
+    $provider = new CliProvider('fake', $adapter, new FakeCliRuntime(), new RequestLimits(maxToolArgumentBytes: 32));
+
+    $events = iterator_to_array($provider->streamEvents([new UserMessage('Hi')]), false);
+
+    expect($provider->chat([new UserMessage('Hi')])->finishReason)->toBe(ProviderFinishReason::Error)
+        ->and(end($events)->reason)->toBe(ProviderFinishReason::Error);
+});
