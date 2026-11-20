@@ -13,6 +13,8 @@ use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Context\ContextWindow;
 use CarmeloSantana\PHPAgents\Provider\Usage;
 use CarmeloSantana\PHPAgents\Enum\AgentFinishReason;
+use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
+use CarmeloSantana\PHPAgents\Enum\EmptyResponseHandling;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\ToolResultStatus;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
@@ -542,4 +544,99 @@ test('a cancel on agent.budget_warning before a text answer is accepted returns 
         ->and(end($messages)->content())->toBe('Hello')
         ->and($events->dataFor('agent.done'))->toBe([])
         ->and(array_slice($events->names(), -4))->toBe(['agent.step_finish', 'agent.budget_warning', 'agent.error', 'agent.finish']);
+});
+
+test('a cancel on agent.step_finish of a response that is not an answer keeps its finish reason', function (ProviderFinishReason $reason, AgentFinishReason $expected) {
+    [$agent, $events] = cancellationAgent(
+        [[new TextDelta('No.'), new Finish($reason, $reason->value, null, 'test-model')]],
+        fn(string $event): bool => $event === 'agent.step_finish',
+    );
+
+    $output = $agent->run(new UserMessage('Hello.'));
+
+    expect($output->finishReason)->toBe($expected)
+        ->and($output->providerFinishReason)->toBe($reason)
+        ->and($events->dataFor('agent.error'))->not->toContain('Task cancelled');
+})->with([
+    'refusal' => [ProviderFinishReason::Refusal, AgentFinishReason::Refusal],
+    'content filter' => [ProviderFinishReason::ContentFilter, AgentFinishReason::ContentFilter],
+    'context window' => [ProviderFinishReason::ContextWindowExceeded, AgentFinishReason::ContextWindowExceeded],
+    'provider error' => [ProviderFinishReason::Error, AgentFinishReason::Error],
+    'pause turn' => [ProviderFinishReason::PauseTurn, AgentFinishReason::Error],
+]);
+
+test('a cancel on agent.budget_warning of a refusal keeps Refusal', function () {
+    [$agent] = cancellationAgent(
+        [[new TextDelta('No.'), new Finish(ProviderFinishReason::Refusal, 'refusal', new Usage(promptTokens: 850, completionTokens: 50, totalTokens: 900), 'test-model')]],
+        fn(string $event): bool => $event === 'agent.budget_warning',
+        ['contextWindow' => new ContextWindow(maxTok: 1_000, reservedTok: 0), 'budgetExitThreshold' => 0.8],
+    );
+
+    expect($agent->run(new UserMessage('Hello.'))->finishReason)->toBe(AgentFinishReason::Refusal);
+});
+
+test('a cancel on agent.empty_response returns Cancelled, not the reasoning fallback', function () {
+    [$agent, $events] = cancellationAgent(
+        [[new ReasoningDelta('Thinking about it.'), new Finish(ProviderFinishReason::Stop, 'stop', null, 'test-model')]],
+        fn(string $event): bool => $event === 'agent.empty_response',
+        ['emptyResponseHandling' => EmptyResponseHandling::Fallback],
+    );
+
+    $output = $agent->run(new UserMessage('Hello.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->content)->toBe('Task was cancelled.')
+        ->and(array_slice($events->names(), -3))->toBe(['agent.empty_response', 'agent.error', 'agent.finish']);
+});
+
+test('a cancel on agent.step_finish of an empty response returns Cancelled, not the reasoning fallback', function () {
+    [$agent] = cancellationAgent(
+        [[new ReasoningDelta('Thinking about it.'), new Finish(ProviderFinishReason::Stop, 'stop', null, 'test-model')]],
+        fn(string $event): bool => $event === 'agent.step_finish',
+        ['emptyResponseHandling' => EmptyResponseHandling::Fallback],
+    );
+
+    expect($agent->run(new UserMessage('Hello.'))->finishReason)->toBe(AgentFinishReason::Cancelled);
+});
+
+test('a cancel on agent.step_finish keeps the usage of the finished response', function () {
+    $usage = new Usage(promptTokens: 12, completionTokens: 3, totalTokens: 15);
+    [$agent] = cancellationAgent(
+        [[new TextDelta('Hello'), new Finish(ProviderFinishReason::Stop, 'stop', $usage, 'test-model')]],
+        fn(string $event): bool => $event === 'agent.step_finish',
+    );
+
+    $output = $agent->run(new UserMessage('Say hello.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->usage?->promptTokens)->toBe(12)
+        ->and($output->usage?->completionTokens)->toBe(3)
+        ->and($output->usage?->totalTokens)->toBe(15);
+});
+
+test('a cancel on agent.step_finish of a done response with other calls discards them all and runs none', function () {
+    [$agent, $events] = cancellationAgent(
+        [[
+            new ToolInputStart(0, 'c1', 'echo'),
+            new ToolInputDelta(0, 'c1', '{"text":"a"}'),
+            new ToolInputEnd(0, 'c1', 'echo', ['text' => 'a']),
+            new ToolInputStart(1, 'd1', 'done'),
+            new ToolInputDelta(1, 'd1', '{"response":"Done."}'),
+            new ToolInputEnd(1, 'd1', 'done', ['response' => 'Done.']),
+            new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+        ]],
+        fn(string $event): bool => $event === 'agent.step_finish',
+    );
+
+    $output = $agent->run(new UserMessage('Echo a, then finish.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->content)->toBe('Done.')
+        ->and($output->toolResults)->toBe([])
+        ->and($events->names())->not->toContain('agent.tool_call')
+        ->and($events->dataFor('agent.done'))->toBe([])
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([
+            new ToolInputDiscarded(0, 'c1', 'echo', 'cancelled'),
+            new ToolInputDiscarded(1, 'd1', 'done', 'cancelled'),
+        ]);
 });

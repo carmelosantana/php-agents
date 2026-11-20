@@ -549,8 +549,9 @@ abstract class AbstractAgent implements AgentInterface
             // A cancel after the stream (on agent.step_finish, say) still stops a final answer,
             // text or `done`, from being accepted; the answer streamed so far is kept as on a
             // mid-stream cancel. A response of ordinary tool calls goes on to executeToolCalls,
-            // which answers each call as cancelled.
-            if ($this->cancellationToken?->isCancelled() && !$this->hasOnlyOrdinaryCalls($response->toolCalls)) {
+            // which answers each call as cancelled; a refusal, filter, context-window or provider
+            // error finish keeps its own reason; an empty response is checked before a fallback.
+            if ($this->cancellationToken?->isCancelled() && $this->isFinalAnswer($response)) {
                 $this->discardCalls($response->toolCalls !== [] ? $completedCalls : [], 'cancelled');
 
                 return $this->cancelledOutput(self::cancelledAnswer($contentParts, $donePreview), $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
@@ -858,19 +859,26 @@ abstract class AbstractAgent implements AgentInterface
     }
 
     /**
-     * Whether $toolCalls is non-empty and has no `done` call, so the response is not a final answer.
-     *
-     * @param ToolCall[] $toolCalls
+     * Whether the run would accept $response as its answer: a response with a `done` call, or
+     * text with no tool calls under a finish that is not a failure (Stop, ToolUse, or MaxTokens).
      */
-    private function hasOnlyOrdinaryCalls(array $toolCalls): bool
+    private function isFinalAnswer(Response $response): bool
     {
-        foreach ($toolCalls as $toolCall) {
-            if ($toolCall->name === DoneTool::NAME) {
-                return false;
+        if ($response->toolCalls !== []) {
+            foreach ($response->toolCalls as $toolCall) {
+                if ($toolCall->name === DoneTool::NAME) {
+                    return true;
+                }
             }
+
+            return false;
         }
 
-        return $toolCalls !== [];
+        return $response->content !== '' && in_array(
+            $response->finishReason,
+            [ProviderFinishReason::Stop, ProviderFinishReason::ToolUse, ProviderFinishReason::MaxTokens],
+            true,
+        );
     }
 
     /**
@@ -1096,6 +1104,11 @@ abstract class AbstractAgent implements AgentInterface
         Usage $totalUsage,
         int $iterations,
     ): Output {
+        // A cancel that landed after the response finished (on agent.empty_response, say).
+        if ($this->cancellationToken?->isCancelled()) {
+            return $this->cancelledOutput('', $conversation, $allToolResults, $totalUsage, $iterations, $response->model);
+        }
+
         $answer = trim($response->reasoning);
 
         $this->notify('agent.warning', 'Model returned reasoning only; using reasoning as the answer');
