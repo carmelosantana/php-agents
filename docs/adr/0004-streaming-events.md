@@ -96,7 +96,9 @@ Alternatives considered, one line each:
   extends either deadline.
 - The parser yields a sentinel per tick, which providers turn into a `Tick` event. When the
   consumer stops iterating, the provider's generator cancels the HTTP response in a `finally`
-  block.
+  block, as it does when the stream throws anything but an HTTP status error (whose response stays
+  open for its error body), so a parser limit or provider error event does not rely on the client
+  cleaning up a destroyed response.
 - Ticks depend on the client honouring the timeout argument of `stream()`. A client that ignores
   it gets no ticks, and cancellation then works per data chunk only. `LlamaCppProvider` and
   `CliProvider` have no SSE stream: they honour cancellation per chunk and emit no ticks.

@@ -781,6 +781,9 @@ when the next chunk arrives:
 | Any provider on an injected HTTP client that ignores the timeout argument of symfony's `stream()` | — | Per chunk only |
 
 When a consumer stops iterating (a cancel or a run limit), the provider cancels the HTTP response.
+So does a stream that fails after a successful status (an SSE line over the cap, a provider error
+event, a timeout); only an HTTP status error (`HttpExceptionInterface`, a 4xx or 5xx) leaves the
+response open, so the caller can still read its error body.
 With ticks on, the parser keeps the idle deadline itself: once `idleTimeout` seconds pass with no
 data it throws symfony's idle-timeout `TimeoutException`, up to one `tickInterval` late, and an
 `idleTimeout` of `0.0` sets no idle deadline. A tick never extends `idleTimeout` or `maxDuration`.

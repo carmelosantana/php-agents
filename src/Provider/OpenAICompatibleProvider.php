@@ -18,6 +18,7 @@ use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
+use Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 class OpenAICompatibleProvider extends AbstractProvider
@@ -107,7 +108,7 @@ class OpenAICompatibleProvider extends AbstractProvider
         $usage = null;
         /** @var array{reason: ProviderFinishReason, raw: string}|null $finish */
         $finish = null;
-        $thrown = false;
+        $keepResponse = false;
 
         $parser = new SseStreamParser(
             $this->httpClient,
@@ -209,13 +210,16 @@ class OpenAICompatibleProvider extends AbstractProvider
                 ? new Finish(ProviderFinishReason::Error, usage: $usage, model: $model)
                 : new Finish($finish['reason'], $finish['raw'], $usage, $model);
         } catch (\Throwable $e) {
-            $thrown = true;
+            // Only an HTTP status error leaves the response open: the caller reads its error
+            // body. Anything else after a successful status (a parser limit, a provider error
+            // event) is cancelled below like an abandoned stream.
+            $keepResponse = $e instanceof HttpExceptionInterface;
 
             throw $e;
         } finally {
             // An abandoned generator (the consumer stopped iterating) must not leave the
-            // response open. A thrown HTTP error keeps its response readable for the caller.
-            if (!$thrown) {
+            // response open, whatever the client does when it is destroyed.
+            if (!$keepResponse) {
                 $response->cancel();
             }
         }

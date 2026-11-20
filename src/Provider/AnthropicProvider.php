@@ -23,6 +23,7 @@ use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
+use Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
@@ -157,7 +158,7 @@ final class AnthropicProvider extends AbstractProvider
         /** @var array<string, mixed> $usage */
         $usage = [];
         $stopReason = null;
-        $thrown = false;
+        $keepResponse = false;
 
         $parser = new SseStreamParser(
             $this->httpClient,
@@ -289,13 +290,16 @@ final class AnthropicProvider extends AbstractProvider
             // EOF before message_stop: the message is incomplete, whatever arrived.
             yield new Finish(ProviderFinishReason::Error, rawReason: $stopReason ?? '', usage: $this->parseUsage($usage), model: $model);
         } catch (\Throwable $e) {
-            $thrown = true;
+            // Only an HTTP status error leaves the response open: the caller reads its error
+            // body. Anything else after a successful status (a parser limit, a provider error
+            // event) is cancelled below like an abandoned stream.
+            $keepResponse = $e instanceof HttpExceptionInterface;
 
             throw $e;
         } finally {
             // An abandoned generator (the consumer stopped iterating) must not leave the
-            // response open. A thrown HTTP error keeps its response readable for the caller.
-            if (!$thrown) {
+            // response open, whatever the client does when it is destroyed.
+            if (!$keepResponse) {
                 $response->cancel();
             }
         }
