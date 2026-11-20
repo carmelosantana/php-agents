@@ -73,6 +73,9 @@ abstract class AbstractAgent implements AgentInterface
 
     private const int ERROR_CODE_MAX_CHARS = 64;
 
+    /** Characters of a provider's raw finish reason, or model id, that reach agent.step_finish and agent.finish. */
+    private const int FINISH_TELEMETRY_MAX_CHARS = 128;
+
     private const string RUN_TIME_LIMIT_REACHED = 'Run time limit reached.';
 
     private const string RESPONSE_SIZE_LIMIT_REACHED = 'Response size limit reached.';
@@ -192,7 +195,8 @@ abstract class AbstractAgent implements AgentInterface
 
     /**
      * Runs the agent loop, then fires agent.finish with a RunFinish built from the Output
-     * it returns, so every exit path ends with exactly one agent.finish.
+     * it returns, so every exit path ends with exactly one agent.finish. The model is scrubbed
+     * like a provider error, since a provider controls it.
      */
     public function run(MessageInterface $input, ?Conversation $history = null): Output
     {
@@ -202,7 +206,7 @@ abstract class AbstractAgent implements AgentInterface
             $output->finishReason,
             $output->usage ?? new Usage(),
             $output->iterations,
-            $output->model,
+            UntrustedText::forDisplay($output->model, self::FINISH_TELEMETRY_MAX_CHARS),
         ));
 
         return $output;
@@ -514,7 +518,13 @@ abstract class AbstractAgent implements AgentInterface
 
             if ($finish !== null) {
                 $this->discardUnrunCalls($startedCalls, $endedCalls, $finish->reason);
-                $this->notify('agent.step_finish', new StepFinish($i + 1, $finish->reason, $finish->rawReason, $finish->usage, $finish->model));
+                $this->notify('agent.step_finish', new StepFinish(
+                    $i + 1,
+                    $finish->reason,
+                    UntrustedText::forDisplay($finish->rawReason, self::FINISH_TELEMETRY_MAX_CHARS),
+                    $finish->usage,
+                    UntrustedText::forDisplay($finish->model, self::FINISH_TELEMETRY_MAX_CHARS),
+                ));
             } else {
                 $this->discardCalls($startedCalls, 'provider_error');
             }

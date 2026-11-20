@@ -9,7 +9,8 @@ use CarmeloSantana\PHPAgents\Provider\Usage;
 
 /**
  * Payload of agent.finish, fired once just before run() returns, from the Output it returns:
- * its finish reason, summed usage, iteration count and model.
+ * its finish reason, summed usage, iteration count and model. The model is redacted and cut to
+ * 128 characters (UntrustedText::forDisplay()); Output::$model keeps it verbatim.
  */
 final readonly class RunFinish
 {

@@ -9,7 +9,9 @@ use CarmeloSantana\PHPAgents\Provider\Usage;
 
 /**
  * Payload of agent.step_finish: one provider response completed. $iteration is 1-based;
- * the other fields come from the stream's Finish event.
+ * the other fields come from the stream's Finish event. $rawReason and $model are
+ * provider-controlled, so the agent redacts them and cuts them to 128 characters
+ * (UntrustedText::forDisplay()); Finish itself keeps them verbatim.
  */
 final readonly class StepFinish
 {

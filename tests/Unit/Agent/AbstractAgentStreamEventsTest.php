@@ -740,3 +740,33 @@ test('an end that arrives without a start is admitted under the per-turn cap', f
     expect(array_map(fn(ToolResult $r): ?string => $r->callId, $output->toolResults))->toBe(['c1'])
         ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(1, 'c2', 'echo', 'tool_call_limit')]);
 });
+
+test('finish telemetry scrubs a hostile raw reason and model: secrets, control and bidi characters, length', function () {
+    $key = 'sk-' . str_repeat('A1b2', 8);
+    $rawReason = "stop\e[31m {$key}\u{202E}gnp.exe\u{009B}2J\u{2066}x\u{2069}\x07";
+    $model = "gpt\u{202D}-4o\e]0;title\x07" . str_repeat('m', 1000);
+    [$agent, $events] = streamEventsAgent([[
+        new TextDelta('Hello'),
+        new Finish(ProviderFinishReason::Stop, $rawReason, null, $model),
+    ]]);
+
+    $output = $agent->run(new UserMessage('Say hello.'));
+
+    /** @var StepFinish $step */
+    $step = $events->dataFor('agent.step_finish')[0];
+    /** @var RunFinish $finish */
+    $finish = $events->dataFor('agent.finish')[0];
+
+    expect($step->rawReason)->toBe('stop [31m [redacted] gnp.exe 2J x')
+        ->and($step->reason)->toBe(ProviderFinishReason::Stop);
+
+    foreach ([$step->rawReason, $step->model, $finish->model] as $text) {
+        expect($text)->not->toContain($key)
+            ->and(preg_match('/[\p{Cc}\x{202A}-\x{202E}\x{2066}-\x{2069}]/u', $text))->toBe(0)
+            ->and(mb_strlen($text, 'UTF-8'))->toBeLessThanOrEqual(129);
+    }
+
+    expect($step->model)->toStartWith('gpt -4o ]0;title mmm')->toEndWith('…')
+        ->and($finish->model)->toBe($step->model)
+        ->and($output->model)->toBe($model);
+});
