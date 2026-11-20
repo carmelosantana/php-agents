@@ -77,3 +77,12 @@ test('the granted tools docs say a successful result and the most recent call', 
         ->and($doc)->toContain('successful result')
         ->and($doc)->toContain('most recent call');
 })->with(['docs/AGENTS.md', 'src/Contract/ToolGrantInterface.php']);
+
+test('UPGRADING records the missing cumulative per-run default as a known issue fixed in 0.18.1', function () {
+    $doc = (string) file_get_contents(dirname(__DIR__, 3) . '/docs/UPGRADING.md');
+
+    expect($doc)->toContain('### Known issue')
+        ->toContain('No cumulative per-run byte or token default')
+        ->toContain('Set `RunLimits`')
+        ->toContain('a default lands in 0.18.1');
+});

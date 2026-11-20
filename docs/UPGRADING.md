@@ -129,6 +129,13 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   still waiting for its newline: a provider stream with a longer complete line now throws a
   `ProviderException` (`SSE line exceeded … bytes`) instead of decoding it.
 
+### Known issue
+
+- No cumulative per-run byte or token default: `RunLimits` is unlimited unless you set it, so a
+  hostile endpoint can return many tool rounds, each within the per-request cap, that together
+  exhaust memory. Set `RunLimits` (`maxResponseBytes`, `maxEstimatedTokens`) for untrusted
+  endpoints; a default lands in 0.18.1.
+
 ### Deprecated
 
 - The in-process llama.cpp FFI path is deprecated in 0.18 and will be removed or fixed in 0.19:
