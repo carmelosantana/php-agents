@@ -419,7 +419,7 @@ when the run ends for another reason.
 | `done` tool | `step_finish` → `tool_input_discarded` (the response's other calls) → `done` → `finish` | `Done` |
 | Tool-call limit per run | `step_finish` → … tools … → `warning` → `finish` | `BudgetExhausted` |
 | Budget wrap-up exhausted | `warning` → `finish` | `BudgetExhausted` |
-| Run limit while streaming | `tool_input_discarded` (`run_limit`, each started call) → `error` → `finish` | `BudgetExhausted` |
+| Run limit while streaming (usage of a finish that already arrived is kept) | `tool_input_discarded` (`run_limit`, each started call) → `error` → `finish` | `BudgetExhausted` |
 | Token limit after a response | `step_finish` → `tool_input_discarded` (`run_limit`, each completed call) → `error` → `finish` | `BudgetExhausted` |
 | Run limit elsewhere (time, input size) | `error` → `finish` | `BudgetExhausted` |
 | Repeated empty responses | `step_finish` → `empty_response` → `error` → `finish` | `EmptyResponse` |

@@ -507,17 +507,14 @@ abstract class AbstractAgent implements AgentInterface
             // are present, is the run's answer.
             if ($cancelled) {
                 $this->discardCalls($startedCalls, 'cancelled');
-                // A Finish can arrive before the cancel is seen (a transport abort throws on the
-                // next read); its usage was spent.
-                if ($finish?->usage !== null) {
-                    $totalUsage = $totalUsage->plus($finish->usage);
-                }
+                $totalUsage = $this->spendEarlyFinishUsage($finish, $totalUsage);
 
                 return $this->cancelledOutput(self::cancelledAnswer($contentParts, $donePreview), $conversation, $allToolResults, $totalUsage, $i + 1);
             }
 
             if ($streamLimit !== null) {
                 $this->discardCalls($startedCalls, 'run_limit');
+                $totalUsage = $this->spendEarlyFinishUsage($finish, $totalUsage);
 
                 return $this->runLimitOutput($streamLimit, $conversation, $allToolResults, $totalUsage, $i + 1);
             }
@@ -872,6 +869,22 @@ abstract class AbstractAgent implements AgentInterface
             conversation: $conversation,
             finishReason: AgentFinishReason::Cancelled,
         );
+    }
+
+    /**
+     * $totalUsage plus the usage of a Finish that arrived before the stream was abandoned (a
+     * transport abort throws on the read after it; a limit can trip on a later event), also
+     * reported to the context window as a completed response's usage is.
+     */
+    private function spendEarlyFinishUsage(?Finish $finish, Usage $totalUsage): Usage
+    {
+        if ($finish?->usage === null) {
+            return $totalUsage;
+        }
+
+        $this->contextWindow?->report($finish->usage);
+
+        return $totalUsage->plus($finish->usage);
     }
 
     /**

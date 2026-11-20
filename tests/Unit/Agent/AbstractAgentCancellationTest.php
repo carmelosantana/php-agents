@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
+use CarmeloSantana\PHPAgents\Agent\RunLimits;
 use CarmeloSantana\PHPAgents\Agent\CallbackObserver;
 use CarmeloSantana\PHPAgents\Agent\Event\DonePreview;
 use CarmeloSantana\PHPAgents\Agent\Event\RunFinish;
@@ -684,3 +685,41 @@ test('a cancel after an empty response ends Cancelled whatever the empty-respons
     'empty_response, ignored on the last iteration' => ['agent.empty_response', ['emptyResponseHandling' => EmptyResponseHandling::Ignore, 'maxIter' => 1]],
 ]);
 
+test('a cancel-driven throw after the Finish arrived reports that Finish\'s usage to the context window', function () {
+    $token = new CancellationTestToken();
+    $window = new ContextWindow(maxTok: 100_000, reservedTok: 0);
+    $agent = new CancellationTestAgent(
+        provider: new ScriptedEventsProvider([[
+            new TextDelta('Hel'),
+            new Finish(ProviderFinishReason::Stop, 'stop', new Usage(promptTokens: 4_000, completionTokens: 1_000, totalTokens: 5_000), 'test-model'),
+            function () use ($token): void {
+                $token->cancelled = true;
+            },
+            new RuntimeException('Request cancelled by transport'),
+        ]]),
+        cancellationToken: $token,
+        contextWindow: $window,
+    );
+
+    expect($agent->run(new UserMessage('Say hello.'))->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($window->usedTokens())->toBe(5_000);
+});
+
+test('a stream limit after the Finish arrived keeps that Finish\'s usage and reports it', function () {
+    $window = new ContextWindow(maxTok: 100_000, reservedTok: 0);
+    $agent = new CancellationTestAgent(
+        provider: new ScriptedEventsProvider([[
+            new TextDelta('Hel'),
+            new Finish(ProviderFinishReason::Stop, 'stop', new Usage(promptTokens: 4_000, completionTokens: 1_000, totalTokens: 5_000), 'test-model'),
+            new TextDelta(str_repeat('x', 100)),
+        ]]),
+        contextWindow: $window,
+        runLimits: new RunLimits(maxResponseBytes: 50),
+    );
+
+    $output = $agent->run(new UserMessage('Say hello.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::BudgetExhausted)
+        ->and($output->usage?->totalTokens)->toBe(5_000)
+        ->and($window->usedTokens())->toBe(5_000);
+});

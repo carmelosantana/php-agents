@@ -195,7 +195,8 @@ Tests pin each sequence.
 - Checked on every stream event (ticks included), at the top of each iteration, after the
   response finishes (after `agent.step_finish`, after the policy allows `done`, and just before a
   text answer is accepted, and after `agent.empty_response`), before each tool call and before a
-  batch starts.
+  batch starts. A `Finish` that arrived before a cancel or a streaming run limit abandoned the
+  stream has its usage counted and reported to the context window.
 - **Mid-stream.** Iteration stops and the HTTP response is cancelled. `Output->content` is the
   text streamed so far in this step, then a blank line (`"\n\n"`) and the provisional `done`
   preview when both are present, or `'Task was cancelled.'` when both are empty. The preview is
