@@ -111,6 +111,8 @@ public function streamEvents(array $messages, array $tools = [], array $options 
 - Image downloads (Gemini image URLs, `RemoteImageResolver`) log a refused URL as scheme, host and
   `/[redacted]` instead of the full URL, and pass a failure's exception text through
   `UntrustedText::forDisplay()`.
+- `McpClient::CLIENT_VERSION`, sent as the MCP `clientInfo` version, is `0.18.0` (it still read
+  `0.16.1` in 0.17).
 - `SseStreamParser` applies its 1 MiB line cap (`maxLineBytes`) to every line, not only to one
   still waiting for its newline: a provider stream with a longer complete line now throws a
   `ProviderException` (`SSE line exceeded … bytes`) instead of decoding it.
