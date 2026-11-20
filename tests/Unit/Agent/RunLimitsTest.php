@@ -350,6 +350,54 @@ test('maxResponseBytes counts tool calls and content blocks', function () {
         ->and($agent->ran)->toBe([]);
 });
 
+test('maxResponseBytes counts content blocks that repeat the streamed text and thinking once', function () {
+    // Anthropic's finish carries every block it streamed: the same thinking, text and tool input.
+    $thinking = str_repeat('t', 2_000);
+    $text = str_repeat('a', 2_000);
+    $blocks = [
+        ['type' => 'thinking', 'thinking' => $thinking, 'signature' => 'sig'],
+        ['type' => 'text', 'text' => $text],
+    ];
+    $provider = new RunLimitsScriptedProvider([fn(): array => [
+        new Response(content: '', finishReason: ProviderFinishReason::Stop, model: 'test-model', reasoning: $thinking),
+        new Response(content: $text, finishReason: ProviderFinishReason::Stop, model: 'test-model', contentBlocks: $blocks),
+    ]]);
+    $agent = new RunLimitsTestAgent(provider: $provider, runLimits: new RunLimits(maxResponseBytes: 4_200));
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Stop)
+        ->and($output->content)->toBe($text);
+});
+
+test('maxResponseBytes counts a tool_use block that repeats the streamed tool input once', function () {
+    $arguments = ['payload' => str_repeat('p', 3_000)];
+    $blocks = [['type' => 'tool_use', 'id' => 'c', 'name' => 'first', 'input' => (object) $arguments]];
+    $provider = new RunLimitsScriptedProvider([
+        fn(): array => [new Response(content: '', finishReason: ProviderFinishReason::ToolUse, toolCalls: [new ToolCall('c', 'first', $arguments)], model: 'test-model', contentBlocks: $blocks)],
+        runLimitsTextRound('ok'),
+    ]);
+    $agent = new RunLimitsTestAgent(provider: $provider, runLimits: new RunLimits(maxResponseBytes: 4_000));
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Stop)
+        ->and($output->content)->toBe('ok');
+});
+
+test('maxResponseBytes still counts content blocks that carry more than was streamed', function () {
+    $blocks = [['type' => 'text', 'text' => str_repeat('b', 5_000)]];
+    $provider = new RunLimitsScriptedProvider([fn(): array => [
+        new Response(content: 'short', finishReason: ProviderFinishReason::Stop, model: 'test-model', contentBlocks: $blocks),
+    ]]);
+    $agent = new RunLimitsTestAgent(provider: $provider, runLimits: new RunLimits(maxResponseBytes: 4_200));
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::BudgetExhausted)
+        ->and($output->content)->toBe('Response size limit reached.');
+});
+
 test('maxRunSeconds ends the run', function () {
     $provider = new RunLimitsScriptedProvider([function (): Generator {
         for ($i = 0; $i < 1_000; $i++) {

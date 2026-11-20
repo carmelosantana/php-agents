@@ -437,6 +437,10 @@ abstract class AbstractAgent implements AgentInterface
             // Argument bytes streamed per call index, for eventBytes().
             /** @var array<int, int> $argumentBytes */
             $argumentBytes = [];
+            // Text, reasoning and tool-input bytes this response counted, for eventBytes() to
+            // credit against the content blocks of its Finish, which repeat them.
+            /** @var array{text: int, thinking: int, input: int} $streamedBytes */
+            $streamedBytes = ['text' => 0, 'thinking' => 0, 'input' => 0];
 
             try {
                 foreach ($this->provider->streamEvents($conversation->messages(), $advertisedTools, $this->providerOptions) as $event) {
@@ -457,7 +461,7 @@ abstract class AbstractAgent implements AgentInterface
 
                     // Cumulative limits, checked before the event is used. Breaking
                     // abandons the stream.
-                    $eventBytes = $this->eventBytes($event, $argumentBytes, $startedCalls, $limitedCalls);
+                    $eventBytes = $this->eventBytes($event, $argumentBytes, $startedCalls, $limitedCalls, $streamedBytes);
                     $callBytes += $eventBytes;
                     $runResponseBytes += $eventBytes;
                     if ($this->runLimits->maxResponseBytes > 0 && $runResponseBytes > $this->runLimits->maxResponseBytes) {
@@ -1083,16 +1087,27 @@ abstract class AbstractAgent implements AgentInterface
      * that call, the JSON of its metadata, and its id and name when no start came first, or
      * each one that differs from the start's (an end that fills an empty start id or name, or
      * names another); the id of a delta that fills its start's empty id; and a Finish's raw
-     * reason, model and the JSON of its content blocks.
+     * reason, model and the JSON of its content blocks less what they repeat (see
+     * contentBlockCredit()), so an Anthropic response is not counted twice.
      *
      * @param array<int, int> $argumentBytes Argument bytes streamed per call index so far, with
      *                                       or without a start; credited against the call's end
      * @param array<int, ToolInputStart> $startedCalls Calls kept so far, by index
      * @param array<int, string> $limitedCalls Ids of calls discarded under the per-turn cap, by index
+     * @param array{text: int, thinking: int, input: int} $streamedBytes Text, reasoning and tool-input
+     *                                                                 bytes this response counted so far
      */
-    private function eventBytes(StreamEvent $event, array &$argumentBytes, array $startedCalls, array $limitedCalls): int
+    private function eventBytes(StreamEvent $event, array &$argumentBytes, array $startedCalls, array $limitedCalls, array &$streamedBytes): int
     {
-        if ($event instanceof TextDelta || $event instanceof ReasoningDelta) {
+        if ($event instanceof TextDelta) {
+            $streamedBytes['text'] += strlen($event->delta);
+
+            return strlen($event->delta);
+        }
+
+        if ($event instanceof ReasoningDelta) {
+            $streamedBytes['thinking'] += strlen($event->delta);
+
             return strlen($event->delta);
         }
 
@@ -1102,6 +1117,7 @@ abstract class AbstractAgent implements AgentInterface
 
         if ($event instanceof ToolInputDelta) {
             $bytes = strlen($event->delta);
+            $streamedBytes['input'] += $bytes;
             // The credit map is bounded like the calls themselves; a delta past it is counted
             // but not credited against a later end (which counts in full, erring high).
             if (isset($argumentBytes[$event->index]) || count($argumentBytes) < self::MAX_TOOL_CALLS_PER_RESPONSE) {
@@ -1113,8 +1129,9 @@ abstract class AbstractAgent implements AgentInterface
         }
 
         if ($event instanceof ToolInputEnd) {
-            $bytes = max(0, self::jsonBytes($event->arguments) - ($argumentBytes[$event->index] ?? 0))
-                + ($event->metadata === [] ? 0 : self::jsonBytes($event->metadata));
+            $remainder = max(0, self::jsonBytes($event->arguments) - ($argumentBytes[$event->index] ?? 0));
+            $streamedBytes['input'] += $remainder;
+            $bytes = $remainder + ($event->metadata === [] ? 0 : self::jsonBytes($event->metadata));
             $start = $startedCalls[$event->index] ?? null;
             $idAndName = strlen($event->id) + strlen($event->name);
 
@@ -1127,10 +1144,45 @@ abstract class AbstractAgent implements AgentInterface
 
         if ($event instanceof Finish) {
             return strlen($event->rawReason) + strlen($event->model)
-                + ($event->contentBlocks === [] ? 0 : self::jsonBytes($event->contentBlocks));
+                + ($event->contentBlocks === [] ? 0 : max(0, self::jsonBytes($event->contentBlocks) - self::contentBlockCredit($event->contentBlocks, $streamedBytes)));
         }
 
         return 0;
+    }
+
+    /**
+     * Bytes of $blocks that repeat what the response streamed: each thinking block's thinking,
+     * text block's text and tool_use block's input JSON, credited against the reasoning, text
+     * and tool-input bytes streamed, never more than were streamed of that kind. A provider that
+     * streams one text and sends another of the same kind in its blocks is under-counted by at
+     * most half.
+     *
+     * @param list<mixed> $blocks
+     * @param array{text: int, thinking: int, input: int} $streamedBytes
+     */
+    private static function contentBlockCredit(array $blocks, array $streamedBytes): int
+    {
+        $credit = 0;
+        foreach ($blocks as $block) {
+            $block = is_object($block) ? get_object_vars($block) : $block;
+            if (!is_array($block)) {
+                continue;
+            }
+            [$kind, $bytes] = match ($block['type'] ?? null) {
+                'thinking' => ['thinking', is_string($block['thinking'] ?? null) ? strlen($block['thinking']) : 0],
+                'text' => ['text', is_string($block['text'] ?? null) ? strlen($block['text']) : 0],
+                'tool_use' => ['input', array_key_exists('input', $block) ? self::jsonBytes($block['input']) : 0],
+                default => [null, 0],
+            };
+            if ($kind === null) {
+                continue;
+            }
+            $used = min($bytes, $streamedBytes[$kind]);
+            $streamedBytes[$kind] -= $used;
+            $credit += $used;
+        }
+
+        return $credit;
     }
 
     /**

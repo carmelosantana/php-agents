@@ -24,7 +24,8 @@ use CarmeloSantana\PHPAgents\Provider\RequestLimits;
  * - $maxResponseBytes caps the bytes received from the provider across the run, counting every
  *   field the agent keeps: text, reasoning and tool-input deltas; tool call ids and names; the
  *   JSON of each call's final arguments beyond its streamed deltas, and of its metadata; and each
- *   finish's raw reason, model and content-block JSON. It defaults to DEFAULT_MAX_RESPONSE_BYTES,
+ *   finish's raw reason, model and content-block JSON, less the thinking, text and tool input
+ *   those blocks repeat from what the response streamed. It defaults to DEFAULT_MAX_RESPONSE_BYTES,
  *   one request's worth (RequestLimits::DEFAULT_MAX_RESPONSE_BYTES, 32 MiB), so a hostile endpoint
  *   cannot fill memory with many tool rounds that each fit the per-request cap. Pass 0 to opt out;
  *   raise it with RequestLimits::$maxResponseBytes if one response may legitimately be larger.

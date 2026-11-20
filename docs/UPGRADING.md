@@ -7,6 +7,7 @@
 | Change | Who is affected | What to do |
 |--------|-----------------|------------|
 | `RunLimits::$maxResponseBytes` defaults to `RunLimits::DEFAULT_MAX_RESPONSE_BYTES` (32 MiB), the same as one request's `RequestLimits::DEFAULT_MAX_RESPONSE_BYTES`; it was `0` (no limit). An agent built with no `runLimits`, or with a `RunLimits` that leaves the field out, ends a run that receives more than 32 MiB from the provider in total as `BudgetExhausted` (`Response size limit reached.`). This closes the 0.18 known issue: a hostile endpoint could return many tool rounds, each within the per-request cap, that together exhausted memory | Runs whose provider responses add up to more than 32 MiB, and applications that raised `RequestLimits::$maxResponseBytes` above 32 MiB | Pass a larger `maxResponseBytes`, or `new RunLimits(maxResponseBytes: 0)` to opt out. `maxEstimatedTokens` keeps no default: its estimate re-counts the whole conversation on every iteration, so any fixed default would cut long legitimate runs |
+| `RunLimits::$maxResponseBytes` no longer counts an Anthropic response twice: a finish's content-block JSON counts only beyond the thinking, text and tool input the response already streamed | Anthropic runs near a `maxResponseBytes` you set, which 0.18 ended at about half the bytes | None; lower the limit if you sized it for double counting |
 
 ## Upgrading to 0.18
 

@@ -188,7 +188,9 @@ returns that fixed content:
   [call identity](#streaming-tool-input-and-usage)); the JSON of a call's final arguments
   beyond the bytes its deltas already brought (so a provider that sends no deltas is still counted,
   and one that does is not counted twice) and of its metadata; and the finish's raw reason, model
-  and content-block JSON. The total runs across every provider call of the run.
+  and content-block JSON, less the thinking, text and tool input those blocks repeat from what the
+  response streamed (Anthropic's blocks carry them again, so its responses are not counted twice).
+  The total runs across every provider call of the run.
 - **Estimated tokens.** Before each provider call the request estimate is
   `Conversation::estimateTokens()` plus one token per 4 bytes of the tool schemas' JSON. If the
   tokens spent so far plus that estimate exceed the limit, the run ends before the request is sent.
