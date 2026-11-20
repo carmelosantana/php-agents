@@ -84,7 +84,8 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   they open with `tool_call_limit`. One response tracks at most
   `AbstractAgent::MAX_TOOL_CALLS_PER_RESPONSE` (1024) calls: the first call past it gets
   `agent.tool_input_discarded` reason `tool_call_overflow`, and calls past it are neither forwarded
-  nor run.
+  nor run. A `ToolInputStart` for an index the response already used, or a second `ToolInputEnd`
+  for an ended call, is ignored.
 - `RunLimits::$maxResponseBytes` also counts tool call ids and names, each call's final argument
   JSON beyond its streamed deltas, call metadata, and the finish's raw reason and model, so a
   run with a tight byte cap reaches it slightly sooner.

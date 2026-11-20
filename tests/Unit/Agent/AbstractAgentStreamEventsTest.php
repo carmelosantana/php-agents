@@ -1324,3 +1324,33 @@ test('a nameless start that repeats a known index is ignored', function () {
     expect($events->dataFor('agent.tool_input_start'))->toHaveCount(1)
         ->and(array_map(fn($r) => $r->callId, $output->toolResults))->toBe(['c1']);
 });
+
+test('100k named starts that repeat one index keep the agent\'s bookkeeping bounded', function () {
+    expect(streamEventsStartGrowth(100_000, fn(int $i) => new ToolInputStart(0, 'c1', 'echo')))->toBeLessThan(500_000);
+});
+
+test('100k end-only ends that repeat one index keep the agent\'s bookkeeping bounded', function () {
+    expect(streamEventsStartGrowth(100_000, fn(int $i) => new ToolInputEnd(0, 'c1', 'echo', ['text' => 'a'])))->toBeLessThan(500_000);
+});
+
+test('a start that repeats a known index, and an end that repeats an ended one, are ignored', function () {
+    $repeat = fn(StreamEvent $event) => array_fill(0, 5, $event);
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, 'c1', 'echo'),
+        ...$repeat(new ToolInputStart(0, 'c1', 'echo')),
+        new ToolInputDelta(0, 'c1', '{"text":"a"}'),
+        new ToolInputEnd(0, 'c1', 'echo', ['text' => 'a']),
+        ...$repeat(new ToolInputStart(0, 'c9', 'halt')),
+        ...$repeat(new ToolInputEnd(0, 'c1', 'echo', ['text' => 'a'])),
+        new ToolInputEnd(1, 'c2', 'echo', ['text' => 'b']),
+        ...$repeat(new ToolInputEnd(1, 'c2', 'echo', ['text' => 'b'])),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxToolCallsPerTurn: 2)]);
+
+    $output = $agent->run(new UserMessage('Echo.'));
+
+    expect(array_map(fn($r) => $r->callId, $output->toolResults))->toBe(['c1', 'c2'])
+        ->and($events->dataFor('agent.tool_input_start'))->toHaveCount(1)
+        ->and($events->dataFor('agent.tool_input_end'))->toHaveCount(2)
+        ->and($events->dataFor('agent.tool_input_discarded'))->toBe([]);
+});

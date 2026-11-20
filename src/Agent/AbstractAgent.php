@@ -73,7 +73,8 @@ abstract class AbstractAgent implements AgentInterface
      * How many tool calls of one response the agent tracks (kept, waiting for a name, or
      * discarded under the per-turn cap). A call that opens (or ends without a start) past it is
      * not forwarded or retained; the first such call gets agent.tool_input_discarded with reason
-     * `tool_call_overflow`, and every later event of an untracked call is ignored.
+     * `tool_call_overflow`, and every later event of an untracked call is ignored. Each index is
+     * tracked once: a repeated start for a known index, or a repeated end, is ignored.
      */
     public const int MAX_TOOL_CALLS_PER_RESPONSE = 1024;
 
@@ -476,6 +477,14 @@ abstract class AbstractAgent implements AgentInterface
                     } elseif ($event instanceof TextDelta) {
                         $contentParts[] = $event->delta;
                         $this->notify('agent.text_delta', $event->delta);
+                    } elseif (
+                        ($event instanceof ToolInputStart && (isset($startedCalls[$event->index]) || isset($limitedCalls[$event->index]) || isset($endedCalls[$event->index])))
+                        || ($event instanceof ToolInputEnd && isset($endedCalls[$event->index]))
+                    ) {
+                        // A start for an index already known (started, ended or discarded), or a
+                        // second end for an ended call, adds nothing and is not forwarded: each
+                        // index is tracked once, so repeats cannot grow the bookkeeping.
+                        continue;
                     } elseif (($event instanceof ToolInputStart || $event instanceof ToolInputDelta || $event instanceof ToolInputEnd)
                         && !isset($startedCalls[$event->index]) && !isset($limitedCalls[$event->index]) && !isset($endedCalls[$event->index])
                         && ($overflowed || (!$event instanceof ToolInputDelta && $trackedCalls >= self::MAX_TOOL_CALLS_PER_RESPONSE))) {
@@ -485,9 +494,6 @@ abstract class AbstractAgent implements AgentInterface
                             $overflowed = true;
                             $this->discardCalls([$event], 'tool_call_overflow');
                         }
-                        continue;
-                    } elseif ($event instanceof ToolInputStart && $event->name === '' && (isset($startedCalls[$event->index]) || isset($limitedCalls[$event->index]))) {
-                        // A nameless start that repeats a known index adds nothing.
                         continue;
                     } elseif ($event instanceof ToolInputStart) {
                         $this->notify('agent.tool_input_start', $event);
