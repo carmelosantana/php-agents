@@ -158,6 +158,13 @@ final class OpenAIResponsesProvider extends AbstractProvider
 
                     $outputIndex = (int) ($json['output_index'] ?? 0);
                     if (!isset($callAt[$outputIndex])) {
+                        if (count($calls) >= RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE) {
+                            // Stop reading: no further per-call state is kept.
+                            $this->logger?->debug('The response opened more than {max} tool calls; it is abandoned', ['max' => RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE]);
+                            yield new Finish(ProviderFinishReason::Error, 'tool_call_overflow', null, $model);
+
+                            return;
+                        }
                         $position = count($calls);
                         $callAt[$outputIndex] = $position;
                         $calls[$position] = [

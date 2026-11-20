@@ -41,6 +41,15 @@ final readonly class RequestLimits
     /** Far deeper than any tool schema nests, and well under json_decode()'s 512. */
     public const int DEFAULT_MAX_TOOL_ARGUMENT_DEPTH = 64;
 
+    /**
+     * Tool calls one streamed response may open; fixed, not a constructor limit. A provider that
+     * keeps per-call state while streaming (OpenAI-compatible, Responses, and Anthropic, counting
+     * every content block) stops reading the response at the next call and yields
+     * Finish(Error) with raw reason `tool_call_overflow`; StreamProjector ends its projection the
+     * same way; AbstractAgent tracks no more calls than this either.
+     */
+    public const int MAX_TOOL_CALLS_PER_RESPONSE = 1024;
+
     public function __construct(
         public float $idleTimeout = 300.0,
         public float $maxDuration = 600.0,

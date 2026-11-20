@@ -35,6 +35,7 @@ use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Prompt\SystemPrompt;
+use CarmeloSantana\PHPAgents\Provider\RequestLimits;
 use CarmeloSantana\PHPAgents\Provider\Response;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
@@ -70,13 +71,14 @@ abstract class AbstractAgent implements AgentInterface
     public const int MAX_PENDING_NAMELESS_CALLS = 128;
 
     /**
-     * How many tool calls of one response the agent tracks (kept, waiting for a name, or
+     * RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE, the one bound shared with the providers: how
+     * many tool calls of one response the agent tracks (kept, waiting for a name, or
      * discarded under the per-turn cap). A call that opens (or ends without a start) past it is
      * not forwarded or retained; the first such call gets agent.tool_input_discarded with reason
      * `tool_call_overflow`, and every later event of an untracked call is ignored. Each index is
      * tracked once: a repeated start for a known index, or a repeated end, is ignored.
      */
-    public const int MAX_TOOL_CALLS_PER_RESPONSE = 1024;
+    public const int MAX_TOOL_CALLS_PER_RESPONSE = RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE;
 
     /** Characters of a provider exception message, and of an API error message, that reach Output and agent.error. */
     private const int PROVIDER_ERROR_MAX_CHARS = 300;

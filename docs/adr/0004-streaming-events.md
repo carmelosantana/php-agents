@@ -157,8 +157,11 @@ text is cut to 128 characters plus a `…` (129 at most). `Finish` on the provid
     (its `tool_use` content block included), shown to the policy or answered with a tool result.
     The first `done` call is outside the cap.
   - `tool_call_overflow`: the response opened more than `AbstractAgent::MAX_TOOL_CALLS_PER_RESPONSE`
-    (1024) calls, counting kept, waiting and capped ones. Fired once, for the first call past the
-    bound, in place of its start (or end); the agent keeps no state for, and forwards no event of,
+    (an alias of `RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE`, 1024) calls. The bundled streaming
+    providers apply the same ceiling to their own per-call state and finish `Error` (raw reason
+    `tool_call_overflow`) before passing the agent a call past it, so this discard fires only for a
+    custom provider. The bound counts kept, waiting and capped calls. Fired once, for the first
+    call past the bound, in place of its start (or end); the agent keeps no state for, and forwards no event of,
     any call past it, so a hostile stream cannot grow its bookkeeping. Each index is tracked once:
     a start for an index already started, ended or discarded, and a second end for an ended call,
     are ignored and not forwarded. A nameless call discarded under the pending bound is not kept

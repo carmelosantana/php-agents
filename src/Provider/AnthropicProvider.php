@@ -179,6 +179,13 @@ final class AnthropicProvider extends AbstractProvider
                 $eventType = $json['type'] ?? null;
 
                 if ($eventType === 'content_block_start') {
+                    if (!isset($blocks[$json['index'] ?? 0]) && count($blocks) >= RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE) {
+                        // Every block is kept until the message ends; past the ceiling, stop reading.
+                        $this->logger?->debug('The response opened more than {max} content blocks; it is abandoned', ['max' => RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE]);
+                        yield new Finish(ProviderFinishReason::Error, 'tool_call_overflow', $this->parseUsage($usage), $model);
+
+                        return;
+                    }
                     $currentBlockIndex = $json['index'] ?? 0;
                     $block = $json['content_block'] ?? [];
                     $blocks[$currentBlockIndex] = [

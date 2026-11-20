@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Provider\Stream;
 
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Provider\RequestLimits;
 use CarmeloSantana\PHPAgents\Provider\Response;
 
 /**
@@ -14,6 +15,10 @@ use CarmeloSantana\PHPAgents\Provider\Response;
  * calls), then exactly one terminal Response when the events end with Finish, built from
  * it: its reason, usage, model and content blocks, plus the ToolInputEnd calls when the
  * reason is ToolUse. Tick and tool-input events produce no Response of their own.
+ *
+ * Past RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE ToolInputEnd events the projection keeps no
+ * more calls: it yields one terminal Response with finish reason Error and no tool calls, and
+ * stops reading the events.
  */
 final class StreamProjector
 {
@@ -31,6 +36,11 @@ final class StreamProjector
             } elseif ($event instanceof ReasoningDelta) {
                 yield new Response('', ProviderFinishReason::Stop, reasoning: $event->delta);
             } elseif ($event instanceof ToolInputEnd) {
+                if (count($toolCalls) >= RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE) {
+                    yield new Response(content: '', finishReason: ProviderFinishReason::Error);
+
+                    return;
+                }
                 $toolCalls[] = $event->toToolCall();
             } elseif ($event instanceof Finish) {
                 yield new Response(

@@ -82,7 +82,10 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   opens without a name joins the per-turn cap (and the `done` preview) when its end names it;
   nameless calls past the per-turn slots left plus one (128 with no per-turn cap) are discarded as
   they open with `tool_call_limit`. One response tracks at most
-  `AbstractAgent::MAX_TOOL_CALLS_PER_RESPONSE` (1024) calls: the first call past it gets
+  `AbstractAgent::MAX_TOOL_CALLS_PER_RESPONSE` (= `RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE`,
+  1024) calls. The bundled streaming providers stop at the same ceiling and finish `Error` (raw
+  reason `tool_call_overflow`), so such a run ends `Error` with no call run; for a custom provider
+  the agent's own bound applies: the first call past it gets
   `agent.tool_input_discarded` reason `tool_call_overflow`, and calls past it are neither forwarded
   nor run. A `ToolInputStart` for an index the response already used, or a second `ToolInputEnd`
   for an ended call, is ignored.

@@ -157,6 +157,11 @@ class OpenAICompatibleProvider extends AbstractProvider
                         $argumentsDelta = ToolArguments::toJson($fragment['function']['arguments'] ?? null);
 
                         if (is_string($id) && $id !== '' && (!isset($openCallAt[$index]) || $calls[$openCallAt[$index]]['id'] !== $id)) {
+                            if (count($calls) >= RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE) {
+                                yield $this->toolCallOverflow($usage, $model);
+
+                                return;
+                            }
                             $position = count($calls);
                             $openCallAt[$index] = $position;
                             $calls[$position] = ['id' => $id, 'name' => (string) ($fragment['function']['name'] ?? ''), 'arguments' => ''];
@@ -266,6 +271,17 @@ class OpenAICompatibleProvider extends AbstractProvider
         }
 
         return new ToolInputEnd($position, $call['id'], $call['name'], $arguments);
+    }
+
+    /**
+     * The Finish for a response that opened more than RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE
+     * calls: the stream stops there, so no further per-call state is kept.
+     */
+    private function toolCallOverflow(?Usage $usage, string $model): Finish
+    {
+        $this->logger?->debug('The response opened more than {max} tool calls; it is abandoned', ['max' => RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE]);
+
+        return new Finish(ProviderFinishReason::Error, 'tool_call_overflow', $usage, $model);
     }
 
     /**
