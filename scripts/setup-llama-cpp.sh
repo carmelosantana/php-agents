@@ -12,6 +12,10 @@ DEFAULT_HF_FILE="Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
 install_method="source"
 runtime_root="$DEFAULT_RUNTIME_ROOT"
 llama_repo="https://github.com/ggml-org/llama.cpp.git"
+# The deprecated FFI binding passes llama.cpp structs by value; they changed after b9174 and a
+# newer build segfaults on the first model load. Source builds are pinned to this tag. For a
+# current llama.cpp, run llama-server and use LlamaServerProvider instead.
+LLAMA_CPP_FFI_TAG="b9174"
 llama_dir=""
 model_dir=""
 env_file="$PROJECT_ROOT/.llama-cpp.env"
@@ -201,11 +205,12 @@ build_from_source() {
     mkdir -p "$runtime_root"
 
     if [[ ! -d "$llama_dir/.git" ]]; then
-        info "Cloning llama.cpp into $llama_dir"
-        git clone --depth 1 "$llama_repo" "$llama_dir"
+        info "Cloning llama.cpp $LLAMA_CPP_FFI_TAG into $llama_dir"
+        git clone --depth 1 --branch "$LLAMA_CPP_FFI_TAG" "$llama_repo" "$llama_dir"
     else
-        info "Updating llama.cpp checkout"
-        git -C "$llama_dir" pull --ff-only
+        info "Checking out llama.cpp $LLAMA_CPP_FFI_TAG"
+        git -C "$llama_dir" fetch --depth 1 origin tag "$LLAMA_CPP_FFI_TAG"
+        git -C "$llama_dir" checkout --detach "$LLAMA_CPP_FFI_TAG"
     fi
 
     info "Building llama.cpp shared libraries"
@@ -220,6 +225,7 @@ install_from_brew() {
     require_command brew
 
     info "Installing llama.cpp via Homebrew"
+    warn "Homebrew installs the latest llama.cpp, which the FFI runtime does not support after $LLAMA_CPP_FFI_TAG; prefer --install-method source, or llama-server with LlamaServerProvider."
     brew install llama.cpp
 
     local brew_prefix

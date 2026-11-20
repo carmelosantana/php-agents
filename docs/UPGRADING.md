@@ -127,6 +127,8 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   - It does not stream under `Agent`: with tools, which `Agent` always passes, it
     buffers the whole generation, and a cancel, `maxRunSeconds` and `maxResponseBytes` act only
     after generation ends. The buffer has no cap. 0.18 does not fix this.
+  - `setup-llama-cpp.sh` now builds llama.cpp at tag b9174 (and warns that `--install-method brew`
+    installs a newer, incompatible build).
   - `LlamaCpp\LlamaCppToolCallParser` is not deprecated.
 
 ### New and not breaking

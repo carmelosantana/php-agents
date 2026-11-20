@@ -63,3 +63,11 @@ test('the docs record the FFI deprecation, its b9174 limit and the Agent bufferi
         ->toContain('LlamaServerProvider')
         ->toContain('0.19');
 })->with(['docs/PROVIDERS.md', 'docs/UPGRADING.md', 'docs/LOCAL-RUNTIME.md']);
+
+test('setup-llama-cpp.sh builds llama.cpp at b9174, the last tag the FFI binding works with', function () use ($root) {
+    $script = (string) file_get_contents($root . '/scripts/setup-llama-cpp.sh');
+
+    expect($script)->toContain('LLAMA_CPP_FFI_TAG="b9174"')
+        ->toContain('git clone --depth 1 --branch "$LLAMA_CPP_FFI_TAG"')
+        ->not->toContain('pull --ff-only');
+});
