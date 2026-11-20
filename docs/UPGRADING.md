@@ -11,6 +11,7 @@ usage tallies and exhaustive matches on `AgentFinishReason`.
 
 | Change | Who is affected | What to do |
 |---|---|---|
+| `composer.json` requires `ext-mbstring` | Installs on PHP without the mbstring extension: every run now passes finish telemetry through `UntrustedText`, which uses `mb_*` functions, so 0.18 fails there with `Call to undefined function mb_scrub()` | Enable mbstring (it ships with most PHP builds), or require `symfony/polyfill-mbstring` in your own project |
 | `ProviderInterface::streamEvents()` added | Every class that implements `ProviderInterface` directly: custom providers, decorators, test doubles | Add `use StreamsEventsFromResponses;` to keep building on `stream()`, or forward from the wrapped provider (below) |
 | `AbstractProvider::stream()` is `final` and `streamEvents()` is abstract; the agent iterates `streamEvents()` | Every subclass of `AbstractProvider`: a 0.17 subclass defines `stream()`, which now fails as an override of a final method | Implement `streamEvents()` natively and delete the `stream()` override; `stream()` is projected from the events. The `StreamsEventsFromResponses` trait is never on an `AbstractProvider` subclass: it throws a `LogicException` there |
 | `AgentFinishReason::Cancelled`; a cancel no longer returns `Error` (or `Stop` mid-stream) | Exhaustive `match` on the enum; code that treats a cancel as an error | Add the case. `agent.error` with `'Task cancelled'` still fires on every cancel |
