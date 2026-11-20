@@ -379,7 +379,7 @@ abstract class AbstractAgent implements AgentInterface
             $perTurn = $this->runLimits->maxToolCallsPerTurn;
             $turnCalls = 0;
             $firstDoneIndex = null;
-            /** @var array<int, true> $limitedCalls */
+            /** @var array<int, string> $limitedCalls ids of the calls discarded under the cap */
             $limitedCalls = [];
             $admitCall = function (ToolInputStart|ToolInputEnd $call) use ($perTurn, &$turnCalls, &$firstDoneIndex, &$limitedCalls): bool {
                 if ($call->name === DoneTool::NAME && ($firstDoneIndex ?? $call->index) === $call->index) {
@@ -388,7 +388,7 @@ abstract class AbstractAgent implements AgentInterface
                     return true;
                 }
                 if ($perTurn > 0 && $turnCalls >= $perTurn) {
-                    $limitedCalls[$call->index] = true;
+                    $limitedCalls[$call->index] = $call->id;
                     $this->discardCalls([$call], 'tool_call_limit');
 
                     return false;
@@ -414,7 +414,7 @@ abstract class AbstractAgent implements AgentInterface
 
                     // Cumulative limits, checked before the event is used. Breaking
                     // abandons the stream.
-                    $eventBytes = $this->eventBytes($event, $argumentBytes);
+                    $eventBytes = $this->eventBytes($event, $argumentBytes, $startedCalls, $limitedCalls);
                     $callBytes += $eventBytes;
                     $runResponseBytes += $eventBytes;
                     if ($this->runLimits->maxResponseBytes > 0 && $runResponseBytes > $this->runLimits->maxResponseBytes) {
@@ -457,8 +457,14 @@ abstract class AbstractAgent implements AgentInterface
                             }
                         }
                     } elseif ($event instanceof ToolInputEnd) {
-                        if (!isset($startedCalls[$event->index]) && !$admitCall($event)) {
+                        $start = $startedCalls[$event->index] ?? null;
+                        if ($start === null && !$admitCall($event)) {
                             continue;
+                        }
+                        // A call keeps the id and name it opened with, the ones the cap and the
+                        // done preview went by; an end that names another is corrected.
+                        if ($start !== null && ($start->id !== $event->id || $start->name !== $event->name)) {
+                            $event = new ToolInputEnd($event->index, $start->id, $start->name, $event->arguments, $event->metadata);
                         }
                         $endedCalls[$event->index] = $event;
                         $this->notify('agent.tool_input_end', $event);
@@ -919,13 +925,16 @@ abstract class AbstractAgent implements AgentInterface
      * Bytes one stream event carries, counting every field the agent keeps: the text of a text
      * or reasoning delta; a call's id and name on its ToolInputStart; each argument delta; on a
      * ToolInputEnd, the JSON of its arguments beyond the bytes already streamed as deltas for
-     * that call, the JSON of its metadata, and its id and name when no start came first; and a
-     * Finish's raw reason, model and the JSON of its content blocks.
+     * that call, the JSON of its metadata, and its id and name when no start came first or
+     * they differ from the start's; and a Finish's raw reason, model and the JSON of its content
+     * blocks.
      *
      * @param array<int, int> $argumentBytes Argument bytes streamed per started call index so
      *                                       far; a start opens an entry and its deltas add to it
+     * @param array<int, ToolInputStart> $startedCalls Calls kept so far, by index
+     * @param array<int, string> $limitedCalls Ids of calls discarded under the per-turn cap, by index
      */
-    private function eventBytes(StreamEvent $event, array &$argumentBytes): int
+    private function eventBytes(StreamEvent $event, array &$argumentBytes, array $startedCalls, array $limitedCalls): int
     {
         if ($event instanceof TextDelta || $event instanceof ReasoningDelta) {
             return strlen($event->delta);
@@ -950,8 +959,14 @@ abstract class AbstractAgent implements AgentInterface
         if ($event instanceof ToolInputEnd) {
             $bytes = max(0, self::jsonBytes($event->arguments) - ($argumentBytes[$event->index] ?? 0))
                 + ($event->metadata === [] ? 0 : self::jsonBytes($event->metadata));
+            $start = $startedCalls[$event->index] ?? null;
+            $idAndName = strlen($event->id) + strlen($event->name);
 
-            return isset($argumentBytes[$event->index]) ? $bytes : $bytes + strlen($event->id) + strlen($event->name);
+            return $bytes + match (true) {
+                $start !== null => $start->id === $event->id && $start->name === $event->name ? 0 : $idAndName,
+                isset($limitedCalls[$event->index]) => 0,
+                default => $idAndName,
+            };
         }
 
         if ($event instanceof Finish) {

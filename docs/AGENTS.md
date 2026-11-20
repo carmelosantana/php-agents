@@ -178,7 +178,8 @@ returns that fixed content:
 | `maxInputTokens` | Before the first provider call, and on each pending input before it is added | `Input is too large.` |
 
 - **Response bytes** count every field the agent keeps from the stream: the text of each text,
-  reasoning and tool-input delta; each tool call's id and name; the JSON of a call's final arguments
+  reasoning and tool-input delta; each tool call's id and name, and an end's too when they differ
+  from its start's (the call keeps its start's id and name); the JSON of a call's final arguments
   beyond the bytes its deltas already brought (so a provider that sends no deltas is still counted,
   and one that does is not counted twice) and of its metadata; and the finish's raw reason, model
   and content-block JSON. The total runs across every provider call of the run.

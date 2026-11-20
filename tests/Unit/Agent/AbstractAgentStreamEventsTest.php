@@ -770,3 +770,48 @@ test('finish telemetry scrubs a hostile raw reason and model: secrets, control a
         ->and($finish->model)->toBe($step->model)
         ->and($output->model)->toBe($model);
 });
+
+// Fix round 1: an end that disagrees with its start.
+
+test('maxResponseBytes counts an end\'s id and name when they differ from its start\'s', function () {
+    [$agent] = streamEventsAgent([[
+        new ToolInputStart(0, 'c1', 'echo'),
+        new ToolInputDelta(0, 'c1', '{}'),
+        new ToolInputEnd(0, str_repeat('i', 500), str_repeat('n', 500), []),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxResponseBytes: 100)]);
+
+    expect($agent->run(new UserMessage('Echo.'))->content)->toBe('Response size limit reached.');
+});
+
+test('the kept call takes its id and name from its start, not from a disagreeing end', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, 'c1', 'echo'),
+        new ToolInputDelta(0, 'c1', '{"text":"hi"}'),
+        new ToolInputEnd(0, 'other', 'halt', ['text' => 'hi']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')]);
+
+    $output = $agent->run(new UserMessage('Echo.'));
+
+    expect($events->dataFor('agent.tool_input_end'))->toEqual([new ToolInputEnd(0, 'c1', 'echo', ['text' => 'hi'])])
+        ->and(array_map(fn(ToolCall $c): string => $c->id . ':' . $c->name, $events->dataFor('agent.tool_call')))->toBe(['c1:echo'])
+        ->and($output->toolResults[0]->content)->toBe('echo: hi');
+});
+
+test('a start named done cannot carry an ordinary tool past the per-turn cap', function () {
+    [$agent, $events] = streamEventsAgent([[
+        ...streamEventsCall(0, 'c1', 'echo', ['text' => 'a']),
+        new ToolInputStart(1, 'd1', 'done'),
+        new ToolInputDelta(1, 'd1', '{"text":"b"}'),
+        new ToolInputEnd(1, 'd1', 'echo', ['text' => 'b']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxToolCallsPerTurn: 1)]);
+
+    $output = $agent->run(new UserMessage('Echo.'));
+
+    expect(array_map(fn(ToolCall $c): string => $c->name, $events->dataFor('agent.tool_call')))->toBe(['echo', 'done'])
+        ->and($output->toolResults)->toHaveCount(2)
+        ->and($output->toolResults[0]->content)->toBe('echo: a')
+        ->and($output->toolResults[1]->content)->not->toBe('echo: b');
+});
