@@ -66,3 +66,43 @@ test('a stream error event reaches the agent output and agent.error sanitised an
         ->and(preg_match('/\p{Cc}/u', $output->content))->toBe(0)
         ->and($errors)->toBe([substr($output->content, strlen('Provider error: '))]);
 });
+
+test('an observer that throws mid-stream escapes run() instead of reading as a provider error', function (string $event, bool $cancel) {
+    $token = new class implements \CarmeloSantana\PHPAgents\Contract\CancellationTokenInterface {
+        public bool $cancelled = false;
+
+        public function isCancelled(): bool
+        {
+            return $this->cancelled;
+        }
+
+        public function cancel(): void
+        {
+            $this->cancelled = true;
+        }
+    };
+    $agent = new StreamErrorTestAgent(
+        provider: new \Tests\Support\Agent\ScriptedProvider([new \CarmeloSantana\PHPAgents\Provider\Response(
+            content: 'Hello',
+            finishReason: \CarmeloSantana\PHPAgents\Enum\ProviderFinishReason::Stop,
+        )]),
+        cancellationToken: $token,
+    );
+    $events = [];
+    $agent->attach(new \CarmeloSantana\PHPAgents\Agent\CallbackObserver(function (string $name) use (&$events, $event, $cancel, $token): void {
+        $events[] = $name;
+        if ($name === $event) {
+            if ($cancel) {
+                $token->cancel();
+            }
+            throw new \DomainException('observer broke');
+        }
+    }));
+
+    expect(fn() => $agent->run(new UserMessage('Hi')))->toThrow(\DomainException::class, 'observer broke')
+        ->and($events)->not->toContain('agent.error');
+})->with([
+    'text delta' => ['agent.text_delta', false],
+    'step finish' => ['agent.step_finish', false],
+    'text delta after a cancel' => ['agent.text_delta', true],
+]);

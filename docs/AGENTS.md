@@ -459,7 +459,8 @@ when the run ends for another reason.
 
 Rows that start with `error` follow whatever the step already fired: a cancel or time limit during
 tools comes after that response's `step_finish` and tool events. An exception that escapes `run()`
-(thrown by an observer, for example) skips `agent.finish`.
+(thrown by an observer, for example) skips `agent.finish`. An observer's exception escapes even
+while a response streams; the agent does not report it as a provider error.
 
 ### Error text is redacted and bounded
 

@@ -608,6 +608,11 @@ abstract class AbstractAgent implements AgentInterface
 
                 $this->tickCallback->tick();
             } catch (\Throwable $e) {
+                // An observer's exception is the host's, not the provider's: it escapes run()
+                // as it does outside the stream, and leaving the loop closes the stream.
+                if ($e === $this->observerException) {
+                    throw $e;
+                }
                 // A cancel that aborts the transport surfaces as a throw; it ends the run
                 // the way a cancel seen between events does.
                 if ($this->cancellationToken?->isCancelled()) {
@@ -1994,7 +1999,13 @@ abstract class AbstractAgent implements AgentInterface
         foreach ($this->observers as $observer) {
             $this->lastEvent = $event;
             $this->lastEventData = $data;
-            $observer->update($this);
+            try {
+                $observer->update($this);
+            } catch (\Throwable $e) {
+                $this->observerException = $e;
+
+                throw $e;
+            }
         }
     }
 
@@ -2010,4 +2021,7 @@ abstract class AbstractAgent implements AgentInterface
 
     private string $lastEvent = '';
     private mixed $lastEventData = null;
+
+    /** The last exception an observer threw from notify(), so run() does not mistake it for the provider's. */
+    private ?\Throwable $observerException = null;
 }
