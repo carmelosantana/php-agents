@@ -432,7 +432,7 @@ when the run ends for another reason.
 | Tool `TerminationException` | `step_finish` → … tools … → `finish` (no `agent.error`) | `Error` |
 | Cancel mid-stream (or a provider exception once the token is set) | `tool_input_discarded` (`cancelled`, each started call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 | Cancel after a text or `done` answer finished, before it is accepted (refusal, filter, context-window and error finishes keep their reason) | `step_finish` → `tool_input_discarded` (`cancelled`, each call of a `done` response) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
-| Cancel after an empty response (on `step_finish` or `empty_response`), before the empty-response policy retries, falls back to reasoning or gives up | `step_finish` → `empty_response` → `error` `'Task cancelled'` → `finish` | `Cancelled` |
+| Cancel after an empty response, landing anywhere from `step_finish` to `empty_response` (`budget_warning` included), before the empty-response policy retries, falls back to reasoning or gives up | `step_finish` → (`budget_warning`) → `empty_response` → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 | Cancel at the top of an iteration or during tools | `error` `'Task cancelled'` → `finish` | `Cancelled` |
 
 Rows that start with `error` follow whatever the step already fired: a cancel or time limit during

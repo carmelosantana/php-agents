@@ -52,12 +52,13 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   is `'Task was cancelled.'`. A provider exception, or a stream that ends without a finish, once
   the token is set (a cancel that aborts the transport) ends the same way, not `Error`. So does a
   cancel that lands after a text, `done` or empty response finished but before it is accepted or
-  retried (on `agent.step_finish` or `agent.empty_response`): no `agent.done`, finish `Cancelled`.
-  Refusal, content-filter, context-window and provider-error finishes keep their own reason. A
-  cancel during tools gives every call that did not start a `'Cancelled before it ran.'` result
-  with `errorCode` `'cancelled'`. Usage of a finish that arrived before a cancel or a streaming run
-  limit abandoned the stream is counted in `Output->usage` and reported to the context window. See
-  [Cooperative Cancellation](AGENTS.md#cooperative-cancellation).
+  retried (on `agent.step_finish`, `agent.budget_warning` or `agent.empty_response`, say): no
+  `agent.done`, finish `Cancelled`. Refusal, content-filter, context-window and provider-error
+  finishes keep their own reason. A cancel during tools gives every call that did not start a
+  `'Cancelled before it ran.'` result with `errorCode` `'cancelled'`. Usage of a finish that
+  arrived before a cancel or a streaming run limit abandoned the stream is counted in
+  `Output->usage` and reported to the context window. See [Cooperative
+  Cancellation](AGENTS.md#cooperative-cancellation).
 - `agent.finish` fires once on every exit path that returns. An exception that escapes `run()`
   gets none.
 - `ImagePolicy` (and so `LocalImageResolver`, `RemoteImageResolver` and the image normalizers)

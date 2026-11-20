@@ -667,7 +667,7 @@ test('a cancel-driven throw after the Finish arrived keeps that Finish\'s usage'
 
 test('a cancel after an empty response ends Cancelled whatever the empty-response policy would return', function (string $on, array $arguments) {
     [$agent, $events] = cancellationAgent(
-        [[new Finish(ProviderFinishReason::Stop, 'stop', null, 'test-model')]],
+        [[new ReasoningDelta('Thinking.'), new Finish(ProviderFinishReason::Stop, 'stop', null, 'test-model')]],
         fn(string $event): bool => $event === $on,
         $arguments,
     );
@@ -676,14 +676,29 @@ test('a cancel after an empty response ends Cancelled whatever the empty-respons
 
     expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
         ->and($output->content)->toBe('Task was cancelled.')
-        ->and(array_slice($events->names(), -2))->toBe(['agent.error', 'agent.finish'])
+        ->and(array_slice($events->names(), -4))->toBe(['agent.step_finish', 'agent.empty_response', 'agent.error', 'agent.finish'])
         ->and($events->dataFor('agent.error'))->toBe(['Task cancelled']);
 })->with([
     'step_finish, no retries left' => ['agent.step_finish', ['maxEmptyResponseRetries' => 0]],
     'empty_response, no retries left' => ['agent.empty_response', ['maxEmptyResponseRetries' => 0]],
     'step_finish, ignored on the last iteration' => ['agent.step_finish', ['emptyResponseHandling' => EmptyResponseHandling::Ignore, 'maxIter' => 1]],
     'empty_response, ignored on the last iteration' => ['agent.empty_response', ['emptyResponseHandling' => EmptyResponseHandling::Ignore, 'maxIter' => 1]],
+    'step_finish, nudge then fallback giving up' => ['agent.step_finish', ['emptyResponseHandling' => EmptyResponseHandling::NudgeThenFallback, 'maxEmptyResponseRetries' => 0]],
+    'empty_response, nudge then fallback giving up' => ['agent.empty_response', ['emptyResponseHandling' => EmptyResponseHandling::NudgeThenFallback, 'maxEmptyResponseRetries' => 0]],
 ]);
+
+test('a cancel on agent.budget_warning of an empty response ends Cancelled after agent.empty_response', function () {
+    [$agent, $events] = cancellationAgent(
+        [[new Finish(ProviderFinishReason::Stop, 'stop', new Usage(promptTokens: 850, completionTokens: 50, totalTokens: 900), 'test-model')]],
+        fn(string $event): bool => $event === 'agent.budget_warning',
+        ['contextWindow' => new ContextWindow(maxTok: 1_000, reservedTok: 0), 'budgetExitThreshold' => 0.8, 'maxEmptyResponseRetries' => 0],
+    );
+
+    $output = $agent->run(new UserMessage('Hello.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and(array_slice($events->names(), -5))->toBe(['agent.step_finish', 'agent.budget_warning', 'agent.empty_response', 'agent.error', 'agent.finish']);
+});
 
 test('a cancel-driven throw after the Finish arrived reports that Finish\'s usage to the context window', function () {
     $token = new CancellationTestToken();
@@ -738,3 +753,4 @@ test('a cancel on agent.step_finish still scrubs the raw reason and model in the
         ->and($events->dataFor('agent.step_finish')[0]->model)->toBe('evil model [redacted]')
         ->and($events->dataFor('agent.finish')[0]->model)->toBe('evil model [redacted]');
 });
+

@@ -185,7 +185,7 @@ when the run ends for another reason. An exception that escapes `run()` gets no 
 | Tool `TerminationException` | `step_finish` → `finish` (no `agent.error`) | `Error` |
 | Cancel mid-stream (or a provider exception once the token is set) | `tool_input_discarded` (`cancelled`, each started call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 | Cancel after a text or `done` answer finished, before it is accepted | `step_finish` → `tool_input_discarded` (`cancelled`, each call of a `done` response) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
-| Cancel after an empty response (on `step_finish` or `empty_response`), before the empty-response policy retries, falls back to reasoning or gives up | `step_finish` → `empty_response` → `error` `'Task cancelled'` → `finish` | `Cancelled` |
+| Cancel after an empty response, landing anywhere from `step_finish` to `empty_response` (`budget_warning` included), before the empty-response policy retries, falls back to reasoning or gives up | `step_finish` → (`budget_warning`) → `empty_response` → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 | Cancel at top of iteration or during tools | (`step_finish` already fired for a completed response; no call is open, so no `tool_input_discarded`) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 
 Tests pin each sequence.
