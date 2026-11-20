@@ -381,19 +381,25 @@ abstract class AbstractAgent implements AgentInterface
             $firstDoneIndex = null;
             /** @var array<int, string> $limitedCalls ids of the calls discarded under the cap */
             $limitedCalls = [];
-            $admitCall = function (ToolInputStart|ToolInputEnd $call) use ($perTurn, &$turnCalls, &$firstDoneIndex, &$limitedCalls): bool {
+            // Whether each call, in the order it opened, was discarded under the cap.
+            /** @var list<bool> $callOrder */
+            $callOrder = [];
+            $admitCall = function (ToolInputStart|ToolInputEnd $call) use ($perTurn, &$turnCalls, &$firstDoneIndex, &$limitedCalls, &$callOrder): bool {
                 if ($call->name === DoneTool::NAME && ($firstDoneIndex ?? $call->index) === $call->index) {
                     $firstDoneIndex = $call->index;
+                    $callOrder[] = false;
 
                     return true;
                 }
                 if ($perTurn > 0 && $turnCalls >= $perTurn) {
                     $limitedCalls[$call->index] = $call->id;
+                    $callOrder[] = true;
                     $this->discardCalls([$call], 'tool_call_limit');
 
                     return false;
                 }
                 $turnCalls++;
+                $callOrder[] = false;
 
                 return true;
             };
@@ -548,7 +554,12 @@ abstract class AbstractAgent implements AgentInterface
                 model: $finish->model ?? '',
                 usage: $finish?->usage,
                 reasoning: implode('', $reasoningParts),
-                contentBlocks: self::withoutDroppedToolUse($finish->contentBlocks ?? [], $limitedCalls),
+                contentBlocks: self::withoutDroppedToolUse(
+                    $finish->contentBlocks ?? [],
+                    $callOrder,
+                    $limitedCalls,
+                    [...array_map(static fn(ToolInputStart $s): string => $s->id, $startedCalls), ...array_map(static fn(ToolInputEnd $e): string => $e->id, $endedCalls)],
+                ),
             );
 
             // The response counts as at least one token per 4 bytes received,
@@ -996,20 +1007,40 @@ abstract class AbstractAgent implements AgentInterface
      * discarded under the per-turn cap, so those calls' arguments are not kept in the
      * conversation. Other blocks, thinking and its signature included, keep their order.
      *
+     * When the blocks hold one `tool_use` per call that opened, the k-th block belongs to the
+     * k-th call, so a discarded call that shares an id with a kept one loses only its own block.
+     * Otherwise a block is dropped by id, and only when no kept call has that id.
+     *
      * @param list<array<string, mixed>> $blocks
+     * @param list<bool> $callOrder Whether each call, in the order it opened, was discarded
      * @param array<int, string> $limitedCalls Ids of the discarded calls, by index
+     * @param list<string> $keptIds Ids of the calls kept
      * @return list<array<string, mixed>>
      */
-    private static function withoutDroppedToolUse(array $blocks, array $limitedCalls): array
+    private static function withoutDroppedToolUse(array $blocks, array $callOrder, array $limitedCalls, array $keptIds): array
     {
         if ($limitedCalls === [] || $blocks === []) {
             return $blocks;
         }
 
-        return array_values(array_filter(
-            $blocks,
-            static fn(array $block): bool => ($block['type'] ?? null) !== 'tool_use' || !in_array($block['id'] ?? null, $limitedCalls, true),
-        ));
+        $toolUses = count(array_filter($blocks, static fn(array $block): bool => ($block['type'] ?? null) === 'tool_use'));
+        $kept = [];
+        $position = 0;
+        foreach ($blocks as $block) {
+            if (($block['type'] ?? null) !== 'tool_use') {
+                $kept[] = $block;
+                continue;
+            }
+            $dropped = $toolUses === count($callOrder)
+                ? $callOrder[$position]
+                : in_array($block['id'] ?? null, $limitedCalls, true) && !in_array($block['id'] ?? null, $keptIds, true);
+            $position++;
+            if (!$dropped) {
+                $kept[] = $block;
+            }
+        }
+
+        return $kept;
     }
 
     /**

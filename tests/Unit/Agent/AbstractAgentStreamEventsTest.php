@@ -884,3 +884,39 @@ test('a token limit after the response still scrubs the model in agent.finish', 
     expect($output->finishReason)->toBe(AgentFinishReason::BudgetExhausted)
         ->and($events->dataFor('agent.finish')[0]->model)->toBe('evil model [redacted]');
 });
+
+test('a call past the cap that shares an id with a kept call leaves the kept call\'s tool_use block', function () {
+    $blocks = [
+        ['type' => 'thinking', 'thinking' => 'Two.', 'signature' => 'sig'],
+        ['type' => 'tool_use', 'id' => 'c1', 'name' => 'echo', 'input' => ['text' => 'a']],
+        ['type' => 'tool_use', 'id' => 'c1', 'name' => 'echo', 'input' => ['text' => 'b']],
+    ];
+    [$agent] = streamEventsAgent([[
+        ...streamEventsCall(0, 'c1', 'echo', ['text' => 'a']),
+        ...streamEventsCall(1, 'c1', 'echo', ['text' => 'b']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model', $blocks),
+    ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxToolCallsPerTurn: 1)]);
+
+    $output = $agent->run(new UserMessage('Echo.'));
+    $assistant = array_values(array_filter($output->conversation->messages(), fn($m) => $m instanceof \CarmeloSantana\PHPAgents\Message\AssistantMessage && $m->contentBlocks() !== []));
+
+    expect($assistant[0]->contentBlocks())->toBe([$blocks[0], $blocks[1]]);
+});
+
+test('when blocks and calls do not line up, a dropped call\'s block is removed by id unless a kept call has it', function () {
+    $blocks = [
+        ['type' => 'tool_use', 'id' => 'c1', 'name' => 'echo', 'input' => ['text' => 'a']],
+        ['type' => 'tool_use', 'id' => 'c2', 'name' => 'echo', 'input' => ['text' => 'b']],
+    ];
+    [$agent] = streamEventsAgent([[
+        ...streamEventsCall(0, 'c1', 'echo', ['text' => 'a']),
+        ...streamEventsCall(1, 'c2', 'echo', ['text' => 'b']),
+        ...streamEventsCall(2, 'c1', 'echo', ['text' => 'c']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model', $blocks),
+    ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxToolCallsPerTurn: 1)]);
+
+    $output = $agent->run(new UserMessage('Echo.'));
+    $assistant = array_values(array_filter($output->conversation->messages(), fn($m) => $m instanceof \CarmeloSantana\PHPAgents\Message\AssistantMessage && $m->contentBlocks() !== []));
+
+    expect($assistant[0]->contentBlocks())->toBe([$blocks[0]]);
+});
