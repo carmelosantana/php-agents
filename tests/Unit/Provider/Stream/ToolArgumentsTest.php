@@ -116,3 +116,15 @@ test('a depth cap as large as PHP_INT_MAX is clamped to what json_decode accepts
     expect(ToolArguments::decode('{"a":{"b":1}}', $limits))->toBe(['a' => ['b' => 1]])
         ->and(ToolArguments::fromDecoded(['a' => ['b' => 1]], $limits))->toBe(['a' => ['b' => 1]]);
 });
+
+test('toJson of arguments that cannot be encoded decodes as a dropped call, not as {}', function () {
+    $deep = [];
+    for ($i = 0; $i < 600; $i++) {
+        $deep = ['a' => $deep];
+    }
+
+    $json = ToolArguments::toJson($deep);
+
+    expect($json)->not->toBe('')
+        ->and(ToolArguments::decode($json))->toBeNull();
+});

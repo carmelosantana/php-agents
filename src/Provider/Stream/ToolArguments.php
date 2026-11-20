@@ -97,7 +97,8 @@ final class ToolArguments
     /**
      * Argument JSON from a decoded SSE payload. Wire strings pass through; arguments
      * sent as a JSON object arrive decoded, so they are re-encoded (UTF-8 and slashes
-     * unescaped), with an empty object (decoded as []) becoming `{}`. A missing value is ''.
+     * unescaped), with an empty object (decoded as []) becoming `{}`; arguments that cannot be
+     * encoded become `null`, so the call is dropped. A missing value is ''.
      */
     public static function toJson(mixed $arguments): string
     {
@@ -105,7 +106,9 @@ final class ToolArguments
             is_string($arguments) => $arguments,
             $arguments === null => '',
             $arguments === [] => '{}',
-            default => (string) json_encode($arguments, self::JSON_FLAGS),
+            // Arguments json_encode() refuses (nested past its depth) become `null`, which
+            // decode() drops, rather than '', which it would read as `{}`.
+            default => json_encode($arguments, self::JSON_FLAGS) ?: 'null',
         };
     }
 }
