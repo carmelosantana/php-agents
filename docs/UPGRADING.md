@@ -88,6 +88,20 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   still waiting for its newline: a provider stream with a longer complete line now throws a
   `ProviderException` (`SSE line exceeded … bytes`) instead of decoding it.
 
+### Deprecated
+
+- The in-process llama.cpp FFI path is deprecated in 0.18 and will be removed or fixed in 0.19:
+  `LlamaCppProvider`, every class under `Runtime\LlamaCpp`, and the `setup-llama-cpp.sh`,
+  `test-llama-cpp-runtime.sh` and llama.cpp benchmark scripts. Move to `LlamaServerProvider`
+  ([LlamaServerProvider](PROVIDERS.md#llamaserverprovider)): run `llama-server -m model.gguf --jinja`
+  and set a `baseUrl` on the `llama-cpp` provider config, or construct the provider directly.
+  - The binding is incompatible with llama.cpp after b9174 (2026-05-16): structs it passes by value
+    changed, and a newer build segfaults on the first model load.
+  - It does not stream under `Agent`: with tools, which `Agent` always passes, it
+    buffers the whole generation, and a cancel, `maxRunSeconds` and `maxResponseBytes` act only
+    after generation ends. The buffer has no cap. 0.18 does not fix this.
+  - `LlamaCpp\LlamaCppToolCallParser` is not deprecated.
+
 ### New and not breaking
 
 - Agent events: `agent.tool_input_start`, `agent.tool_input_delta`, `agent.tool_input_end`,

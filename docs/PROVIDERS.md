@@ -4,7 +4,7 @@ Providers abstract the differences between LLM APIs. php-agents ships with provi
 
 ## Provider Feature Matrix
 
-| Feature | OpenAI Compatible | OpenAI Responses | Ollama | Anthropic | Gemini | xAI | Mistral | LlamaCpp |
+| Feature | OpenAI Compatible | OpenAI Responses | Ollama | Anthropic | Gemini | xAI | Mistral | LlamaCpp (deprecated) |
 |---------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
 | `chat()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `stream()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -19,6 +19,10 @@ Providers abstract the differences between LLM APIs. php-agents ships with provi
 | `withModel()` immutable swap | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 \* Gemini does not natively support URL image references. The provider auto-downloads URL images and converts them to base64 `inlineData` for seamless compatibility.
+
+`LlamaServerProvider` has the OpenAI Compatible column's features; image input needs a server
+started with a multimodal projector (`--mmproj`). The LlamaCpp column is the deprecated in-process
+FFI provider: see [LlamaCppProvider](#llamacppprovider) for what it does not deliver.
 
 **CliProvider** (the `claude` CLI vendor) runs as a raw chat completion and has a narrower profile:
 `chat()`, `stream()`, `streamEvents()`, `structured()` (best-effort JSON), `models()`, `isAvailable()`, and
@@ -74,6 +78,20 @@ Without a `baseUrl`, `llama-cpp/…` still needs an injected `LocalModelRuntimeI
 deprecated `LlamaCppProvider`.
 
 ## LlamaCppProvider
+
+> **Deprecated in 0.18; removed or fixed in 0.19.** Use [`LlamaServerProvider`](#llamaserverprovider).
+> `LlamaCppProvider` and every class under `Runtime\LlamaCpp` are marked `@deprecated`.
+>
+> - The FFI binding mirrors `llama.h` structs that llama.cpp changed after **b9174** (2026-05-16):
+>   on a newer build it segfaults on the first model load. It works on b9174 and earlier.
+> - With tools it buffers the whole generation and yields it at the end. `Agent` always passes
+>   its `done` tool, so under `Agent` nothing streams, and a cancel, `maxRunSeconds` and
+>   `maxResponseBytes` take effect only after generation ends. The buffer has no cap. This is not
+>   fixed in 0.18.
+> - The real runtime never reports a tool-use finish, so a tool call the model writes comes back
+>   as text.
+>
+> `LlamaCpp\LlamaCppToolCallParser` is not deprecated.
 
 `LlamaCppProvider` is the direct local provider for llama.cpp-backed runtimes. It keeps the same message, tool, streaming, multimodal, and structured-output surface as the rest of php-agents while dispatching through a local runtime instead of HTTP.
 
@@ -752,7 +770,7 @@ when the next chunk arrives:
 | `OpenAICompatibleProvider` (OpenAI, OpenRouter, MiniMax and other compatible servers), `OllamaProvider`, `XAIProvider`, `MistralProvider`, `LlamaServerProvider` | ✅ | During silence |
 | `OpenAIResponsesProvider` | ✅ | During silence |
 | `GeminiProvider` | ✅ | During silence |
-| `LlamaCppProvider` | — | Per chunk only |
+| `LlamaCppProvider` (deprecated) | — | Per chunk without tools; with tools (always under `Agent`) only after generation ends |
 | `CliProvider` | — | Per chunk only |
 | Any provider on an injected HTTP client that ignores the timeout argument of symfony's `stream()` | — | Per chunk only |
 

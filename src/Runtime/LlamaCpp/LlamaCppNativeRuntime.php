@@ -8,6 +8,12 @@ use CarmeloSantana\PHPAgents\Contract\LocalModelHandleInterface;
 use CarmeloSantana\PHPAgents\Contract\LocalModelRuntimeInterface;
 use CarmeloSantana\PHPAgents\Runtime\RuntimeModelMetadata;
 
+/**
+ * @deprecated 0.18 Use \CarmeloSantana\PHPAgents\Provider\LlamaServerProvider (llama.cpp's llama-server).
+ *             The FFI binding matches llama.h only up to llama.cpp b9174 (newer builds segfault)
+ *             and, with tools (always under Agent), buffers the whole generation. Removed or
+ *             fixed in 0.19.
+ */
 final class LlamaCppNativeRuntime implements LocalModelRuntimeInterface
 {
     /**

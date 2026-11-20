@@ -46,6 +46,10 @@ usage() {
     cat <<EOF
 Usage: $0 [options]
 
+Deprecated in 0.18: the in-process FFI runtime works only with llama.cpp up to b9174 and is
+removed or fixed in 0.19. Run llama-server instead and use LlamaServerProvider
+(docs/PROVIDERS.md#llamaserverprovider).
+
 Build or locate llama.cpp, download a default GGUF model unless told not to, and write a reusable env file.
 
 Default GGUF:
@@ -275,6 +279,8 @@ EOF
 EOF
     fi
 }
+
+warn "Deprecated in 0.18: the FFI runtime works only with llama.cpp up to b9174; use llama-server and LlamaServerProvider."
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
