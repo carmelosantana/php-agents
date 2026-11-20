@@ -407,7 +407,9 @@ for a name are bounded as they open: at most the per-turn slots left plus one fo
 `agent.done_delta` streams a `done` answer the same way: the decoded text of the first `done` call's
 `response` argument, as it arrives. `agent.done` accepts it and carries the authoritative
 `response`, which a UI renders in place of the preview; `agent.tool_input_discarded` for the same
-call id retracts it.
+call id retracts it. A `done` call that opens with a name but no id holds its preview until a delta
+or its end brings the id, then sends the held text under that id, so the preview, the end and any
+discard always share one id.
 
 | Discard reason | The call will not run because |
 |---|---|

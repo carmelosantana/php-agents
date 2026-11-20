@@ -380,6 +380,10 @@ abstract class AbstractAgent implements AgentInterface
             // arguments completed; the two differ only when `done` calls interleave.
             $donePreview = null;
             $donePreviewIndex = null;
+            // Preview text of a `done` call whose id is not known yet, released under the id
+            // once a delta or the end brings it, so the preview and the call's end or discard
+            // share one id.
+            $heldPreview = '';
             // RunLimits::$maxToolCallsPerTurn while streaming: the first `done` call is outside
             // it; a call opened past it is discarded at once and its later events are ignored,
             // so it is never retained. A call whose end arrives without a start is admitted then,
@@ -498,8 +502,11 @@ abstract class AbstractAgent implements AgentInterface
                         }
                         $this->notify('agent.tool_input_delta', $event);
                         if ($event->index === $donePreviewIndex) {
-                            $previewDelta = $donePreview?->push($event->delta) ?? '';
-                            if ($previewDelta !== '') {
+                            $previewDelta = $heldPreview . ($donePreview?->push($event->delta) ?? '');
+                            if ($event->id === '') {
+                                $heldPreview = $previewDelta;
+                            } elseif ($previewDelta !== '') {
+                                $heldPreview = '';
                                 $this->notify('agent.done_delta', new DonePreview($event->id, $previewDelta));
                             }
                         }
@@ -541,6 +548,10 @@ abstract class AbstractAgent implements AgentInterface
                             }
                             if ($identity->id !== $start->id || $identity->name !== $start->name) {
                                 $startedCalls[$event->index] = $identity;
+                            }
+                            if ($event->index === $donePreviewIndex && $heldPreview !== '') {
+                                $this->notify('agent.done_delta', new DonePreview($event->id, $heldPreview));
+                                $heldPreview = '';
                             }
                         }
                         $endedCalls[$event->index] = $event;

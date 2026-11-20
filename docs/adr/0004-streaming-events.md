@@ -176,7 +176,9 @@ text is cut to 128 characters plus a `…` (129 at most). `Finish` on the provid
   previewed, one preview per call id: the first `done` call to open, while the call that finishes
   the run is the first in completion order (they differ only when `done` calls interleave).
   Acceptance is the existing `agent.done` event, which carries the authoritative `response`; a
-  preview that does not finish the run gets `agent.tool_input_discarded`. Whole-call providers
+  preview that does not finish the run gets `agent.tool_input_discarded`. A `done` call whose
+  start has a name but no id holds its preview text until a delta or its end brings the id and
+  then releases it under that id, so a preview never carries an id its end or discard does not. Whole-call providers
   deliver the preview in one `agent.done_delta`.
 - **`Agent` constructor.** Trailing optional `?RunLimits $runLimits = null`,
   `?CancellationTokenInterface $cancellationToken = null` and `array $providerOptions = []`,

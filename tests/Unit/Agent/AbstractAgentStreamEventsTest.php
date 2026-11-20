@@ -1167,3 +1167,47 @@ test('with no per-turn cap, pending nameless calls are capped at MAX_PENDING_NAM
 
     expect(array_map(fn(ToolInputDiscarded $d) => $d->index, $limited))->toBe([$max, $max + 1]);
 });
+
+test('a done call that opens with a name but no id previews under the id its end and discard use', function () {
+    $token = new class implements \CarmeloSantana\PHPAgents\Contract\CancellationTokenInterface {
+        public bool $cancelled = false;
+
+        public function isCancelled(): bool
+        {
+            return $this->cancelled;
+        }
+    };
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, '', 'done'),
+        new ToolInputDelta(0, '', '{"response":"Hel'),
+        new ToolInputDelta(0, '', 'lo."}'),
+        new ToolInputEnd(0, 'call_9', 'done', ['response' => 'Hello.']),
+        function () use ($token): void {
+            $token->cancelled = true;
+        },
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ]], ['cancellationToken' => $token]);
+
+    $output = $agent->run(new UserMessage('Hi'));
+    $previews = $events->dataFor('agent.done_delta');
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->content)->toBe('Hello.')
+        ->and(array_map(fn(DonePreview $p) => $p->callId, $previews))->each->toBe('call_9')
+        ->and(implode('', array_map(fn(DonePreview $p) => $p->delta, $previews)))->toBe('Hello.')
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'call_9', 'done', 'cancelled')]);
+});
+
+test('a done preview held for a missing id is released under the id the first delta brings', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, '', 'done'),
+        new ToolInputDelta(0, '', '{"response":"Hel'),
+        new ToolInputDelta(0, 'd1', 'lo."}'),
+        new ToolInputEnd(0, 'd1', 'done', ['response' => 'Hello.']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ]]);
+
+    $agent->run(new UserMessage('Hi'));
+
+    expect($events->dataFor('agent.done_delta'))->toEqual([new DonePreview('d1', 'Hello.')]);
+});
