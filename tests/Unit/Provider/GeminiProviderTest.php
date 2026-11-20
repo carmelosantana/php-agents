@@ -302,25 +302,6 @@ test('response parsing extracts tool calls from functionCall parts', function ()
         ->and($response->toolCalls[0]->arguments)->toBe(['city' => 'London']);
 });
 
-test('response parsing keeps functionCall args whose keys are "0", "1", … as an object', function () {
-    $mockClient = new MockHttpClient([
-        mockGeminiResponse([
-            'candidates' => [[
-                'content' => ['role' => 'model', 'parts' => [
-                    ['functionCall' => ['name' => 'pair', 'args' => (object) ['0' => 'a', '1' => 'b']]],
-                ]],
-                'finishReason' => 'STOP',
-            ]],
-        ]),
-    ]);
-    $provider = new GeminiProvider(model: 'gemini-2.5-flash', apiKey: 'test-key', httpClient: $mockClient);
-
-    $response = $provider->chat([new UserMessage('Pair?')]);
-
-    expect($response->finishReason)->toBe(ProviderFinishReason::ToolUse)
-        ->and($response->toolCalls)->toEqual([new ToolCall('g00000000', 'pair', ['0' => 'a', '1' => 'b'])]);
-});
-
 test('response parsing drops a functionCall with no name and finishes Error', function () {
     $mockClient = new MockHttpClient([
         mockGeminiResponse([

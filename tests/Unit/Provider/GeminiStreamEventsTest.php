@@ -161,19 +161,6 @@ test('streamEvents keeps the MAX_TOKENS reason when valid calls ended in an earl
     ]);
 });
 
-test('streamEvents keeps args whose keys are "0", "1", … as a JSON object', function () {
-    $events = geminiStreamEvents([
-        geminiChunk([['functionCall' => ['name' => 'pair', 'args' => (object) ['0' => 'a', '1' => 'b']]]], 'STOP'),
-    ]);
-
-    expect($events)->toEqual([
-        new ToolInputStart(0, 'g00000000', 'pair'),
-        new ToolInputDelta(0, 'g00000000', '{"0":"a","1":"b"}'),
-        new ToolInputEnd(0, 'g00000000', 'pair', ['0' => 'a', '1' => 'b']),
-        new Finish(ProviderFinishReason::ToolUse, 'STOP', null, 'gemini-2.5-flash'),
-    ]);
-});
-
 test('streamEvents drops a functionCall with no name and finishes with Error', function () {
     $events = geminiStreamEvents([
         geminiChunk([
@@ -208,7 +195,7 @@ test('streamEvents emits no tool events when the finish reason drops tool calls'
 
 test('streamEvents drops a call whose args are not a JSON object and finishes with Error', function () {
     $events = geminiStreamEvents([
-        geminiChunk([['functionCall' => ['name' => 'x', 'args' => 42]]], 'STOP'),
+        geminiChunk([['functionCall' => ['name' => 'x', 'args' => [1, 2]]]], 'STOP'),
     ]);
 
     // The arguments are checked before their delta, so a dropped call gets none.

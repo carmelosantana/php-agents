@@ -193,7 +193,7 @@ final class GeminiProvider extends AbstractProvider
                     $index = $callCount++;
                     $id = sprintf('g%08x', $index);
                     $name = is_string($part['functionCall']['name'] ?? null) ? $part['functionCall']['name'] : '';
-                    $argumentsJson = $this->argumentsJson($part['functionCall']['args'] ?? []);
+                    $argumentsJson = ToolArguments::toJson($part['functionCall']['args'] ?? []);
 
                     yield new ToolInputStart($index, $id, $name);
 
@@ -825,10 +825,7 @@ final class GeminiProvider extends AbstractProvider
 
                     continue;
                 }
-                $args = $part['functionCall']['args'] ?? null;
-                $arguments = is_array($args)
-                    ? ToolArguments::decode($this->argumentsJson($args), $this->requestLimits)
-                    : ToolArguments::fromDecoded($args, $this->requestLimits);
+                $arguments = ToolArguments::fromDecoded($part['functionCall']['args'] ?? null, $this->requestLimits);
                 if ($arguments === null) {
                     $this->logger?->debug('Gemini tool {tool} arguments are not a JSON object; the call is dropped', ['tool' => $name]);
                     $droppedCalls = true;
@@ -881,15 +878,6 @@ final class GeminiProvider extends AbstractProvider
         }
 
         return $this->mapGeminiFinishReason($data['candidates'][0]['finishReason'] ?? null);
-    }
-
-    /**
-     * A functionCall's args as JSON. Gemini sends args as an object (a Struct), but one whose
-     * keys are "0", "1", … decodes to a PHP list, so a non-empty array is encoded as an object.
-     */
-    private function argumentsJson(mixed $args): string
-    {
-        return ToolArguments::toJson(is_array($args) && $args !== [] ? (object) $args : $args);
     }
 
     private function dropsToolCalls(ProviderFinishReason $reason): bool

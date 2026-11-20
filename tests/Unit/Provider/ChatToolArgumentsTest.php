@@ -80,7 +80,7 @@ $providers = [
     'OpenAI-compatible' => [OpenAICompatibleProvider::class, '{"q":', 'c2'],
     'Responses' => [OpenAIResponsesProvider::class, '[1]', 'c2'],
     'Anthropic' => [AnthropicProvider::class, [1, 2], 'c2'],
-    'Gemini' => [GeminiProvider::class, 42, 'g00000001'],
+    'Gemini' => [GeminiProvider::class, [1, 2], 'g00000001'],
 ];
 
 test('chat() drops a call whose arguments are not a JSON object and ends a tool stop as Error', function (string $class, mixed $bad, string $keptId) {

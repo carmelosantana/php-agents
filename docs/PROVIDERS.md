@@ -501,7 +501,7 @@ $provider = new GeminiProvider(
 
 ### Tool Calling
 
-Gemini uses `functionCall`/`functionResponse` parts within the Content format. The provider generates compact 9-character alphanumeric synthetic IDs (e.g. `g00000000`) for tool calls since Gemini's API doesn't return call IDs natively. The `functionResponse` name field uses the actual function name resolved from the preceding assistant message's tool calls. `args` is read as a JSON object, so argument names `"0"`, `"1"`, … stay names. A `functionCall` with no name is dropped like a call whose arguments are not a JSON object (see [Streaming Events](#streaming-events)).
+Gemini uses `functionCall`/`functionResponse` parts within the Content format. The provider generates compact 9-character alphanumeric synthetic IDs (e.g. `g00000000`) for tool calls since Gemini's API doesn't return call IDs natively. The `functionResponse` name field uses the actual function name resolved from the preceding assistant message's tool calls. `args` decodes to a PHP array, so a JSON list cannot be told from an object keyed `"0"`, `"1"`, …; both are dropped like other arguments that are not a JSON object, which keeps a hostile list from reaching a tool. A `functionCall` with no name is dropped like a call whose arguments are not a JSON object (see [Streaming Events](#streaming-events)).
 
 ### Image Support
 
