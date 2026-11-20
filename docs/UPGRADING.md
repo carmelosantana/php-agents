@@ -108,6 +108,9 @@ public function streamEvents(array $messages, array $tools = [], array $options 
 - `CliProvider` honours `RequestLimits::$maxResponseBytes` (default 32 MiB) on the process's stdout:
   `streamEvents()` stops reading the process stream past it and `chat()` refuses a larger result,
   each with a `ProviderException` (`response exceeded N bytes`). Pass `maxResponseBytes: 0` for no cap.
+- Image downloads (Gemini image URLs, `RemoteImageResolver`) log a refused URL as scheme, host and
+  `/[redacted]` instead of the full URL, and pass a failure's exception text through
+  `UntrustedText::forDisplay()`.
 - `SseStreamParser` applies its 1 MiB line cap (`maxLineBytes`) to every line, not only to one
   still waiting for its newline: a provider stream with a longer complete line now throws a
   `ProviderException` (`SSE line exceeded … bytes`) instead of decoding it.

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace CarmeloSantana\PHPAgents\Image\Internal;
 
 use CarmeloSantana\PHPAgents\Provider\RequestLimits;
+use CarmeloSantana\PHPAgents\Security\UntrustedText;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -53,7 +54,7 @@ final class PublicImageDownloader
             for ($hop = 0; $hop <= $this->maxRedirects; $hop++) {
                 $pin = $this->publicHostPin($url);
                 if ($pin === null) {
-                    $this->logger?->debug('Refused image URL: {url}', ['url' => $url]);
+                    $this->logger?->debug('Refused image URL: {url}', ['url' => self::loggableUrl($url)]);
 
                     return null;
                 }
@@ -98,10 +99,33 @@ final class PublicImageDownloader
 
             return null;
         } catch (\Throwable $e) {
-            $this->logger?->debug('Failed to download image from URL: {error}', ['error' => $e->getMessage()]);
+            $this->logger?->debug('Failed to download image from URL: {error}', ['error' => UntrustedText::forDisplay($e->getMessage())]);
 
             return null;
         }
+    }
+
+    /**
+     * $url as it may be logged: scheme, host and port, with any path replaced by `/[redacted]`.
+     * User info, query and fragment, where signed URLs carry their credentials, are dropped,
+     * and the result is passed through UntrustedText::forDisplay().
+     */
+    private static function loggableUrl(string $url): string
+    {
+        $parts = parse_url($url);
+        if ($parts === false) {
+            return '[unparseable URL]';
+        }
+
+        $scheme = $parts['scheme'] ?? '';
+        $host = $parts['host'] ?? '';
+        $port = isset($parts['port']) ? ':' . $parts['port'] : '';
+        $path = $parts['path'] ?? '';
+
+        return UntrustedText::forDisplay(
+            ($scheme !== '' ? $scheme . '://' : '') . $host . $port . ($path === '' || $path === '/' ? $path : '/[redacted]'),
+            200,
+        );
     }
 
     /**
