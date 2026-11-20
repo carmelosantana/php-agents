@@ -33,7 +33,10 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  */
 final class SseStreamParser
 {
-    /** Largest SSE line, in bytes and without its newline, complete or still waiting for its newline. */
+    /**
+     * Largest SSE line, in bytes and without its newline (LF or CRLF), complete or still waiting
+     * for its newline. A bare CR does not end a line.
+     */
     public const int DEFAULT_MAX_LINE_BYTES = 1_048_576;
 
     private string $lineBuffer = '';
@@ -121,14 +124,20 @@ final class SseStreamParser
             $newline = strpos($content, "\n", $offset);
 
             if ($newline === false) {
-                $this->assertLineFits(strlen($this->lineBuffer) + $length - $offset);
+                // A trailing CR may be the first half of a CRLF split across chunks.
+                $this->assertLineFits(strlen($this->lineBuffer) + $length - $offset - ($content[$length - 1] === "\r" ? 1 : 0));
                 $this->lineBuffer .= substr($content, $offset);
 
                 return;
             }
 
-            $this->assertLineFits(strlen($this->lineBuffer) + $newline - $offset);
-            $line = $this->lineBuffer . substr($content, $offset, $newline - $offset);
+            // CRLF: the CR is part of the newline, so it is neither measured nor kept.
+            $crlf = ($newline > $offset ? $content[$newline - 1] : substr($this->lineBuffer, -1)) === "\r";
+            $this->assertLineFits(strlen($this->lineBuffer) + $newline - $offset - ($crlf ? 1 : 0));
+            $line = $this->lineBuffer . substr($content, $offset, $newline - $offset - ($newline > $offset && $crlf ? 1 : 0));
+            if ($crlf && $newline === $offset) {
+                $line = substr($line, 0, -1);
+            }
             $this->lineBuffer = '';
             $offset = $newline + 1;
 

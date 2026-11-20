@@ -222,6 +222,25 @@ test('a chunk of many short lines is scanned without splitting it into an array'
         ->and(memory_get_peak_usage() - $before)->toBeLessThan(16 * 1024 * 1024);
 });
 
+test('a CRLF line at exactly the cap is decoded: the CR belongs to the newline', function (array $chunks) {
+    $parser = makeParser($chunks, maxLineBytes: 64);
+
+    expect(iterator_to_array($parser->events()))->toHaveCount(1);
+})->with(function () {
+    $line = 'data: {"v":"' . str_repeat('x', 64 - 14) . '"}';
+
+    return [
+        'one chunk' => [[$line . "\r\n\r\n"]],
+        'CR and LF split across chunks' => [[$line . "\r", "\n\r\n"]],
+    ];
+});
+
+test('a CRLF line over the cap still throws', function () {
+    $line = 'data: {"v":"' . str_repeat('x', 65 - 14) . '"}';
+
+    expect(sseParserCatch(makeParser([$line . "\r\n"], maxLineBytes: 64))?->getMessage())->toContain('SSE line exceeded 64 bytes');
+});
+
 test('the default line cap is 1048576 bytes', function () {
     $parser = makeParser([str_repeat('a', 1_048_576), 'b']);
 
