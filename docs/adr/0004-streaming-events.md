@@ -52,11 +52,15 @@ Alternatives considered, one line each:
   the provider's call id, repeated on every event even where the provider sends it only once.
 - Providers that deliver a call whole (Gemini, Ollama, the llama.cpp tool parser) emit
   `ToolInputStart`, one `ToolInputDelta` carrying the full JSON-encoded arguments, then
-  `ToolInputEnd`, so every call has at least one delta.
+  `ToolInputEnd`, so every call that ends has at least one delta. Gemini and `CliProvider` check
+  the arguments first: a call they drop gets its `ToolInputStart` and no delta.
 - Empty or whitespace-only arguments, and an empty object, decode as `{}`. Any other arguments
   that do not decode to a JSON object get no `ToolInputEnd` and the call is dropped, on every
   provider; on the HTTP providers and `CliProvider` so do arguments over `RequestLimits::$maxToolArgumentBytes` or
-  `$maxToolArgumentDepth`, which are checked before the single decode. A response that would
+  `$maxToolArgumentDepth`, which are checked before the single decode. The streaming HTTP
+  providers count each call's argument bytes as fragments arrive and, once a call passes the byte
+  cap, stop keeping and yielding its deltas, drain the rest of the response and drop the call at
+  its end, so an oversize call is never buffered whole. A response that would
   have finished with `ToolUse` then finishes with `Error`; any other reason (`MaxTokens`, for
   example) is kept. `chat()` applies the same rule.
 - `ToolInputEnd` is emitted as soon as each call's arguments are complete. The tool calls are the
