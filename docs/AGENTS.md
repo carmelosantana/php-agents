@@ -338,7 +338,7 @@ echo $metrics->summary();
 | `agent.tool_input_end` | `ToolInputEnd` | A call's arguments are complete and decoded: `index`, `id`, `name`, `arguments`, `metadata`. It runs only if the response ends in `ToolUse` |
 | `agent.done_delta` | `DonePreview` | Provisional decoded text of the `done` call's `response` argument: `callId`, `delta` |
 | `agent.tool_input_discarded` | `ToolInputDiscarded` | A call that got `agent.tool_input_start` will not run: `index`, `id`, `name`, `reason` |
-| `agent.step_finish` | `StepFinish` | A provider response completed: `iteration`, `reason` (`ProviderFinishReason`), `rawReason`, `usage` (`?Usage`), `model` |
+| `agent.step_finish` | `StepFinish` | A provider response completed: `iteration`, `reason` (`ProviderFinishReason`), `rawReason`, `usage` (`?Usage`), `model` (`rawReason` and `model` redacted and bounded, see [Error text is redacted and bounded](#error-text-is-redacted-and-bounded)) |
 | `agent.empty_response` | `array{attempt: int, maxRetries: int, hasReasoning: bool}` | The response had no text and no tool calls |
 | `agent.tool_call` | `ToolCall` | Before a tool is executed |
 | `agent.batch_start` | `array{count: int, tools: list<string>}` | A batch tool executor is about to run the approved calls |
@@ -349,7 +349,7 @@ echo $metrics->summary();
 | `agent.warning` | `string` | Non-fatal notice, such as a tool-call limit reached |
 | `agent.error` | `string` | Unrecoverable error in agent loop |
 | `agent.done` | `array` | The run produced its answer: the `done` call's arguments, or `['response' => $text]` |
-| `agent.finish` | `RunFinish` | Exactly once, last, on every exit path: `reason` (`AgentFinishReason`), `usage` (summed), `iterations`, `model` |
+| `agent.finish` | `RunFinish` | Exactly once, last, on every exit path: `reason` (`AgentFinishReason`), `usage` (summed), `iterations`, `model` (redacted and bounded) |
 
 `ToolInputStart`, `ToolInputDelta` and `ToolInputEnd` are the provider's stream events
 (`CarmeloSantana\PHPAgents\Provider\Stream`); `DonePreview`, `ToolInputDiscarded`, `StepFinish`
@@ -441,6 +441,7 @@ Error text from providers and tools is untrusted: it can carry a credential or t
 
 - A provider failure: `Output::$content` is `Provider error: ` plus the exception message cut to 300 characters, and `agent.error` carries the same text without the prefix. For a 4xx, at most the first 64 KiB of the body are read, and only a string `error.message` or `message` from a JSON body is appended as `\n\nAPI response: …`, also cut to 300. A body without one, or one that is not JSON, is never echoed.
 - A tool failure: every error or timeout `ToolResult` (a thrown exception, a returned error, a policy denial, an unknown tool, a batch executor's error or timeout) is cut to 500 characters, and so is every string in its metadata, keys included (an object in the metadata is first turned into arrays through JSON), with its `errorCode` cut to 64 characters, in `Output::$toolResults`, the conversation, `agent.tool_result` and `agent.tool_error`. Successful tool content and metadata are the tool's own data and are not rewritten.
+- Finish telemetry: the provider's raw finish reason and model id in `agent.step_finish` (`StepFinish::$rawReason`, `$model`) and the model in `agent.finish` (`RunFinish::$model`) are cut to 128 characters. The normalised `reason` is not rewritten, and neither are `Output::$model` nor the `Finish` a direct `streamEvents()` caller reads: scrub those yourself before logging them.
 
 Redaction is a pattern match. An opaque credential that matches none of these shapes cannot be redacted, so keep secrets out of exception messages your own tools throw.
 

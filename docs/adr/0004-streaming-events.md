@@ -120,6 +120,10 @@ payloads and order. New events:
 | `agent.step_finish` | `StepFinish{int iteration, ProviderFinishReason reason, string rawReason, ?Usage usage, string model}` | after each provider response |
 | `agent.finish` | `RunFinish{AgentFinishReason reason, Usage usage, int iterations, string model}` | exactly once, on every exit path, just before `run()` returns |
 
+`StepFinish::$rawReason`, `StepFinish::$model` and `RunFinish::$model` are provider-controlled, so the
+agent passes them through `UntrustedText::forDisplay()` (redacted, control and bidi characters
+removed, at most 128 characters) before notifying. `Finish` on the provider stream stays verbatim.
+
 - `agent.tool_input_discarded` carries one of these reasons, and a UI uses it to retract a card or
   a preview:
   - `not_tool_use`: the response finished with a reason other than `ToolUse`, or with `Error` after

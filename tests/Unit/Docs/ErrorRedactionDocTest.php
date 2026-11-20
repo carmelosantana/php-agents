@@ -22,7 +22,9 @@ test('the agents guide documents error redaction and its bounds', function () {
         ->and($doc)->toContain('or to the end of the text when it is never closed')
         ->and($doc)->toContain('the Bearer and Basic scheme words match in any case')
         ->and($doc)->toContain('Successful tool content and metadata are the tool\'s own data and are not rewritten.')
-        ->and($doc)->toContain('An opaque credential that matches none of these shapes cannot be redacted');
+        ->and($doc)->toContain('An opaque credential that matches none of these shapes cannot be redacted')
+        ->and($doc)->toContain('Finish telemetry: the provider\'s raw finish reason and model id')
+        ->and($doc)->toContain('are cut to 128 characters');
 });
 
 test('the tools guide says MCP results and metadata are redacted', function () {

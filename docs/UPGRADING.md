@@ -72,6 +72,10 @@ public function streamEvents(array $messages, array $tools = [], array $options 
 - `RunLimits::$maxResponseBytes` also counts tool call ids and names, each call's final argument
   JSON beyond its streamed deltas, call metadata, and the finish's raw reason and model, so a
   run with a tight byte cap reaches it slightly sooner.
+- `agent.step_finish` and `agent.finish` pass the provider's raw finish reason and model id through
+  `UntrustedText::forDisplay()`: credential shapes become `[redacted]`, control and bidi characters
+  become spaces, and the text is cut to 128 characters. `Finish` from `streamEvents()` and
+  `Output::$model` stay verbatim.
 - `SseStreamParser` applies its 1 MiB line cap (`maxLineBytes`) to every line, not only to one
   still waiting for its newline: a provider stream with a longer complete line now throws a
   `ProviderException` (`SSE line exceeded … bytes`) instead of decoding it.
