@@ -19,6 +19,7 @@ use CarmeloSantana\PHPAgents\Provider\Stream\ToolArguments;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
+use CarmeloSantana\PHPAgents\Tool\ToolCall;
 
 /**
  * Generic provider that drives a CLI binary as an LLM backend.
@@ -28,6 +29,11 @@ use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
  * in an injected CliRuntimeInterface. This keeps the provider reusable across
  * every CLI vendor (claude, codex, grok, ...) and keeps php-agents free of any
  * concrete subprocess dependency — the host supplies the runtime.
+ *
+ * It sends no HTTP request, so of $requestLimits only the tool-argument caps
+ * (maxToolArgumentBytes, maxToolArgumentDepth) apply: a tool call over either, or whose
+ * arguments are not a JSON object, is dropped, in chat() and streamEvents() alike, and a
+ * response that would have finished ToolUse finishes Error.
  */
 final class CliProvider implements ProviderInterface
 {
@@ -35,9 +41,44 @@ final class CliProvider implements ProviderInterface
         private string $model,
         private readonly CliVendorAdapterInterface $adapter,
         private readonly CliRuntimeInterface $runtime,
+        private readonly RequestLimits $requestLimits = new RequestLimits(),
     ) {}
 
     public function chat(array $messages, array $tools = [], array $options = []): Response
+    {
+        $response = $this->adapterChat($messages, $tools, $options);
+
+        $kept = [];
+        foreach ($response->toolCalls as $call) {
+            $arguments = ToolArguments::fromDecoded($call->arguments, $this->requestLimits);
+            if ($arguments !== null) {
+                $kept[] = new ToolCall($call->id, $call->name, $arguments, $call->metadata);
+            }
+        }
+
+        if (count($kept) === count($response->toolCalls)) {
+            return $response;
+        }
+
+        return new Response(
+            content: $response->content,
+            finishReason: $response->finishReason === ProviderFinishReason::ToolUse ? ProviderFinishReason::Error : $response->finishReason,
+            toolCalls: $kept,
+            model: $response->model,
+            usage: $response->usage,
+            reasoning: $response->reasoning,
+            contentBlocks: $response->contentBlocks,
+        );
+    }
+
+    /**
+     * The adapter's parse of one non-streaming run, before the tool-argument caps.
+     *
+     * @param MessageInterface[] $messages
+     * @param ToolInterface[] $tools
+     * @param array<string, mixed> $options
+     */
+    private function adapterChat(array $messages, array $tools, array $options): Response
     {
         $request = $this->adapter->buildRequest($messages, $tools, $options, $this->model, false);
         $result = $this->runtime->run($request);
@@ -53,7 +94,8 @@ final class CliProvider implements ProviderInterface
     /**
      * Each adapter response, in order: reasoning → ReasoningDelta, content → TextDelta, each
      * tool call → ToolInputStart, one ToolInputDelta with the whole JSON arguments,
-     * ToolInputEnd. Finish comes last with the last reason other than Stop (ToolUse when tool
+     * ToolInputEnd (none for a call whose arguments the caps drop; a ToolUse finish then
+     * becomes Error). Finish comes last with the last reason other than Stop (ToolUse when tool
      * calls arrived without one, Error when the runtime reported a process error), the last
      * usage, model and content blocks reported. The adapter exposes only mapped reasons, so
      * rawReason is ''. The process stream is pulled one chunk at a time, so an abandoned
@@ -70,6 +112,7 @@ final class CliProvider implements ProviderInterface
         $model = $this->model;
         $contentBlocks = [];
         $callCount = 0;
+        $badArguments = false;
 
         foreach ($responses as $response) {
             if ($response->reasoning !== '') {
@@ -84,7 +127,12 @@ final class CliProvider implements ProviderInterface
                 $index = $callCount++;
                 yield new ToolInputStart($index, $call->id, $call->name);
                 yield new ToolInputDelta($index, $call->id, ToolArguments::toJson($call->arguments));
-                yield new ToolInputEnd($index, $call->id, $call->name, $call->arguments, $call->metadata);
+                $arguments = ToolArguments::fromDecoded($call->arguments, $this->requestLimits);
+                if ($arguments === null) {
+                    $badArguments = true;
+                    continue;
+                }
+                yield new ToolInputEnd($index, $call->id, $call->name, $arguments, $call->metadata);
             }
 
             if ($response->finishReason !== ProviderFinishReason::Stop) {
@@ -100,6 +148,11 @@ final class CliProvider implements ProviderInterface
             $reason = ProviderFinishReason::Error;
         } elseif ($reason === ProviderFinishReason::Stop && $callCount > 0) {
             $reason = ProviderFinishReason::ToolUse;
+        }
+
+        // A call whose arguments were dropped cannot run: a ToolUse end becomes Error.
+        if ($badArguments && $reason === ProviderFinishReason::ToolUse) {
+            $reason = ProviderFinishReason::Error;
         }
 
         yield new Finish($reason, '', $usage, $model, $contentBlocks);
@@ -162,7 +215,7 @@ final class CliProvider implements ProviderInterface
     private function adapterResponses(array $messages, array $tools, array $options): \Generator
     {
         if (!$this->adapter->isStreamingSupported()) {
-            yield $this->chat($messages, $tools, $options);
+            yield $this->adapterChat($messages, $tools, $options);
 
             return false;
         }

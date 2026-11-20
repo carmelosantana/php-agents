@@ -771,7 +771,7 @@ The limits hold for an injected client that honours symfony/http-client's `max_r
 
 Two requests are outside `RequestLimits`:
 
-- `CliProvider` runs a local command and sends no HTTP request.
+- `CliProvider` runs a local command and sends no HTTP request; of its `requestLimits:` constructor argument only the tool-argument caps apply.
 - `LlamaCppProvider` runs the model in-process. `LlamaCppMultimodalNormalizer` refuses a remote `image_url` unless the host configures an `ImageResolverInterface` (such as `RemoteImageResolver`, which applies its own limits) or the legacy `$remoteImageFetcher`; see [Image Inputs](#image-inputs).
 
 `gethostbynamel()` and `dns_get_record()`, which the Gemini image check and `RemoteImageResolver` call, block and are not covered by any of these limits.
@@ -798,7 +798,7 @@ $provider = $provider->withRequestLimits(new RequestLimits(maxDuration: 45.0));
 $provider->requestLimits()->maxDuration; // 45.0
 ```
 
-A tool call whose arguments are over `maxToolArgumentBytes` or `maxToolArgumentDepth` is dropped, in `streamEvents()`, `stream()` and `chat()`, exactly like a call whose arguments are not a JSON object: a response that would have finished `ToolUse` finishes `Error`, and the agent discards the call with reason `invalid_arguments`. Streamed arguments are decoded once, after the cap check. The bundled HTTP providers apply both caps; `CliProvider` and `LlamaCppProvider` parse tool calls their own way and do not.
+A tool call whose arguments are over `maxToolArgumentBytes` or `maxToolArgumentDepth` is dropped, in `streamEvents()`, `stream()` and `chat()`, exactly like a call whose arguments are not a JSON object: a response that would have finished `ToolUse` finishes `Error`, and the agent discards the call with reason `invalid_arguments`. Streamed arguments are decoded once, after the cap check. The bundled HTTP providers apply both caps, and so does `CliProvider`, from the `RequestLimits` passed as its optional fourth constructor argument (`requestLimits:`). `LlamaCppProvider` parses tool calls its own way and does not.
 
 A response over the byte cap is aborted with a `ProviderException` whose message contains `exceeded`. symfony/http-client wraps it in its own `TransportExceptionInterface`, so look for the `ProviderException` as the previous exception. `SseStreamParser` also caps every stream line, complete or still waiting for its newline, at 1_048_576 bytes not counting its LF or CRLF (a bare CR does not end a line), and refuses a longer one before decoding it.
 

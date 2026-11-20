@@ -15,6 +15,7 @@ use CarmeloSantana\PHPAgents\Provider\Cli\CliProcessChunk;
 use CarmeloSantana\PHPAgents\Provider\Cli\CliProcessRequest;
 use CarmeloSantana\PHPAgents\Provider\Cli\CliProcessResult;
 use CarmeloSantana\PHPAgents\Provider\CliProvider;
+use CarmeloSantana\PHPAgents\Provider\RequestLimits;
 use CarmeloSantana\PHPAgents\Provider\Response;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
@@ -386,4 +387,91 @@ test('abandoning streamEvents releases the runtime process stream', function () 
     expect($runtime->released)->toBeFalse();
     unset($events);
     expect($runtime->released)->toBeTrue();
+});
+
+/**
+ * A non-streaming adapter whose one response carries $calls and finishes with $reason.
+ *
+ * @param list<ToolCall> $calls
+ */
+function cliToolCallAdapter(array $calls, ProviderFinishReason $reason = ProviderFinishReason::ToolUse): CliVendorAdapterInterface
+{
+    return new class ($calls, $reason) implements CliVendorAdapterInterface {
+        /** @param list<ToolCall> $calls */
+        public function __construct(private array $calls, private ProviderFinishReason $reason) {}
+
+        public function binaryName(): string
+        {
+            return 'fake-cli';
+        }
+
+        public function buildRequest(array $messages, array $tools, array $options, string $model, bool $stream): CliProcessRequest
+        {
+            return new CliProcessRequest(binary: 'fake-cli', arguments: [], stdin: '', model: $model);
+        }
+
+        public function parseResult(CliProcessResult $result, string $model): Response
+        {
+            return new Response(content: '', finishReason: $this->reason, toolCalls: $this->calls, model: 'fake-model-1');
+        }
+
+        public function parseChunk(CliProcessChunk $chunk, string $model, array &$carry): ?Response
+        {
+            return null;
+        }
+
+        public function isStreamingSupported(): bool
+        {
+            return false;
+        }
+
+        /** @return ModelDefinition[] */
+        public function discoverModels(CliRuntimeInterface $runtime): array
+        {
+            return [];
+        }
+    };
+}
+
+test('streamEvents drops a call over the tool-argument caps and finishes a tool stop with Error', function (array $badArguments, RequestLimits $limits) {
+    $adapter = cliToolCallAdapter([new ToolCall('c1', 'lookup', $badArguments), new ToolCall('c2', 'now', [])]);
+    $provider = new CliProvider('fake', $adapter, new FakeCliRuntime(), $limits);
+
+    $events = iterator_to_array($provider->streamEvents([new UserMessage('Hi')]), false);
+    $ends = array_values(array_filter($events, fn($e) => $e instanceof ToolInputEnd));
+
+    expect($ends)->toEqual([new ToolInputEnd(1, 'c2', 'now', [])])
+        ->and(array_map(fn($e) => $e::class, array_slice($events, 0, 2)))->toBe([ToolInputStart::class, ToolInputDelta::class])
+        ->and(end($events))->toEqual(new Finish(ProviderFinishReason::Error, '', null, 'fake-model-1'));
+})->with(fn() => [
+    'bytes' => [['q' => str_repeat('x', 40)], new RequestLimits(maxToolArgumentBytes: 32)],
+    'depth' => [['q' => ['r' => [1]]], new RequestLimits(maxToolArgumentDepth: 2)],
+    'default depth' => [json_decode(str_repeat('{"a":', 65) . '1' . str_repeat('}', 65), true), new RequestLimits()],
+]);
+
+test('streamEvents keeps a max-tokens stop when it drops a call', function () {
+    $adapter = cliToolCallAdapter([new ToolCall('c1', 'lookup', ['q' => str_repeat('x', 40)])], ProviderFinishReason::MaxTokens);
+    $provider = new CliProvider('fake', $adapter, new FakeCliRuntime(), new RequestLimits(maxToolArgumentBytes: 32));
+
+    $events = iterator_to_array($provider->streamEvents([new UserMessage('Hi')]), false);
+
+    expect(array_filter($events, fn($e) => $e instanceof ToolInputEnd))->toBe([])
+        ->and(end($events)->reason)->toBe(ProviderFinishReason::MaxTokens);
+});
+
+test('chat drops a call over the tool-argument caps and ends a tool stop as Error', function () {
+    $adapter = cliToolCallAdapter([new ToolCall('c1', 'lookup', ['q' => str_repeat('x', 40)]), new ToolCall('c2', 'now', [])]);
+    $provider = new CliProvider('fake', $adapter, new FakeCliRuntime(), new RequestLimits(maxToolArgumentBytes: 32));
+
+    $response = $provider->chat([new UserMessage('Hi')]);
+
+    expect($response->finishReason)->toBe(ProviderFinishReason::Error)
+        ->and($response->toolCalls)->toEqual([new ToolCall('c2', 'now', [])]);
+});
+
+test('withModel keeps the request limits', function () {
+    $adapter = cliToolCallAdapter([new ToolCall('c1', 'lookup', ['q' => str_repeat('x', 40)])]);
+    $provider = (new CliProvider('fake', $adapter, new FakeCliRuntime(), new RequestLimits(maxToolArgumentBytes: 32)))->withModel('other');
+
+    expect($provider->chat([new UserMessage('Hi')])->toolCalls)->toBe([]);
 });
