@@ -751,6 +751,12 @@ abstract class AbstractAgent implements AgentInterface
                 'hasReasoning' => $response->reasoning !== '',
             ]);
 
+            // A cancel on agent.step_finish or agent.empty_response ends the run before the
+            // empty-response policy can retry, fall back or give up.
+            if ($this->cancellationToken?->isCancelled()) {
+                return $this->cancelledOutput('', $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
+            }
+
             if (
                 $this->emptyResponseHandling === EmptyResponseHandling::Fallback
                 && $response->reasoning !== ''
@@ -1151,11 +1157,6 @@ abstract class AbstractAgent implements AgentInterface
         Usage $totalUsage,
         int $iterations,
     ): Output {
-        // A cancel that landed after the response finished (on agent.empty_response, say).
-        if ($this->cancellationToken?->isCancelled()) {
-            return $this->cancelledOutput('', $conversation, $allToolResults, $totalUsage, $iterations, $response->model);
-        }
-
         $answer = trim($response->reasoning);
 
         $this->notify('agent.warning', 'Model returned reasoning only; using reasoning as the answer');

@@ -663,3 +663,24 @@ test('a cancel-driven throw after the Finish arrived keeps that Finish\'s usage'
         ->and($output->usage?->completionTokens)->toBe(3)
         ->and($output->usage?->totalTokens)->toBe(15);
 });
+
+test('a cancel after an empty response ends Cancelled whatever the empty-response policy would return', function (string $on, array $arguments) {
+    [$agent, $events] = cancellationAgent(
+        [[new Finish(ProviderFinishReason::Stop, 'stop', null, 'test-model')]],
+        fn(string $event): bool => $event === $on,
+        $arguments,
+    );
+
+    $output = $agent->run(new UserMessage('Hello.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->content)->toBe('Task was cancelled.')
+        ->and(array_slice($events->names(), -2))->toBe(['agent.error', 'agent.finish'])
+        ->and($events->dataFor('agent.error'))->toBe(['Task cancelled']);
+})->with([
+    'step_finish, no retries left' => ['agent.step_finish', ['maxEmptyResponseRetries' => 0]],
+    'empty_response, no retries left' => ['agent.empty_response', ['maxEmptyResponseRetries' => 0]],
+    'step_finish, ignored on the last iteration' => ['agent.step_finish', ['emptyResponseHandling' => EmptyResponseHandling::Ignore, 'maxIter' => 1]],
+    'empty_response, ignored on the last iteration' => ['agent.empty_response', ['emptyResponseHandling' => EmptyResponseHandling::Ignore, 'maxIter' => 1]],
+]);
+
