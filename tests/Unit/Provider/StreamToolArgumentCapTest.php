@@ -103,6 +103,27 @@ test('Anthropic stops yielding a tool_use block\'s argument deltas past the byte
         ->toBe([['c1:{"text":"', 'c2:{}'], ['c2'], ProviderFinishReason::Error]);
 });
 
+test('Anthropic leaves an over-cap tool_use out of an end_turn finish\'s content blocks', function () {
+    $body = argCapSse([
+        ['type' => 'message_start', 'message' => ['model' => 'claude-test', 'usage' => ['input_tokens' => 1, 'output_tokens' => 1]]],
+        ['type' => 'content_block_start', 'index' => 0, 'content_block' => ['type' => 'text', 'text' => '']],
+        ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'text_delta', 'text' => 'Hi']],
+        ['type' => 'content_block_stop', 'index' => 0],
+        ['type' => 'content_block_start', 'index' => 1, 'content_block' => ['type' => 'tool_use', 'id' => 'c1', 'name' => 'echo', 'input' => []]],
+        ...array_map(fn(string $f) => ['type' => 'content_block_delta', 'index' => 1, 'delta' => ['type' => 'input_json_delta', 'partial_json' => $f]], ARG_CAP_FRAGMENTS),
+        ['type' => 'content_block_stop', 'index' => 1],
+        ['type' => 'message_delta', 'delta' => ['stop_reason' => 'end_turn'], 'usage' => ['output_tokens' => 3]],
+        ['type' => 'message_stop'],
+    ], true);
+
+    $events = argCapEvents(AnthropicProvider::class, $body);
+    $finish = end($events);
+
+    expect($finish)->toBeInstanceOf(Finish::class)
+        ->and($finish->reason)->toBe(ProviderFinishReason::Stop)
+        ->and($finish->contentBlocks)->toBe([]);
+});
+
 test('Responses stops yielding a call\'s argument deltas past the byte cap and drops it, done item included', function () {
     $item = fn(string $type, int $at, string $id, string $name, string $arguments) => ['type' => $type, 'output_index' => $at, 'item' => ['type' => 'function_call', 'call_id' => $id, 'name' => $name, 'arguments' => $arguments]];
     $body = argCapSse([

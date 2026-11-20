@@ -289,7 +289,7 @@ final class AnthropicProvider extends AbstractProvider
                     usage: $this->parseUsage($usage),
                     model: $model,
                     contentBlocks: $reason === ProviderFinishReason::Stop || $reason === ProviderFinishReason::ToolUse
-                        ? $this->rebuildContentBlocks($blocks)
+                        ? $this->rebuildContentBlocks($blocks, $overCap)
                         : [],
                 );
 
@@ -315,7 +315,7 @@ final class AnthropicProvider extends AbstractProvider
     private function endToolInput(int $position, array $block, bool $overCap = false): ?ToolInputEnd
     {
         if ($overCap) {
-            $this->logger?->debug('Anthropic tool {tool} arguments passed the {max}-byte cap; the call is dropped', [
+            $this->logger?->debug('Anthropic tool {tool} arguments passed the {max}-byte cap; the call will not run', [
                 'tool' => $block['name'],
                 'max' => $this->requestLimits->maxToolArgumentBytes,
             ]);
@@ -325,7 +325,7 @@ final class AnthropicProvider extends AbstractProvider
 
         $arguments = ToolArguments::decode($block['json'], $this->requestLimits);
         if ($arguments === null) {
-            $this->logger?->debug('Anthropic tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [
+            $this->logger?->debug('Anthropic tool {tool} arguments ({length} bytes) are not a JSON object; the call will not run', [
                 'tool' => $block['name'],
                 'length' => strlen($block['json']),
             ]);
@@ -395,18 +395,24 @@ final class AnthropicProvider extends AbstractProvider
     /**
      * Rebuild the streamed blocks in index order, in the shape the Messages API
      * returns them. Any block type other than thinking, redacted_thinking, text
-     * and tool_use, or tool JSON that is not an object, gives [] so that replay
-     * falls back to re-formatting the message without thinking.
+     * and tool_use, tool JSON that is not an object, or a tool_use block whose
+     * arguments passed the byte cap ($overCap), gives [] so that replay falls back
+     * to re-formatting the message without thinking.
      *
      * @param array<int, array{type: string, id: string, name: string, json: string, text: string, thinking: string, signature: string, data: string}> $blocks
+     * @param array<int, true> $overCap
      * @return list<array<string, mixed>>
      */
-    private function rebuildContentBlocks(array $blocks): array
+    private function rebuildContentBlocks(array $blocks, array $overCap = []): array
     {
         ksort($blocks);
         $rebuilt = [];
 
-        foreach ($blocks as $block) {
+        foreach ($blocks as $index => $block) {
+            if (isset($overCap[$index])) {
+                return [];
+            }
+
             // A text block that got no deltas would be sent back as an empty
             // text block, which the Messages API rejects.
             if ($block['type'] === 'text' && $block['text'] === '') {
@@ -1168,7 +1174,7 @@ final class AnthropicProvider extends AbstractProvider
             } elseif ($block['type'] === 'tool_use') {
                 $arguments = ToolArguments::fromDecoded($block['input'] ?? null, $this->requestLimits);
                 if ($arguments === null) {
-                    $this->logger?->debug('Anthropic tool {tool} arguments are not a JSON object; the call is dropped', ['tool' => $block['name'] ?? '']);
+                    $this->logger?->debug('Anthropic tool {tool} arguments are not a JSON object; the call will not run', ['tool' => $block['name'] ?? '']);
                     $droppedCalls = true;
 
                     continue;
