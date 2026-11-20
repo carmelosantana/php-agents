@@ -188,7 +188,7 @@ final class GeminiProvider extends AbstractProvider
                         yield new ToolInputStart($index, $id, $name);
                         yield new ToolInputDelta($index, $id, $argumentsJson);
 
-                        $arguments = ToolArguments::decode($argumentsJson);
+                        $arguments = ToolArguments::decode($argumentsJson, $this->requestLimits);
                         if ($arguments === null) {
                             $this->logger?->debug('Tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [
                                 'tool' => $name,
@@ -812,7 +812,7 @@ final class GeminiProvider extends AbstractProvider
                     $metadata['thoughtSignature'] = $part['thoughtSignature'];
                 }
                 $id = sprintf('g%08x', $callIndex++);
-                $arguments = ToolArguments::fromDecoded($part['functionCall']['args'] ?? null);
+                $arguments = ToolArguments::fromDecoded($part['functionCall']['args'] ?? null, $this->requestLimits);
                 if ($arguments === null) {
                     $this->logger?->debug('Gemini tool {tool} arguments are not a JSON object; the call is dropped', ['tool' => $name]);
                     $droppedCalls = true;

@@ -20,7 +20,7 @@ test('the defaults table matches the RequestLimits constructor defaults', functi
     $parameters = (new ReflectionMethod(RequestLimits::class, '__construct'))->getParameters();
 
     expect(array_map(fn(ReflectionParameter $p) => $p->getName(), $parameters))
-        ->toBe(['idleTimeout', 'maxDuration', 'maxResponseBytes', 'maxRedirects', 'tickInterval']);
+        ->toBe(['idleTimeout', 'maxDuration', 'maxResponseBytes', 'maxRedirects', 'tickInterval', 'maxToolArgumentBytes', 'maxToolArgumentDepth']);
 
     foreach ($parameters as $parameter) {
         $default = $parameter->getDefaultValue();

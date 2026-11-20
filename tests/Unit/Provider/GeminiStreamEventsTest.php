@@ -169,6 +169,15 @@ test('streamEvents drops a call whose args are not a JSON object and finishes wi
         ->and($events[2])->toEqual(new Finish(ProviderFinishReason::Error, 'STOP', null, 'gemini-2.5-flash'));
 });
 
+test('streamEvents drops a call whose args nest past the depth cap and finishes with Error', function () {
+    $events = geminiStreamEvents([
+        geminiChunk([['functionCall' => ['name' => 'x', 'args' => json_decode(str_repeat('{"a":', 65) . '1' . str_repeat('}', 65), true)]]], 'STOP'),
+    ]);
+
+    expect(geminiEventClasses($events))->toBe([ToolInputStart::class, ToolInputDelta::class, Finish::class])
+        ->and($events[2])->toEqual(new Finish(ProviderFinishReason::Error, 'STOP', null, 'gemini-2.5-flash'));
+});
+
 test('streamEvents maps a blocked prompt to ContentFilter with the block reason as raw reason', function () {
     $events = geminiStreamEvents([
         ['promptFeedback' => ['blockReason' => 'SAFETY'], 'usageMetadata' => ['promptTokenCount' => 3, 'totalTokenCount' => 3]],

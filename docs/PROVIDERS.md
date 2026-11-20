@@ -781,6 +781,8 @@ Two requests are outside `RequestLimits`:
 | `maxResponseBytes` | `33_554_432` | Bytes of response body (32 MiB); `0` means no cap |
 | `maxRedirects` | `0` | Redirects followed; any caller `max_redirects` is replaced |
 | `tickInterval` | `0.25` | Seconds between polls of a silent stream, each yielding a `Tick` event; `0.0` turns ticks off. Not sent to the client |
+| `maxToolArgumentBytes` | `4_194_304` | Bytes of one tool call's argument JSON (4 MiB); `0` means no cap. Not sent to the client |
+| `maxToolArgumentDepth` | `64` | Nesting depth of one tool call's arguments (`{"a":1}` is 1); `0` means `json_decode()`'s default. Not sent to the client |
 
 Embedding providers (`OpenAIEmbeddingProvider`, `OllamaEmbeddingProvider`) use the same defaults with `idleTimeout` `60.0`. Some requests keep a shorter idle timeout of their own: `isAvailable()` waits 5 s, and `models()` on Anthropic and Gemini and Ollama's `/api/show` model lookup wait 10 s. Ollama `pull()` keeps the provider's idle timeout and refuses redirects, but has no total limit and no byte cap, because a model download can run far longer than 600 s.
 
@@ -793,6 +795,8 @@ $provider = $provider->withRequestLimits(new RequestLimits(maxDuration: 45.0));
 
 $provider->requestLimits()->maxDuration; // 45.0
 ```
+
+A tool call whose arguments are over `maxToolArgumentBytes` or `maxToolArgumentDepth` is dropped, in `streamEvents()`, `stream()` and `chat()`, exactly like a call whose arguments are not a JSON object: a response that would have finished `ToolUse` finishes `Error`, and the agent discards the call with reason `invalid_arguments`. Streamed arguments are decoded once, after the cap check. The bundled HTTP providers apply both caps; `CliProvider` and `LlamaCppProvider` parse tool calls their own way and do not.
 
 A response over the byte cap is aborted with a `ProviderException` whose message contains `exceeded`. symfony/http-client wraps it in its own `TransportExceptionInterface`, so look for the `ProviderException` as the previous exception. `SseStreamParser` also caps every stream line, complete or still waiting for its newline, at 1_048_576 bytes, and refuses a longer one before decoding it.
 

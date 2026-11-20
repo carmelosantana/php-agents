@@ -300,7 +300,7 @@ final class AnthropicProvider extends AbstractProvider
      */
     private function endToolInput(int $position, array $block): ?ToolInputEnd
     {
-        $arguments = ToolArguments::decode($block['json']);
+        $arguments = ToolArguments::decode($block['json'], $this->requestLimits);
         if ($arguments === null) {
             $this->logger?->debug('Anthropic tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [
                 'tool' => $block['name'],
@@ -1136,7 +1136,7 @@ final class AnthropicProvider extends AbstractProvider
             } elseif ($block['type'] === 'thinking') {
                 $reasoning .= $block['thinking'] ?? '';
             } elseif ($block['type'] === 'tool_use') {
-                $arguments = ToolArguments::fromDecoded($block['input'] ?? null);
+                $arguments = ToolArguments::fromDecoded($block['input'] ?? null, $this->requestLimits);
                 if ($arguments === null) {
                     $this->logger?->debug('Anthropic tool {tool} arguments are not a JSON object; the call is dropped', ['tool' => $block['name'] ?? '']);
                     $droppedCalls = true;

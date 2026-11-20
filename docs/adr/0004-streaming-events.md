@@ -55,7 +55,8 @@ Alternatives considered, one line each:
   `ToolInputEnd`, so every call has at least one delta.
 - Empty or whitespace-only arguments, and an empty object, decode as `{}`. Any other arguments
   that do not decode to a JSON object get no `ToolInputEnd` and the call is dropped, on every
-  provider. A response that would have finished with `ToolUse` then finishes with `Error`; any
+  provider; on the HTTP providers so do arguments over `RequestLimits::$maxToolArgumentBytes` or
+  `$maxToolArgumentDepth`, which are checked before the single decode. A response that would have finished with `ToolUse` then finishes with `Error`; any
   other reason (`MaxTokens`, for example) is kept. `chat()` applies the same rule.
 - `ToolInputEnd` is emitted as soon as each call's arguments are complete. The tool calls are the
   `ToolInputEnd` events; the agent runs them only when `Finish->reason` is `ToolUse`.

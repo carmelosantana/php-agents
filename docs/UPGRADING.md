@@ -76,5 +76,9 @@ public function streamEvents(array $messages, array $tools = [], array $options 
 - `RequestLimits::$tickInterval` (default `0.25`): the cancellation token and run limits are
   checked while a model is silent, on the providers listed under
   [Cancellation and idle ticks](PROVIDERS.md#cancellation-and-idle-ticks).
+- `RequestLimits::$maxToolArgumentBytes` (default 4 MiB) and `$maxToolArgumentDepth` (default `64`)
+  cap one tool call's arguments on the bundled HTTP providers; a call over either is dropped like one
+  whose arguments are not a JSON object (see [Request Limits](PROVIDERS.md#request-limits)). Raise
+  them with `withRequestLimits()` for a tool that really takes more.
 - `Agent` takes `runLimits`, `cancellationToken` and `providerOptions` (see
   [The ready-made `Agent`](AGENTS.md#the-ready-made-agent)).

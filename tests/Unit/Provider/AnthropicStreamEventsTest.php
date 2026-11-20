@@ -200,6 +200,7 @@ test('streamEvents gives invalid tool arguments no ToolInputEnd and finishes wit
     'truncated object' => ['{"q": "ph'],
     'JSON array' => ['[1, 2]'],
     'JSON scalar' => ['"text"'],
+    'nested past the depth cap' => [str_repeat('{"a":', 65) . '1' . str_repeat('}', 65)],
 ]);
 
 test('streamEvents combines message_start input and cache usage with message_delta output', function () {

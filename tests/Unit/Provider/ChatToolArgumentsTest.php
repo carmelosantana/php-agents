@@ -9,6 +9,7 @@ use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
 use CarmeloSantana\PHPAgents\Provider\OpenAICompatibleProvider;
 use CarmeloSantana\PHPAgents\Provider\OpenAIResponsesProvider;
+use CarmeloSantana\PHPAgents\Provider\RequestLimits;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
@@ -102,3 +103,19 @@ test('chat() reads empty arguments as an empty object and keeps a tool stop', fu
     expect($response->finishReason)->toBe(ProviderFinishReason::ToolUse)
         ->and(array_map(fn(ToolCall $c): array => $c->arguments, $response->toolCalls))->toBe([[], []]);
 })->with($providers);
+
+test('chat() drops a call over the tool-argument caps of the provider\'s request limits', function (string $class, mixed $bad, string $keptId, RequestLimits $limits) {
+    $provider = chatProvider($class, chatBody($class, $bad));
+    assert($provider instanceof \CarmeloSantana\PHPAgents\Provider\AbstractProvider);
+    $response = $provider->withRequestLimits($limits)->chat([new UserMessage('Hi')]);
+
+    expect($response->finishReason)->toBe(ProviderFinishReason::Error)
+        ->and($response->toolCalls)->toEqual([new ToolCall($keptId, 'now', [])]);
+})->with([
+    'OpenAI-compatible, bytes' => [OpenAICompatibleProvider::class, '{"q":"' . str_repeat('x', 40) . '"}', 'c2', new RequestLimits(maxToolArgumentBytes: 32)],
+    'Responses, bytes' => [OpenAIResponsesProvider::class, '{"q":"' . str_repeat('x', 40) . '"}', 'c2', new RequestLimits(maxToolArgumentBytes: 32)],
+    'Anthropic, bytes' => [AnthropicProvider::class, ['q' => str_repeat('x', 40)], 'c2', new RequestLimits(maxToolArgumentBytes: 32)],
+    'Gemini, bytes' => [GeminiProvider::class, ['q' => str_repeat('x', 40)], 'g00000001', new RequestLimits(maxToolArgumentBytes: 32)],
+    'OpenAI-compatible, depth' => [OpenAICompatibleProvider::class, '{"q":{"r":{}}}', 'c2', new RequestLimits(maxToolArgumentDepth: 2)],
+    'Anthropic, depth' => [AnthropicProvider::class, ['q' => ['r' => [1]]], 'c2', new RequestLimits(maxToolArgumentDepth: 2)],
+]);

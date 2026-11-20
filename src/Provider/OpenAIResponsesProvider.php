@@ -278,7 +278,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
      */
     private function endToolInput(int $position, array $call): ?ToolInputEnd
     {
-        $arguments = ToolArguments::decode($call['arguments']);
+        $arguments = ToolArguments::decode($call['arguments'], $this->requestLimits);
         if ($arguments === null) {
             $this->logger?->debug('Tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [
                 'tool' => $call['name'],
@@ -487,7 +487,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
                     $reasoning .= $block['text'] ?? '';
                 }
             } elseif ($type === 'function_call') {
-                $arguments = ToolArguments::fromDecoded($item['arguments'] ?? null);
+                $arguments = ToolArguments::fromDecoded($item['arguments'] ?? null, $this->requestLimits);
                 if ($arguments === null) {
                     $this->logger?->debug('Tool {tool} arguments are not a JSON object; the call is dropped', ['tool' => $item['name'] ?? '']);
                     $droppedCalls = true;

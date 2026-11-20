@@ -19,6 +19,10 @@ use CarmeloSantana\PHPAgents\Exception\ProviderException;
  *   a 3xx names.
  * - $tickInterval is how often, in seconds, a streaming request polls while no data arrives,
  *   yielding a Tick each time; 0.0 turns ticks off. apply() leaves it out.
+ * - $maxToolArgumentBytes caps the argument JSON of one tool call; 0 means no cap.
+ * - $maxToolArgumentDepth caps how deeply one tool call's arguments nest objects and arrays
+ *   (`{"a":1}` is 1 deep); 0 means json_decode()'s default. A call over either cap is dropped
+ *   like one whose arguments are not a JSON object (see ToolArguments). apply() leaves both out.
  *
  * Any negative value throws \InvalidArgumentException.
  *
@@ -31,14 +35,31 @@ final readonly class RequestLimits
 {
     public const int DEFAULT_MAX_RESPONSE_BYTES = 33_554_432;
 
+    /** 4 MiB: several times the JSON a model can write in one response at today's output-token limits. */
+    public const int DEFAULT_MAX_TOOL_ARGUMENT_BYTES = 4_194_304;
+
+    /** Far deeper than any tool schema nests, and well under json_decode()'s 512. */
+    public const int DEFAULT_MAX_TOOL_ARGUMENT_DEPTH = 64;
+
     public function __construct(
         public float $idleTimeout = 300.0,
         public float $maxDuration = 600.0,
         public int $maxResponseBytes = self::DEFAULT_MAX_RESPONSE_BYTES,
         public int $maxRedirects = 0,
         public float $tickInterval = 0.25,
+        public int $maxToolArgumentBytes = self::DEFAULT_MAX_TOOL_ARGUMENT_BYTES,
+        public int $maxToolArgumentDepth = self::DEFAULT_MAX_TOOL_ARGUMENT_DEPTH,
     ) {
-        foreach (['idleTimeout' => $idleTimeout, 'maxDuration' => $maxDuration, 'maxResponseBytes' => $maxResponseBytes, 'maxRedirects' => $maxRedirects, 'tickInterval' => $tickInterval] as $name => $value) {
+        $limits = [
+            'idleTimeout' => $idleTimeout,
+            'maxDuration' => $maxDuration,
+            'maxResponseBytes' => $maxResponseBytes,
+            'maxRedirects' => $maxRedirects,
+            'tickInterval' => $tickInterval,
+            'maxToolArgumentBytes' => $maxToolArgumentBytes,
+            'maxToolArgumentDepth' => $maxToolArgumentDepth,
+        ];
+        foreach ($limits as $name => $value) {
             if ($value < 0) {
                 throw new \InvalidArgumentException(sprintf('RequestLimits $%s must not be negative, got %s.', $name, $value));
             }

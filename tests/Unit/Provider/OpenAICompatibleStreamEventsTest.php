@@ -222,7 +222,7 @@ test('streamEvents drops a call whose arguments are not a JSON object and finish
         ->and($finish)->toBeInstanceOf(Finish::class)
         ->and($finish->reason)->toBe(ProviderFinishReason::Error)
         ->and($finish->rawReason)->toBe('tool_calls');
-})->with(['truncated' => ['{"a":'], 'array' => ['[1,2]'], 'scalar' => ['42']]);
+})->with(fn() => ['truncated' => ['{"a":'], 'array' => ['[1,2]'], 'scalar' => ['42'], 'nested past the depth cap' => [str_repeat('{"a":', 65) . '1' . str_repeat('}', 65)]]);
 
 test('streamEvents keeps the mapped reason when a truncated call ends on length', function () {
     $events = openAIStreamEvents([

@@ -239,7 +239,7 @@ class OpenAICompatibleProvider extends AbstractProvider
      */
     private function endToolInput(int $position, array $call): ?ToolInputEnd
     {
-        $arguments = ToolArguments::decode($call['arguments']);
+        $arguments = ToolArguments::decode($call['arguments'], $this->requestLimits);
         if ($arguments === null) {
             $this->logger?->debug('Tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [
                 'tool' => $call['name'],
@@ -434,7 +434,7 @@ class OpenAICompatibleProvider extends AbstractProvider
         $toolCalls = [];
         foreach ($message['tool_calls'] ?? [] as $tc) {
             $name = $tc['function']['name'] ?? '';
-            $arguments = ToolArguments::fromDecoded($tc['function']['arguments'] ?? null);
+            $arguments = ToolArguments::fromDecoded($tc['function']['arguments'] ?? null, $this->requestLimits);
             if ($arguments === null) {
                 $this->logger?->debug('Tool {tool} arguments are not a JSON object; the call is dropped', ['tool' => $name]);
                 if ($finishReason === ProviderFinishReason::ToolUse) {

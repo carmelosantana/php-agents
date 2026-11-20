@@ -166,7 +166,7 @@ final class MistralProvider extends OpenAICompatibleProvider
         // arguments are not a JSON object is dropped, and a tool stop then becomes Error.
         foreach ($message['tool_calls'] ?? [] as $tc) {
             $name = $tc['function']['name'] ?? '';
-            $arguments = ToolArguments::fromDecoded($tc['function']['arguments'] ?? null);
+            $arguments = ToolArguments::fromDecoded($tc['function']['arguments'] ?? null, $this->requestLimits);
             if ($arguments === null) {
                 $this->logger?->debug('Tool {tool} arguments are not a JSON object; the call is dropped', ['tool' => $name]);
                 if ($finishReason === ProviderFinishReason::ToolUse) {
