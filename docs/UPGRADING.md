@@ -72,6 +72,11 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   kept in the conversation with a `Tool call limit reached: at most N calls per turn.` error
   result; `agent.warning` still fires once with that text. A second `done` call in one response now
   counts toward the cap.
+- The agent rewrites `agent.tool_input_delta` and `agent.tool_input_end` payloads to the id and name
+  the call opened with when the provider's later event names another. An empty start id or name is
+  filled from the first delta carrying an id, or from the end, so a Responses-compatible server that
+  sends `call_id` and `name` only on the done item still runs the tool under that id. A call that
+  opens without a name joins the per-turn cap (and the `done` preview) when its end names it.
 - `RunLimits::$maxResponseBytes` also counts tool call ids and names, each call's final argument
   JSON beyond its streamed deltas, call metadata, and the finish's raw reason and model, so a
   run with a tight byte cap reaches it slightly sooner.

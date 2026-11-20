@@ -935,3 +935,135 @@ test('argument deltas and the done preview carry the id the call opened with', f
     expect(array_map(fn(ToolInputDelta $d): string => $d->id, $events->dataFor('agent.tool_input_delta')))->toBe(['d1', 'd1'])
         ->and(array_map(fn(DonePreview $p): string => $p->callId, $events->dataFor('agent.done_delta')))->each->toBe('d1');
 });
+
+test('an empty start id or name is filled from the end, and the filled id is used from then on', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, '', ''),
+        new ToolInputDelta(0, '', '{"text":"hi"}'),
+        new ToolInputEnd(0, 'c1', 'echo', ['text' => 'hi']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')]);
+
+    $output = $agent->run(new UserMessage('Echo hi.'));
+
+    expect($output->toolResults[0]->content)->toBe('echo: hi')
+        ->and($output->toolResults[0]->callId)->toBe('c1')
+        ->and($events->dataFor('agent.tool_input_end'))->toEqual([new ToolInputEnd(0, 'c1', 'echo', ['text' => 'hi'])]);
+});
+
+test('an empty start id is filled from the first delta that carries one', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, '', 'echo'),
+        new ToolInputDelta(0, 'c1', '{"text":'),
+        new ToolInputDelta(0, '', '"hi"}'),
+        new ToolInputEnd(0, 'c1', 'echo', ['text' => 'hi']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')]);
+
+    $agent->run(new UserMessage('Echo hi.'));
+
+    expect(array_map(fn(ToolInputDelta $d): string => $d->id, $events->dataFor('agent.tool_input_delta')))->toBe(['c1', 'c1']);
+});
+
+test('a non-empty start id and name still win over an end that differs', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, 'c1', 'echo'),
+        new ToolInputEnd(0, 'c9', 'halt', ['text' => 'hi']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')]);
+
+    $output = $agent->run(new UserMessage('Echo hi.'));
+
+    expect($output->toolResults[0]->content)->toBe('echo: hi')
+        ->and($events->dataFor('agent.tool_input_end'))->toEqual([new ToolInputEnd(0, 'c1', 'echo', ['text' => 'hi'])]);
+});
+
+test('a nameless call that the end names done is the first done: outside the cap and previewed', function () {
+    [$agent, $events] = streamEventsAgent([[
+        ...streamEventsCall(0, 'c1', 'echo', ['text' => 'a']),
+        new ToolInputStart(1, '', ''),
+        new ToolInputDelta(1, '', '{"response":"Fin."}'),
+        new ToolInputEnd(1, 'd1', 'done', ['response' => 'Fin.']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ]], ['runLimits' => new RunLimits(maxToolCallsPerTurn: 1)]);
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Done)
+        ->and($output->content)->toBe('Fin.')
+        ->and($events->dataFor('agent.done_delta'))->toEqual([new DonePreview('d1', 'Fin.')])
+        ->and(array_map(fn(ToolInputDiscarded $d): array => [$d->id, $d->reason], $events->dataFor('agent.tool_input_discarded')))->toBe([['c1', 'done_finished_run']]);
+});
+
+test('a nameless call past the cap is discarded under its filled identity when its end arrives', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, '', ''),
+        ...streamEventsCall(1, 'c2', 'echo', ['text' => 'b']),
+        new ToolInputDelta(0, '', '{"text":"a"}'),
+        new ToolInputEnd(0, 'c1', 'echo', ['text' => 'a']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxToolCallsPerTurn: 1)]);
+
+    $output = $agent->run(new UserMessage('Echo.'));
+
+    expect(array_map(fn($r) => $r->callId, $output->toolResults))->toBe(['c2'])
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'c1', 'echo', 'tool_call_limit')])
+        ->and($events->dataFor('agent.tool_input_end'))->toEqual([new ToolInputEnd(1, 'c2', 'echo', ['text' => 'b'])]);
+});
+
+test('a cancel after a nameless call ended discards it under its filled identity', function () {
+    $token = new class implements \CarmeloSantana\PHPAgents\Contract\CancellationTokenInterface {
+        public bool $cancelled = false;
+
+        public function isCancelled(): bool
+        {
+            return $this->cancelled;
+        }
+    };
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, '', ''),
+        new ToolInputEnd(0, 'c1', 'echo', ['text' => 'a']),
+        function () use ($token): void {
+            $token->cancelled = true;
+        },
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ]], ['cancellationToken' => $token]);
+
+    $output = $agent->run(new UserMessage('Echo.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'c1', 'echo', 'cancelled')]);
+});
+
+test('end bytes that fill an empty start identity count toward maxResponseBytes', function () {
+    // End arguments {"text":"hi"} 13 + id and name c1 echo 6 + test-model 10 + tool_use 8 = 37.
+    $run = function (int $cap): Output {
+        [$agent] = streamEventsAgent([[
+            new ToolInputStart(0, '', ''),
+            new ToolInputEnd(0, 'c1', 'echo', ['text' => 'hi']),
+            new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+        ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxResponseBytes: $cap)]);
+
+        return $agent->run(new UserMessage('Echo hi.'));
+    };
+
+    expect($run(56)->content)->toBe('Done.')
+        ->and($run(55)->content)->toBe('Response size limit reached.');
+});
+
+test('a delta id that fills an empty start id counts toward maxResponseBytes once', function () {
+    // Start name echo 4 + delta {"text":"hi"} 13 and its id c1 2 + test-model 10 + tool_use 8 = 37.
+    $run = function (int $cap): Output {
+        [$agent] = streamEventsAgent([[
+            new ToolInputStart(0, '', 'echo'),
+            new ToolInputDelta(0, 'c1', '{"text":"hi"}'),
+            new ToolInputEnd(0, 'c1', 'echo', ['text' => 'hi']),
+            new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+        ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxResponseBytes: $cap)]);
+
+        return $agent->run(new UserMessage('Echo hi.'));
+    };
+
+    expect($run(56)->content)->toBe('Done.')
+        ->and($run(55)->content)->toBe('Response size limit reached.');
+});

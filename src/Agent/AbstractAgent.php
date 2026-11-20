@@ -375,31 +375,34 @@ abstract class AbstractAgent implements AgentInterface
             $donePreviewIndex = null;
             // RunLimits::$maxToolCallsPerTurn while streaming: the first `done` call is outside
             // it; a call opened past it is discarded at once and its later events are ignored,
-            // so it is never retained. A call whose end arrives without a start is admitted then.
+            // so it is never retained. A call whose end arrives without a start is admitted then,
+            // and so is a call that opened without a name: an empty start id or name is unknown,
+            // not a disagreement, and the end fills it in (see $nameless).
             $perTurn = $this->runLimits->maxToolCallsPerTurn;
             $turnCalls = 0;
             $firstDoneIndex = null;
             /** @var array<int, string> $limitedCalls ids of the calls discarded under the cap */
             $limitedCalls = [];
-            // Whether each call, in the order it opened, was discarded under the cap.
-            /** @var list<bool> $callOrder */
+            // The index of each call, in the order it opened.
+            /** @var list<int> $callOrder */
             $callOrder = [];
-            $admitCall = function (ToolInputStart|ToolInputEnd $call) use ($perTurn, &$turnCalls, &$firstDoneIndex, &$limitedCalls, &$callOrder): bool {
+            // Indexes of the calls that opened without a name, held out of the cap until the
+            // end names them.
+            /** @var array<int, true> $nameless */
+            $nameless = [];
+            $admitCall = function (ToolInputStart|ToolInputEnd $call) use ($perTurn, &$turnCalls, &$firstDoneIndex, &$limitedCalls): bool {
                 if ($call->name === DoneTool::NAME && ($firstDoneIndex ?? $call->index) === $call->index) {
                     $firstDoneIndex = $call->index;
-                    $callOrder[] = false;
 
                     return true;
                 }
                 if ($perTurn > 0 && $turnCalls >= $perTurn) {
                     $limitedCalls[$call->index] = $call->id;
-                    $callOrder[] = true;
                     $this->discardCalls([$call], 'tool_call_limit');
 
                     return false;
                 }
                 $turnCalls++;
-                $callOrder[] = false;
 
                 return true;
             };
@@ -451,7 +454,11 @@ abstract class AbstractAgent implements AgentInterface
                         $this->notify('agent.text_delta', $event->delta);
                     } elseif ($event instanceof ToolInputStart) {
                         $this->notify('agent.tool_input_start', $event);
-                        if ($admitCall($event)) {
+                        $callOrder[] = $event->index;
+                        if ($event->name === '') {
+                            $startedCalls[$event->index] = $event;
+                            $nameless[$event->index] = true;
+                        } elseif ($admitCall($event)) {
                             $startedCalls[$event->index] = $event;
                             if ($donePreview === null && $event->name === DoneTool::NAME) {
                                 $donePreview = new DonePreviewReader();
@@ -461,8 +468,12 @@ abstract class AbstractAgent implements AgentInterface
                     } elseif (($event instanceof ToolInputDelta || $event instanceof ToolInputEnd) && isset($limitedCalls[$event->index])) {
                         continue;
                     } elseif ($event instanceof ToolInputDelta) {
-                        // Like an end, a delta goes by the id its call opened with.
+                        // A delta goes by the id its call opened with; the first delta to carry
+                        // an id fills an empty one.
                         $start = $startedCalls[$event->index] ?? null;
+                        if ($start !== null && $start->id === '' && $event->id !== '') {
+                            $start = $startedCalls[$event->index] = new ToolInputStart($start->index, $event->id, $start->name);
+                        }
                         if ($start !== null && $start->id !== $event->id) {
                             $event = new ToolInputDelta($event->index, $start->id, $event->delta);
                         }
@@ -475,13 +486,43 @@ abstract class AbstractAgent implements AgentInterface
                         }
                     } elseif ($event instanceof ToolInputEnd) {
                         $start = $startedCalls[$event->index] ?? null;
-                        if ($start === null && !$admitCall($event)) {
-                            continue;
-                        }
-                        // A call keeps the id and name it opened with, the ones the cap and the
-                        // done preview went by; an end that names another is corrected.
-                        if ($start !== null && ($start->id !== $event->id || $start->name !== $event->name)) {
-                            $event = new ToolInputEnd($event->index, $start->id, $start->name, $event->arguments, $event->metadata);
+                        if ($start === null) {
+                            $callOrder[] = $event->index;
+                            if (!$admitCall($event)) {
+                                continue;
+                            }
+                        } else {
+                            // A call keeps the id and name it opened with, the ones the cap and
+                            // the done preview went by; an end that names another is corrected.
+                            // An empty start id or name is unknown, and the end fills it in.
+                            $identity = new ToolInputStart(
+                                $event->index,
+                                $start->id !== '' ? $start->id : $event->id,
+                                $start->name !== '' ? $start->name : $event->name,
+                            );
+                            if ($identity->id !== $event->id || $identity->name !== $event->name) {
+                                $event = new ToolInputEnd($event->index, $identity->id, $identity->name, $event->arguments, $event->metadata);
+                            }
+                            if (isset($nameless[$event->index])) {
+                                // Admitted now that it has a name.
+                                unset($nameless[$event->index]);
+                                if (!$admitCall($event)) {
+                                    unset($startedCalls[$event->index]);
+                                    continue;
+                                }
+                                if ($donePreview === null && $event->name === DoneTool::NAME) {
+                                    // Its arguments are complete: the preview is the whole answer.
+                                    $donePreview = new DonePreviewReader();
+                                    $donePreviewIndex = $event->index;
+                                    $previewText = $donePreview->push(self::wireJson($event->arguments));
+                                    if ($previewText !== '') {
+                                        $this->notify('agent.done_delta', new DonePreview($event->id, $previewText));
+                                    }
+                                }
+                            }
+                            if ($identity->id !== $start->id || $identity->name !== $start->name) {
+                                $startedCalls[$event->index] = $identity;
+                            }
                         }
                         $endedCalls[$event->index] = $event;
                         $this->notify('agent.tool_input_end', $event);
@@ -964,9 +1005,10 @@ abstract class AbstractAgent implements AgentInterface
      * Bytes one stream event carries, counting every field the agent keeps: the text of a text
      * or reasoning delta; a call's id and name on its ToolInputStart; each argument delta; on a
      * ToolInputEnd, the JSON of its arguments beyond the bytes already streamed as deltas for
-     * that call, the JSON of its metadata, and its id and name when no start came first or
-     * they differ from the start's; and a Finish's raw reason, model and the JSON of its content
-     * blocks.
+     * that call, the JSON of its metadata, and its id and name when no start came first, or
+     * each one that differs from the start's (an end that fills an empty start id or name, or
+     * names another); the id of a delta that fills its start's empty id; and a Finish's raw
+     * reason, model and the JSON of its content blocks.
      *
      * @param array<int, int> $argumentBytes Argument bytes streamed per call index so far, with
      *                                       or without a start; credited against the call's end
@@ -986,8 +1028,9 @@ abstract class AbstractAgent implements AgentInterface
         if ($event instanceof ToolInputDelta) {
             $bytes = strlen($event->delta);
             $argumentBytes[$event->index] = ($argumentBytes[$event->index] ?? 0) + $bytes;
+            $start = $startedCalls[$event->index] ?? null;
 
-            return $bytes;
+            return $bytes + ($start !== null && $start->id === '' ? strlen($event->id) : 0);
         }
 
         if ($event instanceof ToolInputEnd) {
@@ -997,7 +1040,7 @@ abstract class AbstractAgent implements AgentInterface
             $idAndName = strlen($event->id) + strlen($event->name);
 
             return $bytes + match (true) {
-                $start !== null => $start->id === $event->id && $start->name === $event->name ? 0 : $idAndName,
+                $start !== null => ($start->id === $event->id ? 0 : strlen($event->id)) + ($start->name === $event->name ? 0 : strlen($event->name)),
                 isset($limitedCalls[$event->index]) => 0,
                 default => $idAndName,
             };
@@ -1021,7 +1064,7 @@ abstract class AbstractAgent implements AgentInterface
      * Otherwise a block is dropped by id, and only when no kept call has that id.
      *
      * @param list<array<string, mixed>> $blocks
-     * @param list<bool> $callOrder Whether each call, in the order it opened, was discarded
+     * @param list<int> $callOrder The index of each call, in the order it opened
      * @param array<int, string> $limitedCalls Ids of the discarded calls, by index
      * @param list<string> $keptIds Ids of the calls kept
      * @return list<array<string, mixed>>
@@ -1041,7 +1084,7 @@ abstract class AbstractAgent implements AgentInterface
                 continue;
             }
             $dropped = $toolUses === count($callOrder)
-                ? $callOrder[$position]
+                ? isset($limitedCalls[$callOrder[$position]])
                 : in_array($block['id'] ?? null, $limitedCalls, true) && !in_array($block['id'] ?? null, $keptIds, true);
             $position++;
             if (!$dropped) {
@@ -1058,7 +1101,15 @@ abstract class AbstractAgent implements AgentInterface
      */
     private static function jsonBytes(mixed $value): int
     {
-        return strlen(json_encode($value, \JSON_UNESCAPED_UNICODE | \JSON_UNESCAPED_SLASHES | \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR) ?: '');
+        return strlen(self::wireJson($value));
+    }
+
+    /**
+     * $value as JSON in its wire form (see jsonBytes()), or '' when it cannot be encoded.
+     */
+    private static function wireJson(mixed $value): string
+    {
+        return json_encode($value, \JSON_UNESCAPED_UNICODE | \JSON_UNESCAPED_SLASHES | \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR) ?: '';
     }
 
     /**

@@ -180,8 +180,9 @@ returns that fixed content:
 | `maxInputTokens` | Before the first provider call, and on each pending input before it is added | `Input is too large.` |
 
 - **Response bytes** count every field the agent keeps from the stream: the text of each text,
-  reasoning and tool-input delta; each tool call's id and name, and an end's too when they differ
-  from its start's (the call keeps its start's id and name); the JSON of a call's final arguments
+  reasoning and tool-input delta; each tool call's id and name, and an end's (or a delta's) id or
+  name when it differs from its start's, including one that fills an empty start value (see
+  [call identity](#streaming-tool-input-and-usage)); the JSON of a call's final arguments
   beyond the bytes its deltas already brought (so a provider that sends no deltas is still counted,
   and one that does is not counted twice) and of its metadata; and the finish's raw reason, model
   and content-block JSON. The total runs across every provider call of the run.
@@ -386,6 +387,14 @@ The argument JSON is provisional until `agent.tool_input_end`, and a call runs o
 response ends in `ToolUse`. A call that will not run gets `agent.tool_input_discarded`, so the UI can
 retract its card. Providers that deliver a call whole (Gemini, Ollama, llama.cpp) send one delta
 holding the full JSON.
+
+A call keeps the id and name it opened with: `agent.tool_input_delta` and `agent.tool_input_end`
+carry them even when the provider's later event names another. An empty id or name on
+`agent.tool_input_start` is unknown rather than different: the first delta that carries an id, or
+the end, fills it in, and the filled value is used from then on (in the end, the tool result, the
+conversation and any discard). A call that opens without a name is admitted to the per-turn cap,
+and becomes the previewed `done` call, only when its end names it; its `agent.done_delta` then
+holds the whole answer at once.
 
 `agent.done_delta` streams a `done` answer the same way: the decoded text of the first `done` call's
 `response` argument, as it arrives. `agent.done` accepts it and carries the authoritative

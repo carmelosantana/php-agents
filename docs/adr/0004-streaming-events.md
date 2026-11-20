@@ -145,6 +145,14 @@ text is cut to 128 characters plus a `…` (129 at most). `Finish` on the provid
     `agent.tool_input_end`, with no start event), its later input events are not forwarded, and it is never retained
     (its `tool_use` content block included), shown to the policy or answered with a tool result.
     The first `done` call is outside the cap.
+- **Call identity.** A call keeps the id and name it opened with; the agent rewrites a delta or end
+  that names another to them. An empty start id or name is unknown, not a disagreement: the first
+  delta carrying an id, or the end, fills it, and the filled value is kept from then on. A call that
+  opens without a name is held out of the per-turn cap and the `done` preview until its end names
+  it; it is then admitted at the place it opened, and a `done` previews its whole answer at once.
+  End or delta id and name bytes that differ from the start's, fill-ins included, count toward
+  `maxResponseBytes`. (The Responses API can send a call's `call_id` and `name` only on its
+  `output_item.done`.)
 - `agent.finish` fires from one place: `run()` wraps the loop and notifies with the `Output` it
   is about to return.
 - **`done` previews.** `DonePreviewReader` reads the `done` call's argument JSON incrementally and
