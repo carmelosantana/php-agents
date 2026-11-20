@@ -397,8 +397,12 @@ carry them even when the provider's later event names another. An empty id or na
 `agent.tool_input_start` is unknown rather than different: the first delta that carries an id, or
 the end, fills it in, and the filled value is used from then on (in the end, the tool result, the
 conversation and any discard). A call that opens without a name is admitted to the per-turn cap,
-and becomes the previewed `done` call, only when its end names it; its `agent.done_delta` then
-holds the whole answer at once.
+and becomes the previewed `done` call, only when its end names it (so it is admitted after the
+calls already admitted); its `agent.done_delta` then holds the whole answer at once. Calls waiting
+for a name are bounded as they open: at most the per-turn slots left plus one for a possible first
+`done`, or `AbstractAgent::MAX_PENDING_NAMELESS_CALLS` (128) with no per-turn cap. A nameless
+`agent.tool_input_start` past that is followed at once by `agent.tool_input_discarded` with reason
+`tool_call_limit`, and its later events are not forwarded.
 
 `agent.done_delta` streams a `done` answer the same way: the decoded text of the first `done` call's
 `response` argument, as it arrives. `agent.done` accepts it and carries the authoritative

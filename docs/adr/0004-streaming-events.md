@@ -159,7 +159,11 @@ text is cut to 128 characters plus a `…` (129 at most). `Finish` on the provid
   that names another to them. An empty start id or name is unknown, not a disagreement: the first
   delta carrying an id, or the end, fills it, and the filled value is kept from then on. A call that
   opens without a name is held out of the per-turn cap and the `done` preview until its end names
-  it; it is then admitted at the place it opened, and a `done` previews its whole answer at once.
+  it; it is then admitted when its end arrives, after the calls already admitted, and a `done`
+  previews its whole answer at once. Calls waiting for a name are bounded as they open: at most the
+  ordinary slots left plus one for a possible first `done` (or `AbstractAgent::MAX_PENDING_NAMELESS_CALLS`,
+  128, with no per-turn cap). A nameless start past that is discarded at once with
+  `tool_call_limit`, and its later events are ignored.
   End or delta id and name bytes that differ from the start's, fill-ins included, count toward
   `maxResponseBytes`. (The Responses API can send a call's `call_id` and `name` only on its
   `output_item.done`.)

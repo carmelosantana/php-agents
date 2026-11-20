@@ -62,6 +62,13 @@ abstract class AbstractAgent implements AgentInterface
      */
     public const int DEFAULT_MAX_ITERATIONS = 25;
 
+    /**
+     * With no RunLimits::$maxToolCallsPerTurn, how many calls of one response may wait for a
+     * name at once (they opened with an empty name; the end names them). Calls opened past it
+     * are discarded with reason `tool_call_limit`.
+     */
+    public const int MAX_PENDING_NAMELESS_CALLS = 128;
+
     /** Characters of a provider exception message, and of an API error message, that reach Output and agent.error. */
     private const int PROVIDER_ERROR_MAX_CHARS = 300;
 
@@ -456,8 +463,20 @@ abstract class AbstractAgent implements AgentInterface
                         $this->notify('agent.tool_input_start', $event);
                         $callOrder[] = $event->index;
                         if ($event->name === '') {
-                            $startedCalls[$event->index] = $event;
-                            $nameless[$event->index] = true;
+                            // Calls waiting for a name are bounded as they open: the ordinary
+                            // slots left plus one for a possible first `done`, or, with no
+                            // per-turn cap, MAX_PENDING_NAMELESS_CALLS. Past that the call is
+                            // discarded now and its later events are ignored.
+                            $pendingLimit = $perTurn > 0
+                                ? max(0, $perTurn - $turnCalls) + ($firstDoneIndex === null ? 1 : 0)
+                                : self::MAX_PENDING_NAMELESS_CALLS;
+                            if (count($nameless) >= $pendingLimit) {
+                                $limitedCalls[$event->index] = $event->id;
+                                $this->discardCalls([$event], 'tool_call_limit');
+                            } else {
+                                $startedCalls[$event->index] = $event;
+                                $nameless[$event->index] = true;
+                            }
                         } elseif ($admitCall($event)) {
                             $startedCalls[$event->index] = $event;
                             if ($donePreview === null && $event->name === DoneTool::NAME) {

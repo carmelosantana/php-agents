@@ -1126,3 +1126,44 @@ test('a limited call in a response that done finishes fires no agent.warning, on
         ->and($events->dataFor('agent.warning'))->toBe([])
         ->and(array_map(fn(ToolInputDiscarded $d): string => $d->reason, $events->dataFor('agent.tool_input_discarded')))->toBe(['tool_call_limit', 'done_finished_run']);
 });
+
+test('nameless starts past the remaining slots plus one possible done are discarded as they open', function () {
+    $nameless = fn(int $i) => [new ToolInputStart($i, '', ''), new ToolInputDelta($i, '', '{"text":"x"}')];
+    [$agent, $events] = streamEventsAgent([[
+        ...$nameless(0),
+        ...$nameless(1),
+        ...$nameless(2),
+        new ToolInputEnd(0, 'c0', 'echo', ['text' => 'x']),
+        new ToolInputEnd(1, 'c1', 'echo', ['text' => 'x']),
+        new ToolInputEnd(2, 'c2', 'echo', ['text' => 'x']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxToolCallsPerTurn: 1)]);
+
+    $output = $agent->run(new UserMessage('Echo.'));
+    $names = $events->names();
+    $thirdStart = array_keys(array_filter($events->events, fn($e) => $e[0] === 'agent.tool_input_start' && $e[1]->index === 2))[0];
+
+    expect(array_map(fn($r) => $r->callId, $output->toolResults))->toBe(['c0'])
+        ->and($names[$thirdStart + 1])->toBe('agent.tool_input_discarded')
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([
+            new ToolInputDiscarded(2, '', '', 'tool_call_limit'),
+            new ToolInputDiscarded(1, 'c1', 'echo', 'tool_call_limit'),
+        ])
+        ->and(array_map(fn(ToolInputDelta $d) => $d->index, $events->dataFor('agent.tool_input_delta')))->toBe([0, 1])
+        ->and(array_map(fn(ToolInputEnd $e) => $e->index, $events->dataFor('agent.tool_input_end')))->toBe([0]);
+});
+
+test('with no per-turn cap, pending nameless calls are capped at MAX_PENDING_NAMELESS_CALLS', function () {
+    $max = AbstractAgent::MAX_PENDING_NAMELESS_CALLS;
+    $script = [];
+    for ($i = 0; $i < $max + 2; $i++) {
+        $script[] = new ToolInputStart($i, '', '');
+    }
+    $script[] = new Finish(ProviderFinishReason::Stop, 'stop', null, 'test-model');
+    [$agent, $events] = streamEventsAgent([$script]);
+
+    $agent->run(new UserMessage('Hi'));
+    $limited = array_values(array_filter($events->dataFor('agent.tool_input_discarded'), fn(ToolInputDiscarded $d) => $d->reason === 'tool_call_limit'));
+
+    expect(array_map(fn(ToolInputDiscarded $d) => $d->index, $limited))->toBe([$max, $max + 1]);
+});
