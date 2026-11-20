@@ -1010,9 +1010,16 @@ final class AnthropicProvider extends AbstractProvider
      */
     private function formatAnthropicMessage(MessageInterface $message, int $position): array
     {
-        // Blocks from this run (thinking with its signature) go back unchanged.
+        // Blocks from this run (thinking with its signature) go back unchanged, except a
+        // tool_use block for a call the message does not carry (one the agent discarded
+        // under its per-turn cap), which would have no tool_result.
         if ($message instanceof AssistantMessage && $message->contentBlocks() !== []) {
-            return ['role' => 'assistant', 'content' => $message->contentBlocks()];
+            $callIds = array_map(static fn(ToolCall $call): string => $call->id, $message->toolCalls());
+
+            return ['role' => 'assistant', 'content' => array_values(array_filter(
+                $message->contentBlocks(),
+                static fn(array $block): bool => ($block['type'] ?? null) !== 'tool_use' || in_array($block['id'] ?? null, $callIds, true),
+            ))];
         }
 
         $role = match ($message->role()) {

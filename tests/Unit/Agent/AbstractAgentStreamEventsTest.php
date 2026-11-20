@@ -590,3 +590,153 @@ test('a done call with invalid arguments is discarded as invalid_done and the ru
         ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'd1', 'done', 'invalid_done')])
         ->and($events->dataFor('agent.done'))->toBe([['response' => 'Retried.']]);
 });
+
+// Stream resource limits: maxToolCallsPerTurn is enforced while the stream is read, and every
+// retained event field counts toward maxResponseBytes.
+
+test('calls past maxToolCallsPerTurn are discarded as they open and never retained', function () {
+    $calls = array_map(fn(int $n): array => ["c{$n}", 'echo', ['text' => "t{$n}"]], range(1, 4));
+    [$agent, $events] = streamEventsAgent(
+        [streamEventsToolRound($calls), streamEventsText('Done.')],
+        ['runLimits' => new RunLimits(maxToolCallsPerTurn: 2)],
+    );
+
+    $output = $agent->run(new UserMessage('Echo.'));
+    $assistant = array_values(array_filter($output->conversation->messages(), fn($m) => $m->toolCalls() !== []));
+
+    expect($events->dataFor('agent.tool_input_discarded'))->toEqual([
+        new ToolInputDiscarded(2, 'c3', 'echo', 'tool_call_limit'),
+        new ToolInputDiscarded(3, 'c4', 'echo', 'tool_call_limit'),
+    ])
+        ->and(array_map(fn(ToolInputStart $s): string => $s->id, $events->dataFor('agent.tool_input_start')))->toBe(['c1', 'c2', 'c3', 'c4'])
+        ->and(array_map(fn(ToolInputDelta $d): string => $d->id, $events->dataFor('agent.tool_input_delta')))->toBe(['c1', 'c1', 'c2', 'c2'])
+        ->and(array_map(fn(ToolInputEnd $e): string => $e->id, $events->dataFor('agent.tool_input_end')))->toBe(['c1', 'c2'])
+        ->and(array_map(fn(ToolCall $c): string => $c->id, $events->dataFor('agent.tool_call')))->toBe(['c1', 'c2'])
+        ->and(array_map(fn(ToolResult $r): ?string => $r->callId, $output->toolResults))->toBe(['c1', 'c2'])
+        ->and($assistant)->toHaveCount(1)
+        ->and(array_map(fn(ToolCall $c): string => $c->id, $assistant[0]->toolCalls()))->toBe(['c1', 'c2'])
+        ->and($events->dataFor('agent.warning'))->toBe(['Tool call limit reached: at most 2 calls per turn.'])
+        ->and($output->finishReason)->toBe(AgentFinishReason::Stop);
+
+    // Each over-cap call is discarded right after it opens.
+    expect(array_slice($events->names(), 2, 10))->toBe([
+        'agent.tool_input_start', 'agent.tool_input_delta', 'agent.tool_input_delta', 'agent.tool_input_end',
+        'agent.tool_input_start', 'agent.tool_input_delta', 'agent.tool_input_delta', 'agent.tool_input_end',
+        'agent.tool_input_start', 'agent.tool_input_discarded',
+    ]);
+});
+
+test('the first done call of a response is outside the per-turn cap, a later one is not', function () {
+    [$agent, $events] = streamEventsAgent([
+        [
+            ...streamEventsCall(0, 'c1', 'echo', ['text' => 'hi']),
+            ...streamEventsCall(1, 'd1', 'done', []),
+            ...streamEventsCall(2, 'd2', 'done', ['response' => 'Again.']),
+            new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+        ],
+        streamEventsText('Done.'),
+    ], ['runLimits' => new RunLimits(maxToolCallsPerTurn: 1)]);
+
+    $output = $agent->run(new UserMessage('Echo hi.'));
+
+    expect($events->dataFor('agent.tool_input_discarded'))->toEqual([
+        new ToolInputDiscarded(2, 'd2', 'done', 'tool_call_limit'),
+        new ToolInputDiscarded(1, 'd1', 'done', 'invalid_done'),
+    ])
+        ->and(array_map(fn(ToolResult $r): ?string => $r->callId, $output->toolResults))->toBe(['c1', 'd1'])
+        ->and($output->content)->toBe('Done.');
+});
+
+test('maxResponseBytes counts ToolInputEnd arguments a provider sent without deltas', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, 'c1', 'echo'),
+        new ToolInputEnd(0, 'c1', 'echo', ['text' => str_repeat('x', 200)]),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxResponseBytes: 100)]);
+
+    $output = $agent->run(new UserMessage('Echo.'));
+
+    expect($output->content)->toBe('Response size limit reached.')
+        ->and($events->dataFor('agent.tool_call'))->toBe([])
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'c1', 'echo', 'run_limit')]);
+});
+
+test('maxResponseBytes counts ToolInputEnd metadata', function () {
+    [$agent] = streamEventsAgent([[
+        new ToolInputStart(0, 'c1', 'echo'),
+        new ToolInputEnd(0, 'c1', 'echo', [], ['thoughtSignature' => str_repeat('s', 200)]),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxResponseBytes: 100)]);
+
+    expect($agent->run(new UserMessage('Echo.'))->content)->toBe('Response size limit reached.');
+});
+
+test('maxResponseBytes counts tool call ids and names', function (string $id, string $name) {
+    [$agent] = streamEventsAgent([[
+        new ToolInputStart(0, $id, $name),
+        new ToolInputEnd(0, $id, $name, []),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxResponseBytes: 100)]);
+
+    expect($agent->run(new UserMessage('Echo.'))->content)->toBe('Response size limit reached.');
+})->with([
+    'id' => [str_repeat('i', 200), 'echo'],
+    'name' => ['c1', str_repeat('n', 200)],
+]);
+
+test('maxResponseBytes counts an end whose start never came', function () {
+    [$agent] = streamEventsAgent([[
+        new ToolInputEnd(0, str_repeat('i', 200), 'echo', []),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxResponseBytes: 100)]);
+
+    expect($agent->run(new UserMessage('Echo.'))->content)->toBe('Response size limit reached.');
+});
+
+test('maxResponseBytes counts the finish raw reason and model', function (Finish $finish) {
+    [$agent] = streamEventsAgent([[new TextDelta('Hi.'), $finish]], ['runLimits' => new RunLimits(maxResponseBytes: 100)]);
+
+    expect($agent->run(new UserMessage('Hi'))->content)->toBe('Response size limit reached.');
+})->with(fn() => [
+    'raw reason' => [new Finish(ProviderFinishReason::Stop, str_repeat('r', 200), null, 'test-model')],
+    'model' => [new Finish(ProviderFinishReason::Stop, 'stop', null, str_repeat('m', 200))],
+]);
+
+test('streamed argument bytes are counted once, with ids, names and finish metadata', function () {
+    // Round 1: deltas {"text":"hi"} 13 + id c1 2 + name echo 4 + tool_use 8 + test-model 10 = 37.
+    // Round 2: Done. 5 + stop 4 + test-model 10 = 19. The run receives 56 bytes.
+    $run = function (int $cap): Output {
+        [$agent] = streamEventsAgent(
+            [streamEventsToolRound([['c1', 'echo', ['text' => 'hi']]]), streamEventsText('Done.')],
+            ['runLimits' => new RunLimits(maxResponseBytes: $cap)],
+        );
+
+        return $agent->run(new UserMessage('Echo hi.'));
+    };
+
+    expect($run(56)->content)->toBe('Done.')
+        ->and($run(55)->content)->toBe('Response size limit reached.');
+});
+
+test('maxResponseBytes counts the id of an end whose deltas came without a start', function () {
+    [$agent] = streamEventsAgent([[
+        new ToolInputDelta(0, 'c1', '{}'),
+        new ToolInputEnd(0, str_repeat('i', 200), 'echo', []),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxResponseBytes: 100)]);
+
+    expect($agent->run(new UserMessage('Echo.'))->content)->toBe('Response size limit reached.');
+});
+
+test('an end that arrives without a start is admitted under the per-turn cap', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputEnd(0, 'c1', 'echo', ['text' => 'a']),
+        new ToolInputEnd(1, 'c2', 'echo', ['text' => 'b']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxToolCallsPerTurn: 1)]);
+
+    $output = $agent->run(new UserMessage('Echo.'));
+
+    expect(array_map(fn(ToolResult $r): ?string => $r->callId, $output->toolResults))->toBe(['c1'])
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(1, 'c2', 'echo', 'tool_call_limit')]);
+});

@@ -56,8 +56,9 @@ Alternatives considered, one line each:
 - Empty or whitespace-only arguments, and an empty object, decode as `{}`. Any other arguments
   that do not decode to a JSON object get no `ToolInputEnd` and the call is dropped, on every
   provider; on the HTTP providers so do arguments over `RequestLimits::$maxToolArgumentBytes` or
-  `$maxToolArgumentDepth`, which are checked before the single decode. A response that would have finished with `ToolUse` then finishes with `Error`; any
-  other reason (`MaxTokens`, for example) is kept. `chat()` applies the same rule.
+  `$maxToolArgumentDepth`, which are checked before the single decode. A response that would
+  have finished with `ToolUse` then finishes with `Error`; any other reason (`MaxTokens`, for
+  example) is kept. `chat()` applies the same rule.
 - `ToolInputEnd` is emitted as soon as each call's arguments are complete. The tool calls are the
   `ToolInputEnd` events; the agent runs them only when `Finish->reason` is `ToolUse`.
 - Per-call metadata such as Gemini's `thoughtSignature` rides on `ToolInputEnd->metadata`, with
@@ -132,7 +133,11 @@ payloads and order. New events:
   - `done_finished_run`: a `done` call earlier in the same response finished the run;
   - `denied`, `invalid_done`: the policy denied the response's first `done` call, or its arguments
     failed validation, and the run continues;
-  - `duplicate_done`: a `done` call that was not the first in its response.
+  - `duplicate_done`: a `done` call that was not the first in its response;
+  - `tool_call_limit`: the call opened past `RunLimits::$maxToolCallsPerTurn`. The per-turn cap is
+    applied while the response streams, so such a call is discarded right after its
+    `agent.tool_input_start`, its later input events are not forwarded, and it is never retained,
+    shown to the policy or answered with a tool result. The first `done` call is outside the cap.
 - `agent.finish` fires from one place: `run()` wraps the loop and notifies with the `Output` it
   is about to return.
 - **`done` previews.** `DonePreviewReader` reads the `done` call's argument JSON incrementally and

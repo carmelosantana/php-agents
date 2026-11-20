@@ -22,6 +22,9 @@ namespace CarmeloSantana\PHPAgents\Agent\Event;
  * - 'denied', 'invalid_done': the first `done` call of a response that the execution policy
  *   denied, or whose arguments failed validation; the run continues.
  * - 'duplicate_done': a `done` call that was not the first in its response.
+ * - 'tool_call_limit': the call opened past RunLimits::$maxToolCallsPerTurn. It fires right after
+ *   the call's agent.tool_input_start (or, for a call whose end came without a start, in place of
+ *   its agent.tool_input_end), and the call's later input events are not forwarded.
  *
  * For a `done` call this retracts what agent.done_delta previewed.
  */

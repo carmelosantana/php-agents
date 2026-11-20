@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use CarmeloSantana\PHPAgents\Agent\AbstractAgent;
 use CarmeloSantana\PHPAgents\Agent\Output;
+use CarmeloSantana\PHPAgents\Agent\Event\ToolInputDiscarded;
 use CarmeloSantana\PHPAgents\Agent\RunLimits;
 use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
@@ -352,7 +353,7 @@ test('a second run starts without the first run\'s grants', function () {
         ->and(boundaryResultsFor($second, 'c3')[0]->content)->toBe('Unknown tool: secret');
 });
 
-test('calls beyond maxToolCallsPerTurn are not executed and get a limit result', function () {
+test('calls beyond maxToolCallsPerTurn are discarded while streaming, never shown to the policy or run', function () {
     $policy = new BoundaryDenyPolicy();
     $recorder = new BoundaryEventRecorder();
     $calls = array_map(fn(int $n): ToolCall => boundaryCall("c{$n}", 'ping'), range(1, 5));
@@ -364,12 +365,10 @@ test('calls beyond maxToolCallsPerTurn are not executed and get a limit result',
 
     expect($agent->ran)->toBe(['ping' => 2])
         ->and($policy->seen)->toBe(['ping', 'ping'])
-        ->and($output->toolResults)->toHaveCount(5)
-        ->and(array_map(fn(ToolResult $r): ?string => $r->callId, $output->toolResults))->toBe(['c1', 'c2', 'c3', 'c4', 'c5'])
-        ->and(array_map(fn(ToolResult $r): string => $r->content, array_slice($output->toolResults, 2)))
-        ->toBe(array_fill(0, 3, 'Tool call limit reached: at most 2 calls per turn.'))
-        ->and($output->toolResults[4]->status)->toBe(ToolResultStatus::Error)
-        ->and($recorder->dataFor('agent.warning'))->toHaveCount(1)
+        ->and(array_map(fn(ToolResult $r): ?string => $r->callId, $output->toolResults))->toBe(['c1', 'c2'])
+        ->and(array_map(fn(ToolInputDiscarded $d): string => $d->id . ':' . $d->reason, $recorder->dataFor('agent.tool_input_discarded')))
+        ->toBe(['c3:tool_call_limit', 'c4:tool_call_limit', 'c5:tool_call_limit'])
+        ->and($recorder->dataFor('agent.warning'))->toBe(['Tool call limit reached: at most 2 calls per turn.'])
         ->and($output->finishReason)->toBe(AgentFinishReason::Stop);
 });
 

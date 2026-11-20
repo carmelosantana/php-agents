@@ -7,17 +7,20 @@ namespace CarmeloSantana\PHPAgents\Agent;
 /**
  * Limits on one AbstractAgent::run().
  *
- * - $maxToolCallsPerTurn caps the tool calls from one provider response that are sent to the
- *   execution policy (denied and unknown calls count). Calls beyond it are not shown to the
- *   policy or run; each gets an error result.
+ * - $maxToolCallsPerTurn caps the tool calls kept from one provider response, counted as they
+ *   stream (denied and unknown calls count). A call that opens beyond it is discarded at once
+ *   (agent.tool_input_discarded 'tool_call_limit'), never kept, shown to the policy or run, and
+ *   gets no result; agent.warning fires after the response's tool results.
  * - $maxToolCallsPerRun caps the tool calls sent to the policy and executor across the run. Calls
  *   beyond it get an error result, and the run then ends as AgentFinishReason::BudgetExhausted.
  * - $executeUnadvertisedTools lets the model execute any registered tool, including the ones
  *   maxTools left out of the provider payload. By default only advertised tools and tools a
  *   ToolGrantInterface tool granted can run.
  * - $maxRunSeconds caps the wall time of the run, measured with hrtime() from the start of run().
- * - $maxResponseBytes caps the bytes received from the provider across the run: the text of
- *   every text, reasoning and tool-input delta, plus the JSON of each response's content blocks.
+ * - $maxResponseBytes caps the bytes received from the provider across the run, counting every
+ *   field the agent keeps: text, reasoning and tool-input deltas; tool call ids and names; the
+ *   JSON of each call's final arguments beyond its streamed deltas, and of its metadata; and each
+ *   finish's raw reason, model and content-block JSON.
  * - $maxEstimatedTokens caps the run's local token estimate: each request's estimate (conversation
  *   plus tool schemas) plus each response's max(reported completion tokens, bytes / 4). It is
  *   also checked on every stream event, and does not trust the usage the provider reports.
@@ -27,7 +30,8 @@ namespace CarmeloSantana\PHPAgents\Agent;
  * Each of the four ends the run as AgentFinishReason::BudgetExhausted. They are cooperative: the
  * agent checks them on every stream event, at each iteration and before each tool or batch call.
  *
- * 0 means unlimited. The done tool counts toward neither tool-call cap. Any negative value throws
+ * 0 means unlimited. The first done call of a response counts toward neither tool-call cap; a
+ * later done call in that response counts toward the per-turn cap. Any negative value throws
  * \InvalidArgumentException.
  */
 final readonly class RunLimits

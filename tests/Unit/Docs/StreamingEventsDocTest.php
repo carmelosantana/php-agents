@@ -71,7 +71,7 @@ test('the discard reasons table lists every reason the agent uses', function () 
     $adr = (string) file_get_contents($root . '/docs/adr/0004-streaming-events.md');
     $source = (string) file_get_contents($root . '/src/Agent/AbstractAgent.php');
 
-    $reasons = ['not_tool_use', 'invalid_arguments', 'run_limit', 'provider_error', 'cancelled', 'done_finished_run', 'denied', 'invalid_done', 'duplicate_done'];
+    $reasons = ['not_tool_use', 'invalid_arguments', 'run_limit', 'provider_error', 'cancelled', 'done_finished_run', 'denied', 'invalid_done', 'duplicate_done', 'tool_call_limit'];
     foreach ($reasons as $reason) {
         expect($source)->toContain("'{$reason}'")
             ->and($doc)->toContain('| `' . $reason . '` |')

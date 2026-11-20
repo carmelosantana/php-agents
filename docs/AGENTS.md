@@ -123,7 +123,7 @@ time, response data and tokens it may use whatever the provider reports:
 
 | Field | Default | Effect |
 |-------|---------|--------|
-| `maxToolCallsPerTurn` | `0` | Tool calls from one provider response sent to the policy (denied and unknown calls included); `0` means no cap |
+| `maxToolCallsPerTurn` | `0` | Tool calls kept from one provider response, counted as they stream (denied and unknown calls included); `0` means no cap |
 | `maxToolCallsPerRun` | `0` | Tool calls sent to the policy and executor across the run; `0` means no cap |
 | `executeUnadvertisedTools` | `false` | `true` lets the model execute any registered tool, even one `maxTools` left out |
 | `maxRunSeconds` | `0.0` | Wall time of the run in seconds, from the start of `run()`; `0.0` means no limit |
@@ -131,7 +131,7 @@ time, response data and tokens it may use whatever the provider reports:
 | `maxEstimatedTokens` | `0` | Local token estimate across the run; `0` means no limit |
 | `maxInputTokens` | `0` | Estimated tokens of the new input message; `0` means no limit |
 
-A negative value throws `\InvalidArgumentException`. The `done` tool counts toward neither tool-call cap.
+A negative value throws `\InvalidArgumentException`. The first `done` call of a response counts toward neither tool-call cap; a later `done` call in the same response counts toward the per-turn cap.
 
 - **Executable tools.** The agent executes only the tools it advertised to the provider in this run
   (`setMaxTools()` caps that list, and `done` is always in it). A call to any other name is answered
@@ -143,9 +143,12 @@ A negative value throws `\InvalidArgumentException`. The `done` tool counts towa
   name from `grantedToolNames()` that is a registered tool to the executable set for the rest of
   that run. `grantedToolNames()` should return the names granted by the tool's most recent call. Unknown names are ignored, a call the policy denied or a cap refused grants nothing, and
   the next `run()` starts without the grants. Implement it only on trusted host code.
-- **Per turn.** Calls beyond `maxToolCallsPerTurn` in one response are not shown to the policy and
-  not run. Each gets the error result `Tool call limit reached: at most N calls per turn.` with its
-  call id, so every tool call still has a result, and `agent.warning` fires once for the turn.
+- **Per turn.** The cap is applied while the response streams. A call that opens past
+  `maxToolCallsPerTurn` is discarded at once with `agent.tool_input_discarded` reason
+  `tool_call_limit`, and its arguments are never kept: it is not shown to the policy, not run, and
+  not added to the conversation, so it has no tool result (Anthropic's replayed content blocks drop
+  its `tool_use` block too). After the response's tool results, `agent.warning` fires once with
+  `Tool call limit reached: at most N calls per turn.`
 - **Per run.** Calls beyond `maxToolCallsPerRun` get `Tool call limit reached: at most N calls per run.`
   After that round the run ends with `AgentFinishReason::BudgetExhausted` and the content
   `Tool call limit reached for this run.`
@@ -174,8 +177,11 @@ returns that fixed content:
 | `maxEstimatedTokens` | Before each provider call, on every stream event and after each response | `Token limit reached.` |
 | `maxInputTokens` | Before the first provider call, and on each pending input before it is added | `Input is too large.` |
 
-- **Response bytes** count the text of each text, reasoning and tool-input delta, plus the JSON of
-  the response's content blocks. The total runs across every provider call of the run.
+- **Response bytes** count every field the agent keeps from the stream: the text of each text,
+  reasoning and tool-input delta; each tool call's id and name; the JSON of a call's final arguments
+  beyond the bytes its deltas already brought (so a provider that sends no deltas is still counted,
+  and one that does is not counted twice) and of its metadata; and the finish's raw reason, model
+  and content-block JSON. The total runs across every provider call of the run.
 - **Estimated tokens.** Before each provider call the request estimate is
   `Conversation::estimateTokens()` plus one token per 4 bytes of the tool schemas' JSON. If the
   tokens spent so far plus that estimate exceed the limit, the run ends before the request is sent.
@@ -394,6 +400,7 @@ call id retracts it.
 | `denied` | The execution policy denied the response's first `done` call; the run continues |
 | `invalid_done` | The first `done` call's arguments failed validation; the run continues |
 | `duplicate_done` | A `done` call that was not the first in its response |
+| `tool_call_limit` | The call opened past `RunLimits::$maxToolCallsPerTurn`; it fires right after its `agent.tool_input_start`, and the call's later input events are not forwarded |
 
 ### How a run ends
 

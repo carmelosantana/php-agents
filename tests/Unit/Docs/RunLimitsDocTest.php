@@ -59,8 +59,9 @@ test('the run limits docs say what the per-turn cap counts and where the token a
     $doc = (string) file_get_contents(__DIR__ . '/../../../docs/AGENTS.md');
     $runLimits = (string) file_get_contents(__DIR__ . '/../../../src/Agent/RunLimits.php');
 
-    expect($doc)->toContain('| `maxToolCallsPerTurn` | `0` | Tool calls from one provider response sent to the policy (denied and unknown calls included); `0` means no cap |')
-        ->and($runLimits)->toContain('caps the tool calls from one provider response that are sent to the')
+    expect($doc)->toContain('| `maxToolCallsPerTurn` | `0` | Tool calls kept from one provider response, counted as they stream (denied and unknown calls included); `0` means no cap |')
+        ->and($runLimits)->toContain('caps the tool calls kept from one provider response, counted as they')
+        ->and($doc)->toContain('| `tool_call_limit` | The call opened past')
         ->and($doc)->toContain('| `maxEstimatedTokens` | Before each provider call, on every stream event and after each response | `Token limit reached.` |')
         ->and($doc)->toContain('| `maxInputTokens` | Before the first provider call, and on each pending input before it is added | `Input is too large.` |')
         ->and($doc)->toContain('An endless stream of empty chunks is bounded only by `maxRunSeconds`')

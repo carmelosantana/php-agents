@@ -369,6 +369,33 @@ abstract class AbstractAgent implements AgentInterface
             // arguments completed; the two differ only when `done` calls interleave.
             $donePreview = null;
             $donePreviewIndex = null;
+            // RunLimits::$maxToolCallsPerTurn while streaming: the first `done` call is outside
+            // it; a call opened past it is discarded at once and its later events are ignored,
+            // so it is never retained. A call whose end arrives without a start is admitted then.
+            $perTurn = $this->runLimits->maxToolCallsPerTurn;
+            $turnCalls = 0;
+            $firstDoneIndex = null;
+            /** @var array<int, true> $limitedCalls */
+            $limitedCalls = [];
+            $admitCall = function (ToolInputStart|ToolInputEnd $call) use ($perTurn, &$turnCalls, &$firstDoneIndex, &$limitedCalls): bool {
+                if ($call->name === DoneTool::NAME && ($firstDoneIndex ?? $call->index) === $call->index) {
+                    $firstDoneIndex = $call->index;
+
+                    return true;
+                }
+                if ($perTurn > 0 && $turnCalls >= $perTurn) {
+                    $limitedCalls[$call->index] = true;
+                    $this->discardCalls([$call], 'tool_call_limit');
+
+                    return false;
+                }
+                $turnCalls++;
+
+                return true;
+            };
+            // Argument bytes streamed per call index, for eventBytes().
+            /** @var array<int, int> $argumentBytes */
+            $argumentBytes = [];
 
             try {
                 foreach ($this->provider->streamEvents($conversation->messages(), $advertisedTools, $this->providerOptions) as $event) {
@@ -383,7 +410,7 @@ abstract class AbstractAgent implements AgentInterface
 
                     // Cumulative limits, checked before the event is used. Breaking
                     // abandons the stream.
-                    $eventBytes = $this->eventBytes($event);
+                    $eventBytes = $this->eventBytes($event, $argumentBytes);
                     $callBytes += $eventBytes;
                     $runResponseBytes += $eventBytes;
                     if ($this->runLimits->maxResponseBytes > 0 && $runResponseBytes > $this->runLimits->maxResponseBytes) {
@@ -407,12 +434,16 @@ abstract class AbstractAgent implements AgentInterface
                         $contentParts[] = $event->delta;
                         $this->notify('agent.text_delta', $event->delta);
                     } elseif ($event instanceof ToolInputStart) {
-                        $startedCalls[$event->index] = $event;
                         $this->notify('agent.tool_input_start', $event);
-                        if ($donePreview === null && $event->name === DoneTool::NAME) {
-                            $donePreview = new DonePreviewReader();
-                            $donePreviewIndex = $event->index;
+                        if ($admitCall($event)) {
+                            $startedCalls[$event->index] = $event;
+                            if ($donePreview === null && $event->name === DoneTool::NAME) {
+                                $donePreview = new DonePreviewReader();
+                                $donePreviewIndex = $event->index;
+                            }
                         }
+                    } elseif (($event instanceof ToolInputDelta || $event instanceof ToolInputEnd) && isset($limitedCalls[$event->index])) {
+                        continue;
                     } elseif ($event instanceof ToolInputDelta) {
                         $this->notify('agent.tool_input_delta', $event);
                         if ($event->index === $donePreviewIndex) {
@@ -422,6 +453,9 @@ abstract class AbstractAgent implements AgentInterface
                             }
                         }
                     } elseif ($event instanceof ToolInputEnd) {
+                        if (!isset($startedCalls[$event->index]) && !$admitCall($event)) {
+                            continue;
+                        }
                         $endedCalls[$event->index] = $event;
                         $this->notify('agent.tool_input_end', $event);
                     } elseif ($event instanceof Finish) {
@@ -620,6 +654,7 @@ abstract class AbstractAgent implements AgentInterface
                     $conversation,
                     $allToolResults,
                     $doneResults,
+                    $limitedCalls !== [],
                 );
 
                 if ($executionResult !== null) {
@@ -858,18 +893,58 @@ abstract class AbstractAgent implements AgentInterface
     }
 
     /**
-     * Bytes one stream event carries: the text of a text, reasoning or tool-input delta, and
-     * the JSON of a Finish's content blocks.
+     * Bytes one stream event carries, counting every field the agent keeps: the text of a text
+     * or reasoning delta; a call's id and name on its ToolInputStart; each argument delta; on a
+     * ToolInputEnd, the JSON of its arguments beyond the bytes already streamed as deltas for
+     * that call, the JSON of its metadata, and its id and name when no start came first; and a
+     * Finish's raw reason, model and the JSON of its content blocks.
+     *
+     * @param array<int, int> $argumentBytes Argument bytes streamed per started call index so
+     *                                       far; a start opens an entry and its deltas add to it
      */
-    private function eventBytes(StreamEvent $event): int
+    private function eventBytes(StreamEvent $event, array &$argumentBytes): int
     {
-        return match (true) {
-            $event instanceof TextDelta, $event instanceof ReasoningDelta, $event instanceof ToolInputDelta => strlen($event->delta),
-            $event instanceof Finish && $event->contentBlocks !== [] => strlen(
-                json_encode($event->contentBlocks, \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR) ?: '',
-            ),
-            default => 0,
-        };
+        if ($event instanceof TextDelta || $event instanceof ReasoningDelta) {
+            return strlen($event->delta);
+        }
+
+        if ($event instanceof ToolInputStart) {
+            $argumentBytes[$event->index] ??= 0;
+
+            return strlen($event->id) + strlen($event->name);
+        }
+
+        if ($event instanceof ToolInputDelta) {
+            $bytes = strlen($event->delta);
+            // A delta with no start is counted here and not credited to the call's end.
+            if (isset($argumentBytes[$event->index])) {
+                $argumentBytes[$event->index] += $bytes;
+            }
+
+            return $bytes;
+        }
+
+        if ($event instanceof ToolInputEnd) {
+            $bytes = max(0, self::jsonBytes($event->arguments) - ($argumentBytes[$event->index] ?? 0))
+                + ($event->metadata === [] ? 0 : self::jsonBytes($event->metadata));
+
+            return isset($argumentBytes[$event->index]) ? $bytes : $bytes + strlen($event->id) + strlen($event->name);
+        }
+
+        if ($event instanceof Finish) {
+            return strlen($event->rawReason) + strlen($event->model)
+                + ($event->contentBlocks === [] ? 0 : self::jsonBytes($event->contentBlocks));
+        }
+
+        return 0;
+    }
+
+    /**
+     * Length of $value as JSON; bytes that are not UTF-8 count as substitutes.
+     */
+    private static function jsonBytes(mixed $value): int
+    {
+        return strlen(json_encode($value, \JSON_INVALID_UTF8_SUBSTITUTE | \JSON_PARTIAL_OUTPUT_ON_ERROR) ?: '');
     }
 
     /**
@@ -1129,7 +1204,10 @@ abstract class AbstractAgent implements AgentInterface
      * @param ToolResult[] $allToolResults Accumulated results (modified by reference)
      * @param array<int, ToolResult> $resolvedCalls Results already decided for calls at these
      *                                              positions (refused `done` calls); they skip the
-     *                                              caps, the policy and the executor
+     *                                              cap, the policy and the executor
+     * @param bool $turnLimitReached Calls of this response were discarded while streaming for
+     *                               RunLimits::$maxToolCallsPerTurn; agent.warning fires after
+     *                               the results
      */
     private function executeToolCalls(
         array $toolCalls,
@@ -1142,6 +1220,7 @@ abstract class AbstractAgent implements AgentInterface
         Conversation $conversation,
         array &$allToolResults,
         array $resolvedCalls = [],
+        bool $turnLimitReached = false,
     ): ?TerminationException {
         // === Phase 1: Pre-flight (serial) ===
         // Process each tool call: emit events, check policy, resolve tool.
@@ -1155,9 +1234,6 @@ abstract class AbstractAgent implements AgentInterface
         $preResolved = [];
 
         $cancelled = false;
-        $turnToolCalls = 0;
-        $turnLimitReached = false;
-        $perTurn = $this->runLimits->maxToolCallsPerTurn;
         $perRun = $this->runLimits->maxToolCallsPerRun;
 
         foreach ($toolCalls as $position => $toolCall) {
@@ -1177,16 +1253,8 @@ abstract class AbstractAgent implements AgentInterface
                 continue;
             }
 
-            // Tool-call caps: a refused call is answered here and never
-            // reaches the policy or the executor.
-            if ($perTurn > 0 && $turnToolCalls >= $perTurn) {
-                $turnLimitReached = true;
-                $preResolved[$position] = ToolResult::error(
-                    sprintf('Tool call limit reached: at most %d calls per turn.', $perTurn),
-                )->withCallId($toolCall->id);
-                continue;
-            }
-
+            // The per-run cap: a refused call is answered here and never reaches the policy
+            // or the executor. The per-turn cap was applied while the response streamed.
             if ($perRun > 0 && $runToolCalls >= $perRun) {
                 $runLimitReached = true;
                 $preResolved[$position] = ToolResult::error(
@@ -1195,7 +1263,6 @@ abstract class AbstractAgent implements AgentInterface
                 continue;
             }
 
-            $turnToolCalls++;
             $runToolCalls++;
 
             $denied = $this->policyDenial($toolCall);
@@ -1332,7 +1399,7 @@ abstract class AbstractAgent implements AgentInterface
         }
 
         if ($turnLimitReached) {
-            $this->notify('agent.warning', sprintf('Tool call limit reached: at most %d calls per turn.', $perTurn));
+            $this->notify('agent.warning', sprintf('Tool call limit reached: at most %d calls per turn.', $this->runLimits->maxToolCallsPerTurn));
         }
 
         $this->applyToolGrants($approved, $executedResults, $executableToolIndex, $fullToolIndex);

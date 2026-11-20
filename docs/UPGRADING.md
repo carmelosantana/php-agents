@@ -63,6 +63,14 @@ public function streamEvents(array $messages, array $tools = [], array $options 
 - In `Conversation::estimateTokens()` (and so `maxInputTokens` and `maxEstimatedTokens`) an image part
   counts as `Conversation::IMAGE_TOKENS` (1,000) instead of one token per 4 bytes of its base64. A
   workaround that raised `maxInputTokens` to fit images can go.
+- `RunLimits::$maxToolCallsPerTurn` is applied while the response streams. A call past the cap is
+  discarded as it opens (`agent.tool_input_discarded` reason `tool_call_limit`) and is no longer
+  kept in the conversation with a `Tool call limit reached: at most N calls per turn.` error
+  result; `agent.warning` still fires once with that text. A second `done` call in one response now
+  counts toward the cap.
+- `RunLimits::$maxResponseBytes` also counts tool call ids and names, each call's final argument
+  JSON beyond its streamed deltas, call metadata, and the finish's raw reason and model, so a
+  run with a tight byte cap reaches it slightly sooner.
 - `SseStreamParser` applies its 1 MiB line cap (`maxLineBytes`) to every line, not only to one
   still waiting for its newline: a provider stream with a longer complete line now throws a
   `ProviderException` (`SSE line exceeded … bytes`) instead of decoding it.
