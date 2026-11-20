@@ -10,6 +10,8 @@ use CarmeloSantana\PHPAgents\Agent\Event\ToolInputDiscarded;
 use CarmeloSantana\PHPAgents\Contract\BatchToolExecutorInterface;
 use CarmeloSantana\PHPAgents\Contract\CancellationTokenInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
+use CarmeloSantana\PHPAgents\Context\ContextWindow;
+use CarmeloSantana\PHPAgents\Provider\Usage;
 use CarmeloSantana\PHPAgents\Enum\AgentFinishReason;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\ToolResultStatus;
@@ -428,4 +430,116 @@ test('a provider that throws once the token is set discards open calls as cancel
             new ToolInputDiscarded(1, 'd1', 'done', 'cancelled'),
         ])
         ->and($events->dataFor('agent.error'))->toBe(['Task cancelled']);
+});
+
+test('a cancel on agent.step_finish of a text response returns the text as Cancelled', function () {
+    [$agent, $events] = cancellationAgent(
+        [[new TextDelta('Hello'), new Finish(ProviderFinishReason::Stop, 'stop', null, 'test-model')]],
+        fn(string $event): bool => $event === 'agent.step_finish',
+    );
+
+    $output = $agent->run(new UserMessage('Say hello.'));
+    $messages = $output->conversation?->messages() ?? [];
+    $last = end($messages);
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->content)->toBe('Hello')
+        ->and($output->model)->toBe('test-model')
+        ->and($last)->toBeInstanceOf(AssistantMessage::class)
+        ->and($last->content())->toBe('Hello')
+        ->and($events->dataFor('agent.done'))->toBe([])
+        ->and(array_slice($events->names(), -3))->toBe(['agent.step_finish', 'agent.error', 'agent.finish'])
+        ->and($events->dataFor('agent.error'))->toBe(['Task cancelled']);
+});
+
+test('a cancel on agent.step_finish of a done response returns the text and preview as Cancelled', function () {
+    [$agent, $events] = cancellationAgent(
+        [[
+            new TextDelta('Wrapping up.'),
+            new ToolInputStart(0, 'd1', 'done'),
+            new ToolInputDelta(0, 'd1', '{"response":"The answer is 4."}'),
+            new ToolInputEnd(0, 'd1', 'done', ['response' => 'The answer is 4.']),
+            new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+        ]],
+        fn(string $event): bool => $event === 'agent.step_finish',
+    );
+
+    $output = $agent->run(new UserMessage('2+2?'));
+    $messages = $output->conversation?->messages() ?? [];
+    $last = end($messages);
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->content)->toBe("Wrapping up.\n\nThe answer is 4.")
+        ->and($last)->toBeInstanceOf(AssistantMessage::class)
+        ->and($last->content())->toBe("Wrapping up.\n\nThe answer is 4.")
+        ->and($last->toolCalls())->toBe([])
+        ->and($output->toolResults)->toBe([])
+        ->and($events->dataFor('agent.done'))->toBe([])
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'd1', 'done', 'cancelled')])
+        ->and(array_slice($events->names(), -4))->toBe(['agent.step_finish', 'agent.tool_input_discarded', 'agent.error', 'agent.finish']);
+});
+
+test('a cancel from the execution policy while it allows done returns Cancelled, not Done', function () {
+    $token = new CancellationTestToken();
+    $policy = new class ($token) implements \CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface {
+        public function __construct(private CancellationTestToken $token) {}
+
+        public function shouldExecute(string $toolName, array $arguments): true|string
+        {
+            $this->token->cancelled = true;
+
+            return true;
+        }
+    };
+    $agent = new CancellationTestAgent(
+        provider: new ScriptedEventsProvider([[
+            new ToolInputStart(0, 'd1', 'done'),
+            new ToolInputDelta(0, 'd1', '{"response":"The answer is 4."}'),
+            new ToolInputEnd(0, 'd1', 'done', ['response' => 'The answer is 4.']),
+            new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+        ]]),
+        cancellationToken: $token,
+        executionPolicy: $policy,
+    );
+    $events = new CancellationTestRecorder();
+    $agent->attach($events);
+
+    $output = $agent->run(new UserMessage('2+2?'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->content)->toBe('The answer is 4.')
+        ->and($events->dataFor('agent.done'))->toBe([])
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'd1', 'done', 'cancelled')])
+        ->and(array_slice($events->names(), -3))->toBe(['agent.tool_input_discarded', 'agent.error', 'agent.finish']);
+});
+
+test('a stream that ends without a finish once the token is set ends the run as Cancelled', function () {
+    [$agent, $events] = cancellationAgent(
+        [[new TextDelta('Hel'), new ToolInputStart(0, 'c1', 'echo'), new ToolInputDelta(0, 'c1', '{"te')]],
+        fn(string $event): bool => $event === 'agent.tool_input_delta',
+    );
+
+    $output = $agent->run(new UserMessage('Say hello.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->content)->toBe('Hel')
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'c1', 'echo', 'cancelled')])
+        ->and($events->dataFor('agent.error'))->toBe(['Task cancelled']);
+});
+
+test('a cancel on agent.budget_warning before a text answer is accepted returns Cancelled', function () {
+    [$agent, $events] = cancellationAgent(
+        [[new TextDelta('Hello'), new Finish(ProviderFinishReason::Stop, 'stop', new Usage(promptTokens: 850, completionTokens: 50, totalTokens: 900), 'test-model')]],
+        fn(string $event): bool => $event === 'agent.budget_warning',
+        ['contextWindow' => new ContextWindow(maxTok: 1_000, reservedTok: 0), 'budgetExitThreshold' => 0.8],
+    );
+
+    $output = $agent->run(new UserMessage('Say hello.'));
+    $messages = $output->conversation?->messages() ?? [];
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->content)->toBe('Hello')
+        ->and(end($messages)->content())->toBe('Hello')
+        ->and($events->dataFor('agent.done'))->toBe([])
+        ->and(array_slice($events->names(), -4))->toBe(['agent.step_finish', 'agent.budget_warning', 'agent.error', 'agent.finish']);
 });

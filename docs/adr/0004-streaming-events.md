@@ -171,6 +171,7 @@ when the run ends for another reason. An exception that escapes `run()` gets no 
 | Provider exception (token not set) | `tool_input_discarded` (`provider_error`, each started call) → `error` → `finish` | `Error` |
 | Tool `TerminationException` | `step_finish` → `finish` (no `agent.error`) | `Error` |
 | Cancel mid-stream (or a provider exception once the token is set) | `tool_input_discarded` (`cancelled`, each started call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
+| Cancel after a final answer finished, before it is accepted | `step_finish` → `tool_input_discarded` (`cancelled`, each call of a `done` response) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 | Cancel at top of iteration or during tools | (`step_finish` already fired for a completed response; no call is open, so no `tool_input_discarded`) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 
 Tests pin each sequence.
@@ -178,8 +179,9 @@ Tests pin each sequence.
 ### Cancellation
 
 - New case `AgentFinishReason::Cancelled = 'cancelled'`.
-- Checked on every stream event (ticks included), at the top of each iteration, before each tool
-  call and before a batch starts.
+- Checked on every stream event (ticks included), at the top of each iteration, after the
+  response finishes (after `agent.step_finish`, after the policy allows `done`, and just before a
+  text answer is accepted), before each tool call and before a batch starts.
 - **Mid-stream.** Iteration stops and the HTTP response is cancelled. `Output->content` is the
   text streamed so far in this step, then a blank line (`"\n\n"`) and the provisional `done`
   preview when both are present, or `'Task was cancelled.'` when both are empty. The preview is
@@ -188,8 +190,12 @@ Tests pin each sequence.
   `AssistantMessage` with no tool calls. Calls still streaming are dropped,
   and every open call, a `done` preview included, gets `agent.tool_input_discarded` with reason
   `cancelled`.
-  A provider that throws once the token is set (a cancel that aborts the transport) ends the
-  same way, not as a provider error.
+  A provider that throws, or whose stream ends without a `Finish`, once the token is set (a
+  cancel that aborts the transport) ends the same way, not as a provider error.
+- **After the response finished.** A cancel that lands before a final answer (text, or a
+  response with a `done` call) is accepted ends as a mid-stream cancel does, with the full
+  streamed text and preview; each call of the response is discarded with `cancelled` and no
+  `agent.done` fires. A response of ordinary tool calls goes on to the during-tools rule.
 - **During tools.** The assistant's tool-call message is already in the conversation. Finished
   calls keep their results; every call that did not start gets
   `ToolResult::error('Cancelled before it ran.')` with error code `cancelled`, so

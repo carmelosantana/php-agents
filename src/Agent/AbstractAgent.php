@@ -452,14 +452,19 @@ abstract class AbstractAgent implements AgentInterface
                 }
             }
 
+            // A stream cut short by a cancel can end without a Finish; that is the cancel, not a
+            // provider error.
+            if ($finish === null && $streamLimit === null && $this->cancellationToken?->isCancelled()) {
+                $cancelled = true;
+            }
+
             // A cancel mid-stream abandons the response: no call of it runs, and the text
             // streamed so far and any `done` preview, separated by a blank line when both
             // are present, is the run's answer.
             if ($cancelled) {
                 $this->discardCalls($startedCalls, 'cancelled');
-                $partial = implode("\n\n", array_filter([implode('', $contentParts), $donePreview?->text() ?? ''], static fn(string $part): bool => $part !== ''));
 
-                return $this->cancelledOutput($partial, $conversation, $allToolResults, $totalUsage, $i + 1);
+                return $this->cancelledOutput(self::cancelledAnswer($contentParts, $donePreview), $conversation, $allToolResults, $totalUsage, $i + 1);
             }
 
             if ($streamLimit !== null) {
@@ -507,6 +512,16 @@ abstract class AbstractAgent implements AgentInterface
                 $this->contextWindow?->report($response->usage);
             }
 
+            // A cancel after the stream (on agent.step_finish, say) still stops a final answer,
+            // text or `done`, from being accepted; the answer streamed so far is kept as on a
+            // mid-stream cancel. A response of ordinary tool calls goes on to executeToolCalls,
+            // which answers each call as cancelled.
+            if ($this->cancellationToken?->isCancelled() && !$this->hasOnlyOrdinaryCalls($response->toolCalls)) {
+                $this->discardCalls($response->toolCalls !== [] ? $completedCalls : [], 'cancelled');
+
+                return $this->cancelledOutput(self::cancelledAnswer($contentParts, $donePreview), $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
+            }
+
             if ($maxTokens > 0 && $spentTokens > $maxTokens) {
                 if ($response->toolCalls !== []) {
                     $this->discardCalls($completedCalls, 'run_limit');
@@ -549,6 +564,12 @@ abstract class AbstractAgent implements AgentInterface
             $finishingCall = null;
             $doneDiscards = [];
             $doneResults = $this->resolveDoneCalls($response->toolCalls, $finishingCall, $doneDiscards);
+            // The execution policy may cancel while it allows `done`.
+            if ($finishingCall !== null && $this->cancellationToken?->isCancelled()) {
+                $this->discardCalls($completedCalls, 'cancelled');
+
+                return $this->cancelledOutput(self::cancelledAnswer($contentParts, $donePreview), $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
+            }
             if ($finishingCall !== null) {
                 foreach ($response->toolCalls as $position => $toolCall) {
                     if ($toolCall !== $finishingCall) {
@@ -643,6 +664,10 @@ abstract class AbstractAgent implements AgentInterface
             // Text-only response (no tool calls) — this IS the response.
             // The done tool is only needed after tool use to present results.
             if ($response->content !== '') {
+                if ($this->cancellationToken?->isCancelled()) {
+                    return $this->cancelledOutput($response->content, $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
+                }
+
                 $conversation->add(new AssistantMessage($response->content));
                 $this->notify('agent.done', ['response' => $response->content]);
 
@@ -784,6 +809,33 @@ abstract class AbstractAgent implements AgentInterface
             conversation: $conversation,
             finishReason: AgentFinishReason::Cancelled,
         );
+    }
+
+    /**
+     * The answer a cancelled response leaves: the text it streamed, then the `done` answer
+     * previewed so far, separated by a blank line when both are present.
+     *
+     * @param list<string> $contentParts
+     */
+    private static function cancelledAnswer(array $contentParts, ?DonePreviewReader $donePreview): string
+    {
+        return implode("\n\n", array_filter([implode('', $contentParts), $donePreview?->text() ?? ''], static fn(string $part): bool => $part !== ''));
+    }
+
+    /**
+     * Whether $toolCalls is non-empty and has no `done` call, so the response is not a final answer.
+     *
+     * @param ToolCall[] $toolCalls
+     */
+    private function hasOnlyOrdinaryCalls(array $toolCalls): bool
+    {
+        foreach ($toolCalls as $toolCall) {
+            if ($toolCall->name === DoneTool::NAME) {
+                return false;
+            }
+        }
+
+        return $toolCalls !== [];
     }
 
     /**
