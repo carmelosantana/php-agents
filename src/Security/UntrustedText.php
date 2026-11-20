@@ -17,8 +17,12 @@ namespace CarmeloSantana\PHPAgents\Security;
  * any case. It is a pattern match: an opaque credential that matches none of these shapes
  * is not removed. If PCRE fails, the whole text becomes `[redacted]`.
  *
- * scrub() turns control and format characters (ESC, bidi overrides, zero-width spaces)
- * into spaces, collapses whitespace, trims, and cuts to $maxChars with `…`.
+ * scrub() turns control and format characters (ESC, bidi overrides, zero-width spaces) and
+ * the Hangul fillers into spaces, collapses whitespace, trims, and cuts to $maxChars with `…`
+ * (so the result is at most $maxChars + 1 characters). A cut never leaves a combining mark's
+ * letter without its mark.
+ *
+ * forDisplay() also catches a credential split by an invisible character; see there.
  */
 final class UntrustedText
 {
@@ -27,13 +31,16 @@ final class UntrustedText
     // Every quantifier is possessive, so a long run that ends without a match (a key,
     // a megabyte of spaces, no `:`) fails in linear time instead of backtracking.
 
+    // A key prefix must not follow a letter or digit (so `task-…` and `risk-…` are words), but
+    // it may follow `_` or another punctuation mark: `reason_sk-…` is a key.
+
     /** @var list<string> patterns whose whole match is replaced */
     private const TOKEN_PATTERNS = [
-        '/\bsk-[A-Za-z0-9_-]{16,}+/',
-        '/\bAIza[0-9A-Za-z_-]{30,}+/',
-        '/\bxai-[A-Za-z0-9]{16,}+/',
-        '/\bgh[pousr]_[A-Za-z0-9]{20,}+/',
-        '/\bAKIA[0-9A-Z]{16}+/',
+        '/(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}+/',
+        '/(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{30,}+/',
+        '/(?<![A-Za-z0-9])xai-[A-Za-z0-9]{16,}+/',
+        '/(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{20,}+/',
+        '/(?<![A-Za-z0-9])AKIA[0-9A-Z]{16}+/',
     ];
 
     /** The scheme matches in any case (`bearer`, `BEARER`) and is kept. */
@@ -43,7 +50,7 @@ final class UntrustedText
      * A Basic credential: base64 of at least 8 characters that is not a lowercase word. Only
      * the scheme is case-insensitive; the credential test stays case-sensitive.
      */
-    private const BASIC = '/(\b(?i:Basic)\s++)(?=[a-z]*+[A-Z0-9+\/=])[A-Za-z0-9+\/]{8,}+=*+/';
+    private const BASIC = '/((?<![A-Za-z0-9])(?i:Basic)\s++)(?=[a-z]*+[A-Z0-9+\/=])[A-Za-z0-9+\/]{8,}+=*+/';
 
     /**
      * A credential-named key, its separator, then a quoted value (whole, backslash escapes
@@ -51,12 +58,31 @@ final class UntrustedText
      */
     private const KEY_VALUE = '/((?:api[_-]?key|x-api-key|x-goog-api-key|authorization|token|secret|password)\s*+["\']?+\s*+[:=]\s*+)("(?:[^"\\\\]++|\\\\[\s\S]?+)*+"?+|\'(?:[^\'\\\\]++|\\\\[\s\S]?+)*+\'?+|["\']?+[^\s"\'&,}]++)/i';
 
+    /**
+     * Control and format characters, plus the Hangul fillers, which render as blank space but
+     * are letters to Unicode.
+     */
+    private const INVISIBLE_CLASS = '[\p{Cc}\p{Cf}\x{115F}\x{1160}\x{3164}\x{FFA0}]';
+
+    private const INVISIBLE = '/' . self::INVISIBLE_CLASS . '/u';
+
+    /** The invisible characters forDisplay() marks: all but tabs and line breaks, which are ordinary whitespace. */
+    private const MARKABLE = '/(?![\t\n\f\r])' . self::INVISIBLE_CLASS . '/u';
+
+    /** Stands in for an invisible character during redaction: PCRE's `\s` matches it. */
+    private const MARK = "\v";
+
     public static function scrub(string $text, int $maxChars): string
     {
-        $text = (string) preg_replace('/\s+/u', ' ', (string) preg_replace('/[\p{Cc}\p{Cf}]/u', ' ', mb_scrub($text, 'UTF-8')));
+        $text = (string) preg_replace('/\s+/u', ' ', (string) preg_replace(self::INVISIBLE, ' ', mb_scrub($text, 'UTF-8')));
         $text = trim($text);
         if (mb_strlen($text, 'UTF-8') > $maxChars) {
-            $text = mb_substr($text, 0, $maxChars, 'UTF-8') . '…';
+            $cut = mb_substr($text, 0, $maxChars, 'UTF-8');
+            // A cut before a combining mark would strip it off its letter: drop that letter too.
+            if (preg_match('/^\p{M}/u', mb_substr($text, $maxChars, 1, 'UTF-8')) === 1) {
+                $cut = (string) preg_replace('/\X$/u', '', $cut);
+            }
+            $text = $cut . '…';
         }
 
         return $text;
@@ -78,9 +104,21 @@ final class UntrustedText
         return $text ?? self::REDACTED;
     }
 
-    /** redactSecrets() then scrub(): redaction runs first, so a cut never splits a secret. */
+    /**
+     * redactSecrets() then scrub(): redaction runs first, so a cut never splits a secret.
+     *
+     * Invisible characters are marked before redaction, so one between a scheme and its
+     * credential (`Bearer<U+202E>abc…`) reads as whitespace. If deleting the marks reveals a
+     * credential that one split (`sk-AAAA<U+200B>BBBB…`), the text is redacted in that joined
+     * form, where the invisible characters are gone rather than spaces.
+     */
     public static function forDisplay(string $text, int $maxChars = 500): string
     {
-        return self::scrub(self::redactSecrets($text), $maxChars);
+        $marked = (string) preg_replace(self::MARKABLE, self::MARK, mb_scrub($text, 'UTF-8'));
+        $redacted = self::redactSecrets($marked);
+        $joined = str_replace(self::MARK, '', $redacted);
+        $rejoined = self::redactSecrets($joined);
+
+        return self::scrub($rejoined === $joined ? $redacted : $rejoined, $maxChars);
     }
 }

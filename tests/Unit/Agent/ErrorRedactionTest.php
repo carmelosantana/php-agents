@@ -513,3 +513,29 @@ test('error metadata whose jsonSerialize throws becomes null and the run complet
     expect($output->toolResults[0]->metadata)->toBe(['bad' => null, 'count' => 3])
         ->and(serialize($output->toolResults[0]->metadata))->not->toContain('throwing-json-secret-15');
 });
+
+test('a provider exception message with a credential split by a control or bidi character is redacted', function () {
+    $provider = new RedactionScriptedProvider([new RuntimeException("denied: Bearer\u{202E}abcdefghijkl, key sk-AAAAAAAAAAAAAAA\u{200B}BBBBBBBBB, alt sk-CCCCCCCC\eDDDDDDDDDDDD")]);
+    $agent = new RedactionTestAgent(provider: $provider);
+    $events = new RedactionEventRecorder();
+    $agent->attach($events);
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    foreach ([$output->content, $events->dataFor('agent.error')[0]] as $text) {
+        expect($text)->toContain('[redacted]')
+            ->and($text)->not->toContain('abcdefghijkl')
+            ->and($text)->not->toContain('AAAAAAAAAAAAAAA')
+            ->and($text)->not->toContain('BBBBBBBBB')
+            ->and($text)->not->toContain('DDDDDDDDDDDD');
+    }
+});
+
+test('a provider exception message with a key glued to a word character is redacted', function () {
+    $provider = new RedactionScriptedProvider([new RuntimeException('denied: reason_sk-' . str_repeat('A1b2', 6) . ' x_AIza' . str_repeat('B', 35))]);
+    $agent = new RedactionTestAgent(provider: $provider);
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->content)->toBe('Provider error: denied: reason_[redacted] x_[redacted]');
+});
