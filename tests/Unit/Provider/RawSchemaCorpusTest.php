@@ -11,6 +11,7 @@ use CarmeloSantana\PHPAgents\Provider\MistralProvider;
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
 use CarmeloSantana\PHPAgents\Provider\OpenAICompatibleProvider;
 use CarmeloSantana\PHPAgents\Provider\OpenAIResponsesProvider;
+use CarmeloSantana\PHPAgents\Provider\LlamaServerProvider;
 use CarmeloSantana\PHPAgents\Provider\XAIProvider;
 use CarmeloSantana\PHPAgents\Tool\SchemaTool;
 use CarmeloSantana\PHPAgents\Tool\ToolResult;
@@ -50,6 +51,7 @@ function rawSchemaFormatters(): array
         'openai-responses' => $via(new OpenAIResponsesProvider(model: 'm', httpClient: $http)),
         'mistral' => $via(new MistralProvider(httpClient: $http)),
         'xai' => $via(new XAIProvider(model: 'm', httpClient: $http)),
+        'llama-server' => $via(new LlamaServerProvider(model: 'm', httpClient: $http)),
         'anthropic' => $via(new AnthropicProvider(httpClient: $http)),
         'ollama' => $via(new OllamaProvider(httpClient: $http)),
         'gemini' => $via(new GeminiProvider(httpClient: $http)),
@@ -143,6 +145,7 @@ function rawSchemaToolPins(): array
         'openai-responses' => ['parameters', 'name'],
         'mistral' => ['function.parameters', 'function.name'],
         'xai' => ['function.parameters', 'function.name'],
+        'llama-server' => ['function.parameters', 'function.name'],
         'anthropic' => ['input_schema', 'name'],
         'ollama' => ['function.parameters', 'function.name'],
         'gemini' => ['functionDeclarations.0.parameters', 'functionDeclarations.0.name'],
@@ -373,7 +376,7 @@ test('llama.cpp puts required only on objects and never emits a list for propert
 // src/Provider — subdirectories included — fails here until someone decides which side of the
 // line it is on.
 test('the corpus runs every provider that formats a tool schema', function () {
-    $exercised = ['AnthropicProvider', 'GeminiProvider', 'MistralProvider', 'OllamaProvider', 'OpenAICompatibleProvider', 'OpenAIResponsesProvider', 'XAIProvider'];
+    $exercised = ['AnthropicProvider', 'GeminiProvider', 'LlamaServerProvider', 'MistralProvider', 'OllamaProvider', 'OpenAICompatibleProvider', 'OpenAIResponsesProvider', 'XAIProvider'];
     $sendNoToolSchema = [
         // Formats tools through LlamaCppToolSchemaNormalizer, which the corpus runs directly.
         'LlamaCppProvider',

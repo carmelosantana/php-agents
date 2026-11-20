@@ -64,6 +64,7 @@ new OpenAIResponsesProvider(model: 'gpt-4o', apiKey: getenv('OPENAI_API_KEY'));
 new GeminiProvider(model: 'gemini-2.5-flash', apiKey: getenv('GEMINI_API_KEY'));
 new XAIProvider(model: 'grok-3', apiKey: getenv('XAI_API_KEY'));
 new MistralProvider(model: 'mistral-large-latest', apiKey: getenv('MISTRAL_API_KEY'));
+new LlamaServerProvider(model: 'local');                                                   // llama.cpp llama-server, no key
 new OpenAICompatibleProvider(model: 'meta-llama/llama-3.1-70b-instruct',                    // OpenRouter, Groq, vLLM…
     apiKey: getenv('OPENROUTER_API_KEY'), baseUrl: 'https://openrouter.ai/api/v1');
 ```

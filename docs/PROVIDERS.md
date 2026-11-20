@@ -26,6 +26,53 @@ Providers abstract the differences between LLM APIs. php-agents ships with provi
 own toolkits run the tools and prior tool history is folded into the prompt. See
 [CliProvider (CLI Vendors)](#cliprovider-cli-vendors) below.
 
+## LlamaServerProvider
+
+Provider for llama.cpp's [`llama-server`](https://github.com/ggml-org/llama.cpp/tree/master/tools/server),
+the way to run a local GGUF with llama.cpp. Extends `OpenAICompatibleProvider` against the server's
+OpenAI-compatible `/v1` API.
+
+```php
+use CarmeloSantana\PHPAgents\Provider\LlamaServerProvider;
+
+// llama-server -m model.gguf --jinja -c 8192 --port 8080
+$provider = new LlamaServerProvider(model: 'local');
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `model` | `string` | — | Sent as `model`; a single-model server ignores it, a router-mode server picks the model by it |
+| `baseUrl` | `string` | `'http://localhost:8080/v1'` | Server URL including `/v1` |
+| `apiKey` | `string` | `''` | Only when the server runs with `--api-key`; empty sends no `Authorization` header |
+
+Start the server with `--jinja`: it then applies the model's own chat template, parses the model's
+native tool-call format and streams `tool_calls`, `reasoning_content` and text per token. Closing the
+stream (a cancel or a run limit) stops generation on the server. llama.cpp extras such as `grammar`,
+`json_schema`, `cache_prompt`, `id_slot` or `chat_template_kwargs` go in the caller options.
+
+What differs from `OpenAICompatibleProvider`:
+
+- `chat()` reads the reasoning from `message.reasoning_content`.
+- A stream reads its usage from the usage chunk (`stream_options.include_usage` is on by default).
+  With it turned off (`'stream_options' => null`), usage comes from the `timings` on the last chunk:
+  prompt `prompt_n + cache_n`, completion `predicted_n`, cache read `cache_n`.
+- `models()` reads the served context size from `/v1/models` `data[].meta.n_ctx` and image input
+  from `architecture.input_modalities`.
+
+With `ProviderFactory`, a `llama-cpp` (alias `llamacpp`) provider config that has a `baseUrl` makes
+a `LlamaServerProvider` for `llama-cpp/<model>`; `apiKey` is read from the same config:
+
+```json
+{
+    "providers": {
+        "llama-cpp": { "baseUrl": "http://localhost:8080/v1" }
+    }
+}
+```
+
+Without a `baseUrl`, `llama-cpp/…` still needs an injected `LocalModelRuntimeInterface` and makes the
+deprecated `LlamaCppProvider`.
+
 ## LlamaCppProvider
 
 `LlamaCppProvider` is the direct local provider for llama.cpp-backed runtimes. It keeps the same message, tool, streaming, multimodal, and structured-output surface as the rest of php-agents while dispatching through a local runtime instead of HTTP.
@@ -702,7 +749,7 @@ when the next chunk arrives:
 | Provider | Ticks during silence | Cancellation and run limits |
 |----------|:-:|---|
 | `AnthropicProvider` | ✅ | During silence |
-| `OpenAICompatibleProvider` (OpenAI, OpenRouter, MiniMax and other compatible servers), `OllamaProvider`, `XAIProvider`, `MistralProvider` | ✅ | During silence |
+| `OpenAICompatibleProvider` (OpenAI, OpenRouter, MiniMax and other compatible servers), `OllamaProvider`, `XAIProvider`, `MistralProvider`, `LlamaServerProvider` | ✅ | During silence |
 | `OpenAIResponsesProvider` | ✅ | During silence |
 | `GeminiProvider` | ✅ | During silence |
 | `LlamaCppProvider` | — | Per chunk only |
@@ -731,6 +778,7 @@ data it throws symfony's idle-timeout `TimeoutException`, up to one `tickInterva
 |----------|--------|--------------------|-----------|
 | `AnthropicProvider` | `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`, `output_tokens`; total is their sum | `cache_read_input_tokens` / `cache_creation_input_tokens` | `null` |
 | `OpenAICompatibleProvider` family | `prompt_tokens`, `completion_tokens`, `total_tokens` | `prompt_tokens_details.cached_tokens` / `null` | `completion_tokens_details.reasoning_tokens` |
+| `LlamaServerProvider` without a usage chunk | `timings`: `prompt_n + cache_n`, `predicted_n`; total is their sum | `cache_n` / `null` | `null` |
 | `OpenAIResponsesProvider` | `input_tokens`, `output_tokens`, `total_tokens` | `input_tokens_details.cached_tokens` / `null` | `output_tokens_details.reasoning_tokens` |
 | `GeminiProvider` | `promptTokenCount`, `candidatesTokenCount + thoughtsTokenCount`, `totalTokenCount` | `cachedContentTokenCount` / `null` | `thoughtsTokenCount` |
 | `LlamaCppProvider` | Prompt and generated token counts from the runtime | `null` | `null` |

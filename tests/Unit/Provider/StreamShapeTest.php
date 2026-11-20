@@ -11,6 +11,7 @@ use CarmeloSantana\PHPAgents\Provider\MistralProvider;
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
 use CarmeloSantana\PHPAgents\Provider\OpenAICompatibleProvider;
 use CarmeloSantana\PHPAgents\Provider\OpenAIResponsesProvider;
+use CarmeloSantana\PHPAgents\Provider\LlamaServerProvider;
 use CarmeloSantana\PHPAgents\Provider\XAIProvider;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
@@ -89,6 +90,10 @@ function shapeFixture(string $name): array
             fn(HttpClientInterface $c) => new XAIProvider(model: 'm-1', apiKey: 'key', httpClient: $c),
             shapeOpenAIBody(),
         ],
+        'llama-server' => [
+            fn(HttpClientInterface $c) => new LlamaServerProvider(model: 'm-1', httpClient: $c),
+            shapeOpenAIBody(),
+        ],
         'openai-responses' => [
             fn(HttpClientInterface $c) => new OpenAIResponsesProvider(model: 'm-1', apiKey: 'key', httpClient: $c),
             shapeSseBody([
@@ -137,7 +142,7 @@ test('stream yields one chunk per text delta then exactly one terminal chunk wit
         ->and($terminal->toolCalls)->toHaveCount(1)
         ->and($terminal->toolCalls[0]->name)->toBe('get_weather')
         ->and($terminal->toolCalls[0]->arguments)->toBe(['city' => 'NYC']);
-})->with(['anthropic', 'openai-compatible', 'mistral', 'ollama', 'xai', 'openai-responses', 'gemini']);
+})->with(['anthropic', 'openai-compatible', 'mistral', 'ollama', 'xai', 'llama-server', 'openai-responses', 'gemini']);
 
 test('AbstractProvider::stream() is final and streamEvents() is abstract', function () {
     expect((new ReflectionMethod(AbstractProvider::class, 'stream'))->isFinal())->toBeTrue()

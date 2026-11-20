@@ -138,7 +138,14 @@ final class ProviderFactory
 
         return match ($descriptor['type']) {
             'ollama' => self::makeOllamaProvider($model, $baseUrl, $config, $httpClient),
-            'llama-cpp' => self::makeLlamaCppProvider($model, $providerConfig, $config, $localModelRuntime),
+            'llama-cpp' => $baseUrl !== ''
+                ? new LlamaServerProvider(
+                    model: $model,
+                    baseUrl: $baseUrl,
+                    apiKey: $apiKey,
+                    httpClient: $httpClient,
+                )
+                : self::makeLlamaCppProvider($model, $providerConfig, $config, $localModelRuntime),
             'cli' => self::makeCliProvider($model, $providerName, $providerConfig, $cliRuntime),
             'anthropic' => new AnthropicProvider(
                 model: $model,
@@ -262,6 +269,8 @@ final class ProviderFactory
     }
 
     /**
+     * The deprecated in-process FFI path, reached only when the llama-cpp config has no baseUrl.
+     *
      * @param array<string, mixed> $providerConfig
      */
     private static function makeLlamaCppProvider(
@@ -271,7 +280,7 @@ final class ProviderFactory
         ?LocalModelRuntimeInterface $localModelRuntime,
     ): LlamaCppProvider {
         if ($localModelRuntime === null) {
-            throw new \InvalidArgumentException('llama-cpp provider requires an injected local model runtime.');
+            throw new \InvalidArgumentException('llama-cpp provider requires a baseUrl for llama-server (e.g. http://localhost:8080/v1) or an injected local model runtime.');
         }
 
         $modelDefinition = $config?->getModelDefinition($model);

@@ -122,7 +122,7 @@ class OpenAICompatibleProvider extends AbstractProvider
                 }
 
                 $model = is_string($json['model'] ?? null) && $json['model'] !== '' ? $json['model'] : $model;
-                $chunkUsage = is_array($json['usage'] ?? null) ? $this->parseUsage($json['usage']) : null;
+                $chunkUsage = $this->streamChunkUsage($json);
                 $usage = $chunkUsage ?? $usage;
 
                 if ($finish === null) {
@@ -250,6 +250,17 @@ class OpenAICompatibleProvider extends AbstractProvider
         }
 
         return new ToolInputEnd($position, $call['id'], $call['name'], $arguments);
+    }
+
+    /**
+     * The usage a streamed chunk carries, or null. A subclass reads a server's own
+     * usage fields here; the Finish waits for the first chunk where this is not null.
+     *
+     * @param array<mixed> $json
+     */
+    protected function streamChunkUsage(array $json): ?Usage
+    {
+        return is_array($json['usage'] ?? null) ? $this->parseUsage($json['usage']) : null;
     }
 
     /**
