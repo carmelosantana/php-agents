@@ -148,6 +148,10 @@ final class AnthropicProvider extends AbstractProvider
         /** @var array<int, true> $endedTools block indexes whose arguments are settled */
         $endedTools = [];
         $badToolArguments = false;
+        // Block indexes of the tool_use blocks whose arguments passed the byte cap: their
+        // fragments are no longer kept or yielded, and the call is dropped at its end.
+        /** @var array<int, true> $overCap */
+        $overCap = [];
         $currentBlockIndex = -1;
         $model = $this->model;
         /** @var array<string, mixed> $usage */
@@ -196,11 +200,16 @@ final class AnthropicProvider extends AbstractProvider
                     $index = $json['index'] ?? $currentBlockIndex;
                     $deltaType = $delta['type'] ?? '';
 
-                    if ($deltaType === 'input_json_delta' && isset($blocks[$index])) {
+                    if ($deltaType === 'input_json_delta' && isset($blocks[$index]) && !isset($overCap[$index])) {
                         $partialJson = (string) ($delta['partial_json'] ?? '');
-                        $blocks[$index]['json'] .= $partialJson;
-                        if (isset($toolPositions[$index])) {
-                            yield new ToolInputDelta($toolPositions[$index], $blocks[$index]['id'], $partialJson);
+                        if (isset($toolPositions[$index]) && ToolArguments::overByteCap(strlen($blocks[$index]['json']) + strlen($partialJson), $this->requestLimits)) {
+                            $overCap[$index] = true;
+                            $blocks[$index]['json'] = '';
+                        } else {
+                            $blocks[$index]['json'] .= $partialJson;
+                            if (isset($toolPositions[$index])) {
+                                yield new ToolInputDelta($toolPositions[$index], $blocks[$index]['id'], $partialJson);
+                            }
                         }
                     } elseif ($deltaType === 'signature_delta' && isset($blocks[$index])) {
                         $blocks[$index]['signature'] .= $delta['signature'] ?? '';
@@ -219,7 +228,7 @@ final class AnthropicProvider extends AbstractProvider
                     $index = $json['index'] ?? $currentBlockIndex;
                     if (isset($toolPositions[$index]) && !isset($endedTools[$index])) {
                         $endedTools[$index] = true;
-                        $end = $this->endToolInput($toolPositions[$index], $blocks[$index]);
+                        $end = $this->endToolInput($toolPositions[$index], $blocks[$index], isset($overCap[$index]));
                         if ($end === null) {
                             $badToolArguments = true;
                         } else {
@@ -243,7 +252,7 @@ final class AnthropicProvider extends AbstractProvider
                                 continue;
                             }
                             $endedTools[$index] = true;
-                            $end = $this->endToolInput($position, $blocks[$index]);
+                            $end = $this->endToolInput($position, $blocks[$index], isset($overCap[$index]));
                             if ($end === null) {
                                 $badToolArguments = true;
                             } else {
@@ -294,12 +303,21 @@ final class AnthropicProvider extends AbstractProvider
 
     /**
      * The ToolInputEnd for a finished tool_use block, or null (logged) when its
-     * arguments are not a JSON object.
+     * arguments are not a JSON object or passed the byte cap while streaming ($overCap).
      *
      * @param array{id: string, name: string, json: string} $block
      */
-    private function endToolInput(int $position, array $block): ?ToolInputEnd
+    private function endToolInput(int $position, array $block, bool $overCap = false): ?ToolInputEnd
     {
+        if ($overCap) {
+            $this->logger?->debug('Anthropic tool {tool} arguments passed the {max}-byte cap; the call is dropped', [
+                'tool' => $block['name'],
+                'max' => $this->requestLimits->maxToolArgumentBytes,
+            ]);
+
+            return null;
+        }
+
         $arguments = ToolArguments::decode($block['json'], $this->requestLimits);
         if ($arguments === null) {
             $this->logger?->debug('Anthropic tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [

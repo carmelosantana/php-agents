@@ -6,6 +6,7 @@ use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\CliRuntimeInterface;
 use CarmeloSantana\PHPAgents\Contract\CliVendorAdapterInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\SystemMessage;
 use CarmeloSantana\PHPAgents\Message\ToolResultMessage;
@@ -441,7 +442,9 @@ test('streamEvents drops a call over the tool-argument caps and finishes a tool 
     $ends = array_values(array_filter($events, fn($e) => $e instanceof ToolInputEnd));
 
     expect($ends)->toEqual([new ToolInputEnd(1, 'c2', 'now', [])])
-        ->and(array_map(fn($e) => $e::class, array_slice($events, 0, 2)))->toBe([ToolInputStart::class, ToolInputDelta::class])
+        // The dropped call's arguments are checked before any delta, so only c2's is yielded.
+        ->and(array_map(fn($e) => $e::class, array_slice($events, 0, 3)))->toBe([ToolInputStart::class, ToolInputStart::class, ToolInputDelta::class])
+        ->and(array_values(array_filter($events, fn($e) => $e instanceof ToolInputDelta)))->toEqual([new ToolInputDelta(1, 'c2', '{}')])
         ->and(end($events))->toEqual(new Finish(ProviderFinishReason::Error, '', null, 'fake-model-1'));
 })->with(fn() => [
     'bytes' => [['q' => str_repeat('x', 40)], new RequestLimits(maxToolArgumentBytes: 32)],
@@ -497,4 +500,59 @@ test('chat and streamEvents agree on Error when a Stop with tool calls drops one
 
     expect($provider->chat([new UserMessage('Hi')])->finishReason)->toBe(ProviderFinishReason::Error)
         ->and(end($events)->reason)->toBe(ProviderFinishReason::Error);
+});
+
+test('streamEvents stops reading CLI output past maxResponseBytes and throws', function () {
+    $chunk = new CliProcessChunk(content: cliNdjson([
+        ['type' => 'stream_event', 'event' => ['delta' => ['type' => 'text_delta', 'text' => str_repeat('x', 40)]]],
+    ]));
+    $runtime = new class($chunk) implements \CarmeloSantana\PHPAgents\Contract\CliRuntimeInterface {
+        public int $pulled = 0;
+
+        public function __construct(private CliProcessChunk $chunk) {}
+
+        public function isAvailable(string $binary): bool
+        {
+            return true;
+        }
+
+        public function run(\CarmeloSantana\PHPAgents\Provider\Cli\CliProcessRequest $request): CliProcessResult
+        {
+            return new CliProcessResult(0, '');
+        }
+
+        public function stream(\CarmeloSantana\PHPAgents\Provider\Cli\CliProcessRequest $request): iterable
+        {
+            // A runaway process: far more output than the cap (bounded so a failing test ends).
+            while ($this->pulled < 1000) {
+                $this->pulled++;
+                yield $this->chunk;
+            }
+            yield new CliProcessChunk(isLast: true);
+        }
+    };
+    $provider = new CliProvider('sonnet', new ClaudeCliVendorAdapter(), $runtime, new RequestLimits(maxResponseBytes: 400));
+    $error = null;
+
+    try {
+        iterator_to_array($provider->streamEvents([new UserMessage('hi')]), false);
+    } catch (ProviderException $e) {
+        $error = $e;
+    }
+
+    expect($runtime->pulled)->toBeLessThan(10)
+        ->and($error)->toBeInstanceOf(ProviderException::class)
+        ->and((string) $error?->getMessage())->toContain('exceeded 400 bytes');
+});
+
+test('chat refuses CLI output past maxResponseBytes', function () {
+    $runtime = (new FakeCliRuntime())->withResult(new CliProcessResult(0, (string) json_encode(['result' => str_repeat('x', 500)])));
+    $provider = new CliProvider('sonnet', new ClaudeCliVendorAdapter(), $runtime, new RequestLimits(maxResponseBytes: 400));
+
+    $provider->chat([new UserMessage('hi')]);
+})->throws(ProviderException::class, 'exceeded 400 bytes');
+
+test('CliProvider caps CLI output at the default maxResponseBytes', function () {
+    expect((new CliProvider('sonnet', new ClaudeCliVendorAdapter(), new FakeCliRuntime()))->requestLimits()->maxResponseBytes)
+        ->toBe(RequestLimits::DEFAULT_MAX_RESPONSE_BYTES);
 });

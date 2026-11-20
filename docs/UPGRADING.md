@@ -91,6 +91,23 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   credential split by a control or format character, and `redactSecrets()` (MCP results too) a key
   glued to `_` or punctuation, such as `reason_sk-…`. `scrub()` also blanks the Hangul fillers and
   never cuts a letter off its combining mark.
+- New `RequestLimits::$maxToolArgumentBytes` (default 4 MiB) and `$maxToolArgumentDepth` (default
+  `64`) cap one tool call's arguments on the bundled HTTP providers and `CliProvider`. A call over
+  either is dropped like one whose arguments are not a JSON object, so a 0.17 response with such a
+  call, which ran, now finishes `Error` (see [Request Limits](PROVIDERS.md#request-limits)). While
+  streaming, a call's argument deltas stop (no more `ToolInputDelta`) once they pass the byte cap,
+  and Gemini and `CliProvider` check a whole call before yielding its one delta, so a dropped call
+  there gets a `ToolInputStart` and no delta. Raise the caps with `withRequestLimits()` for a tool
+  that really takes more; `CliProvider` gains `withRequestLimits()`, `requestLimits()` and an
+  optional `requestLimits:` constructor argument for this.
+- `ToolArguments::decode()` and `fromDecoded()` apply the default caps (4 MiB, depth 64) when
+  called without `RequestLimits`; pass `new RequestLimits(maxToolArgumentBytes: 0, maxToolArgumentDepth: 0)`
+  for the 0.17 behaviour. `ToolArguments::toJson()` now writes UTF-8 and slashes unescaped, and
+  `null` for arguments it cannot encode, so the `ToolInputDelta` and `stream()` argument strings of
+  Gemini, Responses, CLI and llama.cpp can differ byte-for-byte from 0.17 (same JSON value).
+- `CliProvider` honours `RequestLimits::$maxResponseBytes` (default 32 MiB) on the process's stdout:
+  `streamEvents()` stops reading the process stream past it and `chat()` refuses a larger result,
+  each with a `ProviderException` (`response exceeded N bytes`). Pass `maxResponseBytes: 0` for no cap.
 - `SseStreamParser` applies its 1 MiB line cap (`maxLineBytes`) to every line, not only to one
   still waiting for its newline: a provider stream with a longer complete line now throws a
   `ProviderException` (`SSE line exceeded … bytes`) instead of decoding it.
@@ -118,12 +135,6 @@ public function streamEvents(array $messages, array $tools = [], array $options 
 - `RequestLimits::$tickInterval` (default `0.25`): the cancellation token and run limits are
   checked while a model is silent, on the providers listed under
   [Cancellation and idle ticks](PROVIDERS.md#cancellation-and-idle-ticks).
-- `RequestLimits::$maxToolArgumentBytes` (default 4 MiB) and `$maxToolArgumentDepth` (default `64`)
-  cap one tool call's arguments on the bundled HTTP providers and `CliProvider`; a call over either
-  is dropped like one whose arguments are not a JSON object (see
-  [Request Limits](PROVIDERS.md#request-limits)). Raise them with `withRequestLimits()` for a tool
-  that really takes more; `CliProvider` gains `withRequestLimits()`, `requestLimits()` and an
-  optional `requestLimits:` constructor argument for this, and applies only these two caps.
 - `Agent` takes `runLimits`, `cancellationToken` and `providerOptions` (see
   [The ready-made `Agent`](AGENTS.md#the-ready-made-agent)).
 - `LlamaServerProvider` runs a local GGUF through llama.cpp's `llama-server` (see

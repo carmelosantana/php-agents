@@ -98,6 +98,10 @@ class OpenAICompatibleProvider extends AbstractProvider
         $calls = [];
         /** @var array<int, int> $openCallAt provider index → position of the call open there */
         $openCallAt = [];
+        // Positions of the calls whose arguments passed the byte cap: their fragments are no
+        // longer kept or yielded, and the call is dropped at its end.
+        /** @var array<int, true> $overCap */
+        $overCap = [];
         $refused = false;
         $model = $this->model;
         $usage = null;
@@ -162,11 +166,19 @@ class OpenAICompatibleProvider extends AbstractProvider
 
                         $position = $openCallAt[$index];
                         $call = $calls[$position];
-                        if ($argumentsDelta !== '') {
-                            $call['arguments'] .= $argumentsDelta;
-                            $calls[$position] = $call;
-                            yield new ToolInputDelta($position, $call['id'], $argumentsDelta);
+                        if ($argumentsDelta === '' || isset($overCap[$position])) {
+                            continue;
                         }
+                        if (ToolArguments::overByteCap(strlen($call['arguments']) + strlen($argumentsDelta), $this->requestLimits)) {
+                            $overCap[$position] = true;
+                            $call['arguments'] = '';
+                            $calls[$position] = $call;
+
+                            continue;
+                        }
+                        $call['arguments'] .= $argumentsDelta;
+                        $calls[$position] = $call;
+                        yield new ToolInputDelta($position, $call['id'], $argumentsDelta);
                     }
 
                     $finishReason = $choice['finish_reason'] ?? null;
@@ -175,7 +187,7 @@ class OpenAICompatibleProvider extends AbstractProvider
 
                         if ($finish['reason'] === ProviderFinishReason::ToolUse) {
                             foreach ($calls as $position => $call) {
-                                $end = $this->endToolInput($position, $call);
+                                $end = isset($overCap[$position]) ? $this->dropOverCap($call['name']) : $this->endToolInput($position, $call);
                                 if ($end === null) {
                                     $finish['reason'] = ProviderFinishReason::Error;
                                 } else {
@@ -250,6 +262,20 @@ class OpenAICompatibleProvider extends AbstractProvider
         }
 
         return new ToolInputEnd($position, $call['id'], $call['name'], $arguments);
+    }
+
+    /**
+     * Log a call whose streamed arguments passed the byte cap; it is dropped like one whose
+     * arguments are not a JSON object. Always null, the "no ToolInputEnd" of endToolInput().
+     */
+    private function dropOverCap(string $tool): null
+    {
+        $this->logger?->debug('Tool {tool} arguments passed the {max}-byte cap; the call is dropped', [
+            'tool' => $tool,
+            'max' => $this->requestLimits->maxToolArgumentBytes,
+        ]);
+
+        return null;
     }
 
     /**

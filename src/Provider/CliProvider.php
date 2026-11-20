@@ -10,6 +10,7 @@ use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
@@ -30,10 +31,15 @@ use CarmeloSantana\PHPAgents\Tool\ToolCall;
  * every CLI vendor (claude, codex, grok, ...) and keeps php-agents free of any
  * concrete subprocess dependency — the host supplies the runtime.
  *
- * It sends no HTTP request, so of $requestLimits only the tool-argument caps
- * (maxToolArgumentBytes, maxToolArgumentDepth) apply: a tool call over either, or whose
- * arguments are not a JSON object, is dropped, in chat() and streamEvents() alike, and a
- * response that would have finished ToolUse finishes Error.
+ * It sends no HTTP request, so of $requestLimits only these apply:
+ *   - maxResponseBytes caps the process's stdout: streamEvents() stops reading the process
+ *     stream once its fragments pass it, and chat() refuses a larger result, each with a
+ *     ProviderException ("response exceeded N bytes"); 0 means no cap. A runtime's run()
+ *     buffers the whole output before chat() can check it, so a host that needs a hard bound
+ *     on a non-streaming vendor enforces it in the runtime too.
+ *   - maxToolArgumentBytes and maxToolArgumentDepth: a tool call over either, or whose
+ *     arguments are not a JSON object, is dropped, in chat() and streamEvents() alike, and a
+ *     response that would have finished ToolUse finishes Error.
  */
 final class CliProvider implements ProviderInterface
 {
@@ -45,7 +51,8 @@ final class CliProvider implements ProviderInterface
     ) {}
 
     /**
-     * Return a copy whose later calls use $limits; of them only the tool-argument caps apply.
+     * Return a copy whose later calls use $limits; of them only maxResponseBytes and the
+     * tool-argument caps apply.
      * The original keeps its limits.
      */
     public function withRequestLimits(RequestLimits $limits): static
@@ -103,6 +110,7 @@ final class CliProvider implements ProviderInterface
     {
         $request = $this->adapter->buildRequest($messages, $tools, $options, $this->model, false);
         $result = $this->runtime->run($request);
+        $this->checkOutputBytes(strlen($result->stdout));
 
         return $this->adapter->parseResult($result, $this->model);
     }
@@ -147,12 +155,13 @@ final class CliProvider implements ProviderInterface
             foreach ($response->toolCalls as $call) {
                 $index = $callCount++;
                 yield new ToolInputStart($index, $call->id, $call->name);
-                yield new ToolInputDelta($index, $call->id, ToolArguments::toJson($call->arguments));
+                // Checked before the delta, so arguments over a cap are never yielded.
                 $arguments = ToolArguments::fromDecoded($call->arguments, $this->requestLimits);
                 if ($arguments === null) {
                     $badArguments = true;
                     continue;
                 }
+                yield new ToolInputDelta($index, $call->id, ToolArguments::toJson($call->arguments));
                 yield new ToolInputEnd($index, $call->id, $call->name, $arguments, $call->metadata);
             }
 
@@ -224,6 +233,17 @@ final class CliProvider implements ProviderInterface
     }
 
     /**
+     * Throw when $bytes of process output pass RequestLimits::$maxResponseBytes.
+     */
+    private function checkOutputBytes(int $bytes): void
+    {
+        $max = $this->requestLimits->maxResponseBytes;
+        if ($max > 0 && $bytes > $max) {
+            throw ProviderException::requestRefused(sprintf('response exceeded %d bytes', $max));
+        }
+    }
+
+    /**
      * The adapter's responses for one turn: one per streamed stdout fragment that carries
      * anything, or the single chat() response when the vendor cannot stream. Returns whether
      * the runtime reported a process error.
@@ -245,8 +265,13 @@ final class CliProvider implements ProviderInterface
 
         $carry = [];
         $sawError = false;
+        $outputBytes = 0;
 
         foreach ($this->runtime->stream($request) as $chunk) {
+            // Thrown before the fragment is parsed; leaving the loop releases the process stream.
+            $outputBytes += strlen($chunk->content);
+            $this->checkOutputBytes($outputBytes);
+
             if ($chunk->error !== null && $chunk->error !== '') {
                 $sawError = true;
             }

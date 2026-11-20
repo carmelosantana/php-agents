@@ -51,6 +51,18 @@ final class ToolArguments
     }
 
     /**
+     * Whether $bytes of one call's argument JSON are over $limits' tool-argument byte cap. A
+     * streaming provider checks each fragment with it before keeping or yielding the fragment,
+     * so a call past the cap is never buffered whole.
+     */
+    public static function overByteCap(int $bytes, ?RequestLimits $limits = null): bool
+    {
+        $max = ($limits ?? new RequestLimits())->maxToolArgumentBytes;
+
+        return $max > 0 && $bytes > $max;
+    }
+
+    /**
      * Arguments from a decoded (non-streaming) response body: a wire string is decoded as
      * decode() does, a missing value is `{}`, an associative array (a JSON object, `{}`
      * included) is kept when it is within $limits' tool-argument byte and depth caps, and

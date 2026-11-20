@@ -105,6 +105,10 @@ final class OpenAIResponsesProvider extends AbstractProvider
         $calls = [];
         /** @var array<int, int> $callAt output_index → position */
         $callAt = [];
+        // Positions of the calls whose arguments passed the byte cap: their fragments are no
+        // longer kept or yielded, and the call is dropped at its end.
+        /** @var array<int, true> $overCap */
+        $overCap = [];
         $refused = false;
         $invalidArguments = false;
         $model = $this->model;
@@ -180,14 +184,18 @@ final class OpenAIResponsesProvider extends AbstractProvider
                         }
 
                         $itemArguments = ToolArguments::toJson($item['arguments'] ?? null);
-                        if ($call['arguments'] === '' && $itemArguments !== '') {
-                            $call['arguments'] = $itemArguments;
-                            yield new ToolInputDelta($position, $call['id'], $itemArguments);
+                        if ($call['arguments'] === '' && $itemArguments !== '' && !isset($overCap[$position])) {
+                            if (ToolArguments::overByteCap(strlen($itemArguments), $this->requestLimits)) {
+                                $overCap[$position] = true;
+                            } else {
+                                $call['arguments'] = $itemArguments;
+                                yield new ToolInputDelta($position, $call['id'], $itemArguments);
+                            }
                         }
 
                         $call['ended'] = true;
                         $calls[$position] = $call;
-                        $end = $this->endToolInput($position, $call);
+                        $end = $this->endToolInput($position, $call, isset($overCap[$position]));
                         if ($end === null) {
                             $invalidArguments = true;
                         } else {
@@ -197,11 +205,20 @@ final class OpenAIResponsesProvider extends AbstractProvider
                 } elseif ($eventType === 'response.function_call_arguments.delta') {
                     $position = $callAt[(int) ($json['output_index'] ?? 0)] ?? null;
                     $delta = ToolArguments::toJson($json['delta'] ?? null);
-                    if ($position === null || $calls[$position]['ended'] || $delta === '') {
+                    if ($position === null || $calls[$position]['ended'] || $delta === '' || isset($overCap[$position])) {
                         continue; // Fragments for a call that is not open carry nothing usable.
                     }
+                    $call = $calls[$position];
+                    if (ToolArguments::overByteCap(strlen($call['arguments']) + strlen($delta), $this->requestLimits)) {
+                        $overCap[$position] = true;
+                        $call['arguments'] = '';
+                        $calls[$position] = $call;
 
-                    $calls[$position]['arguments'] .= $delta;
+                        continue;
+                    }
+
+                    $call['arguments'] .= $delta;
+                    $calls[$position] = $call;
                     yield new ToolInputDelta($position, $calls[$position]['id'], $delta);
                 } elseif ($eventType === 'response.completed') {
                     $reason = $this->mapStatus(['status' => 'completed'], $calls !== [], $refused);
@@ -211,7 +228,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
                             if ($call['ended']) {
                                 continue;
                             }
-                            $end = $this->endToolInput($position, $call);
+                            $end = $this->endToolInput($position, $call, isset($overCap[$position]));
                             if ($end === null) {
                                 $invalidArguments = true;
                             } else {
@@ -272,12 +289,22 @@ final class OpenAIResponsesProvider extends AbstractProvider
 
     /**
      * The ToolInputEnd for a finished call, or null (logged) when its arguments
-     * are not a JSON object. Empty or whitespace arguments decode as `{}`.
+     * are not a JSON object or passed the byte cap while streaming ($overCap). Empty or
+     * whitespace arguments decode as `{}`.
      *
      * @param array{id: string, name: string, arguments: string, ended: bool} $call
      */
-    private function endToolInput(int $position, array $call): ?ToolInputEnd
+    private function endToolInput(int $position, array $call, bool $overCap = false): ?ToolInputEnd
     {
+        if ($overCap) {
+            $this->logger?->debug('Tool {tool} arguments passed the {max}-byte cap; the call is dropped', [
+                'tool' => $call['name'],
+                'max' => $this->requestLimits->maxToolArgumentBytes,
+            ]);
+
+            return null;
+        }
+
         $arguments = ToolArguments::decode($call['arguments'], $this->requestLimits);
         if ($arguments === null) {
             $this->logger?->debug('Tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [

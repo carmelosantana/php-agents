@@ -186,8 +186,8 @@ final class GeminiProvider extends AbstractProvider
                         $argumentsJson = ToolArguments::toJson($part['functionCall']['args'] ?? []);
 
                         yield new ToolInputStart($index, $id, $name);
-                        yield new ToolInputDelta($index, $id, $argumentsJson);
 
+                        // Checked before the delta, so arguments over a cap are never yielded.
                         $arguments = ToolArguments::decode($argumentsJson, $this->requestLimits);
                         if ($arguments === null) {
                             $this->logger?->debug('Tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [
@@ -199,6 +199,7 @@ final class GeminiProvider extends AbstractProvider
                             continue;
                         }
 
+                        yield new ToolInputDelta($index, $id, $argumentsJson);
                         $metadata = isset($part['thoughtSignature']) ? ['thoughtSignature' => $part['thoughtSignature']] : [];
                         yield new ToolInputEnd($index, $id, $name, $arguments, $metadata);
                     }

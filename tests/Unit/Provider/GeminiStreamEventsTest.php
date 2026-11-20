@@ -165,8 +165,9 @@ test('streamEvents drops a call whose args are not a JSON object and finishes wi
         geminiChunk([['functionCall' => ['name' => 'x', 'args' => [1, 2]]]], 'STOP'),
     ]);
 
-    expect(geminiEventClasses($events))->toBe([ToolInputStart::class, ToolInputDelta::class, Finish::class])
-        ->and($events[2])->toEqual(new Finish(ProviderFinishReason::Error, 'STOP', null, 'gemini-2.5-flash'));
+    // The arguments are checked before their delta, so a dropped call gets none.
+    expect(geminiEventClasses($events))->toBe([ToolInputStart::class, Finish::class])
+        ->and($events[1])->toEqual(new Finish(ProviderFinishReason::Error, 'STOP', null, 'gemini-2.5-flash'));
 });
 
 test('streamEvents drops a call whose args nest past the depth cap and finishes with Error', function () {
@@ -174,8 +175,9 @@ test('streamEvents drops a call whose args nest past the depth cap and finishes 
         geminiChunk([['functionCall' => ['name' => 'x', 'args' => json_decode(str_repeat('{"a":', 65) . '1' . str_repeat('}', 65), true)]]], 'STOP'),
     ]);
 
-    expect(geminiEventClasses($events))->toBe([ToolInputStart::class, ToolInputDelta::class, Finish::class])
-        ->and($events[2])->toEqual(new Finish(ProviderFinishReason::Error, 'STOP', null, 'gemini-2.5-flash'));
+    // The arguments are checked before their delta, so a dropped call gets none.
+    expect(geminiEventClasses($events))->toBe([ToolInputStart::class, Finish::class])
+        ->and($events[1])->toEqual(new Finish(ProviderFinishReason::Error, 'STOP', null, 'gemini-2.5-flash'));
 });
 
 test('streamEvents maps a blocked prompt to ContentFilter with the block reason as raw reason', function () {
