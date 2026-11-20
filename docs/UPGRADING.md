@@ -13,6 +13,7 @@
 | An Anthropic stream whose `tool_use` arguments passed `RequestLimits::$maxToolArgumentBytes` and that ends on a reason other than tool use (`end_turn`, say) gives `Finish::$contentBlocks` `[]`, as a call whose arguments are not a JSON object does; 0.18 kept that call in the blocks with `input: {}` | `streamEvents()` and `stream()` callers that read `contentBlocks` | None; replay falls back to the message without its blocks |
 | Gemini `functionCall` args whose keys are `"0"`, `"1"`, … are kept as a JSON object and the call runs; 0.18 decoded them to a PHP list, re-encoded them as a JSON array and dropped the call (a `ToolUse` finish became `Error`) | Gemini tools with numeric-string argument names | None |
 | A Gemini `functionCall` with no name is dropped (logged at debug), in `streamEvents()` and `chat()`, like a call whose arguments are not a JSON object: a finish that would have been `ToolUse` is `Error`. `chat()` used to fail with a `TypeError`, and the stream ended the call with an empty name | Gemini responses with a nameless call | None |
+| Once the cancellation token reports a cancel, the run stays cancelled until `run()` returns, even if the token later reports `false`; 0.18 re-read it at each check, so a token that un-cancelled could, for example, answer every tool call as cancelled and then carry on to the next iteration | Tokens whose `isCancelled()` can go back to `false` within a run | None; reset the token between runs as before, since each `run()` reads it afresh |
 
 ## Upgrading to 0.18
 

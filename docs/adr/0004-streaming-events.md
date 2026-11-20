@@ -232,7 +232,8 @@ Tests pin each sequence.
 - Checked on every stream event (ticks included), at the top of each iteration, after the
   response finishes (after `agent.step_finish`, after the policy allows `done`, and just before a
   text answer is accepted, and after `agent.empty_response`), before each tool call and before a
-  batch starts. A `Finish` that arrived before a cancel, a streaming run limit or a provider
+  batch starts. The first cancel the token reports latches for the rest of the run, so every
+  later check agrees with it; each `run()` starts unlatched. A `Finish` that arrived before a cancel, a streaming run limit or a provider
   exception ended the stream has its usage counted and reported to the context window; the run
   still ends without `agent.step_finish` on those paths.
 - **Mid-stream.** Iteration stops and the HTTP response is cancelled. `Output->content` is the

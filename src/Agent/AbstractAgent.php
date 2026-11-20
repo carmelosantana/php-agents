@@ -219,6 +219,7 @@ abstract class AbstractAgent implements AgentInterface
      */
     public function run(MessageInterface $input, ?Conversation $history = null): Output
     {
+        $this->runCancelled = false;
         $output = $this->runLoop($input, $history);
 
         $this->notify('agent.finish', new RunFinish(
@@ -325,7 +326,7 @@ abstract class AbstractAgent implements AgentInterface
             }
 
             // Check cooperative cancellation before each iteration
-            if ($this->cancellationToken?->isCancelled()) {
+            if ($this->cancelled()) {
                 return $this->cancelledOutput('', $conversation, $allToolResults, $totalUsage, $i + 1);
             }
 
@@ -454,7 +455,7 @@ abstract class AbstractAgent implements AgentInterface
 
                     // Check cancellation on every event, ticks included, so ESC/Ctrl+C
                     // returns to the prompt without waiting for the full response.
-                    if ($this->cancellationToken?->isCancelled()) {
+                    if ($this->cancelled()) {
                         $cancelled = true;
                         break;
                     }
@@ -615,7 +616,7 @@ abstract class AbstractAgent implements AgentInterface
                 }
                 // A cancel that aborts the transport surfaces as a throw; it ends the run
                 // the way a cancel seen between events does.
-                if ($this->cancellationToken?->isCancelled()) {
+                if ($this->cancelled()) {
                     $cancelled = true;
                 } else {
                     $errorMessage = $this->providerErrorMessage($e);
@@ -638,7 +639,7 @@ abstract class AbstractAgent implements AgentInterface
 
             // A stream cut short by a cancel can end without a Finish; that is the cancel, not a
             // provider error.
-            if ($finish === null && $streamLimit === null && $this->cancellationToken?->isCancelled()) {
+            if ($finish === null && $streamLimit === null && $this->cancelled()) {
                 $cancelled = true;
             }
 
@@ -714,7 +715,7 @@ abstract class AbstractAgent implements AgentInterface
             // mid-stream cancel. A response of ordinary tool calls goes on to executeToolCalls,
             // which answers each call as cancelled; a refusal, filter, context-window or provider
             // error finish keeps its own reason; an empty response is checked before a fallback.
-            if ($this->cancellationToken?->isCancelled() && $this->isFinalAnswer($response)) {
+            if ($this->cancelled() && $this->isFinalAnswer($response)) {
                 $this->discardCalls($response->toolCalls !== [] ? $completedCalls : [], 'cancelled');
 
                 return $this->cancelledOutput(self::cancelledAnswer($contentParts, $donePreview), $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
@@ -763,7 +764,7 @@ abstract class AbstractAgent implements AgentInterface
             $doneDiscards = [];
             $doneResults = $this->resolveDoneCalls($response->toolCalls, $finishingCall, $doneDiscards);
             // The execution policy may cancel while it allows `done`.
-            if ($finishingCall !== null && $this->cancellationToken?->isCancelled()) {
+            if ($finishingCall !== null && $this->cancelled()) {
                 $this->discardCalls($completedCalls, 'cancelled');
 
                 return $this->cancelledOutput(self::cancelledAnswer($contentParts, $donePreview), $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
@@ -834,7 +835,7 @@ abstract class AbstractAgent implements AgentInterface
                 }
 
                 // A cancel during tools ends the run after every call has a result.
-                if ($this->cancellationToken?->isCancelled()) {
+                if ($this->cancelled()) {
                     return $this->cancelledOutput('', $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
                 }
 
@@ -863,7 +864,7 @@ abstract class AbstractAgent implements AgentInterface
             // Text-only response (no tool calls) — this IS the response.
             // The done tool is only needed after tool use to present results.
             if ($response->content !== '') {
-                if ($this->cancellationToken?->isCancelled()) {
+                if ($this->cancelled()) {
                     return $this->cancelledOutput($response->content, $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
                 }
 
@@ -895,7 +896,7 @@ abstract class AbstractAgent implements AgentInterface
 
             // A cancel on agent.step_finish or agent.empty_response ends the run before the
             // empty-response policy can retry, fall back or give up.
-            if ($this->cancellationToken?->isCancelled()) {
+            if ($this->cancelled()) {
                 return $this->cancelledOutput('', $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
             }
 
@@ -1554,7 +1555,7 @@ abstract class AbstractAgent implements AgentInterface
             $this->tickCallback->tick();
 
             // Once cancelled, every remaining call is answered without running.
-            if ($cancelled || $this->cancellationToken?->isCancelled()) {
+            if ($cancelled || $this->cancelled()) {
                 $cancelled = true;
                 $preResolved[$position] = $this->cancelledToolResult($toolCall);
                 continue;
@@ -1606,7 +1607,7 @@ abstract class AbstractAgent implements AgentInterface
         $executedResults = [];
         $terminationException = null;
 
-        if ($useBatch && $this->cancellationToken?->isCancelled()) {
+        if ($useBatch && $this->cancelled()) {
             foreach ($approved as $position => $entry) {
                 $executedResults[$position] = $this->cancelledToolResult($entry['toolCall']);
             }
@@ -1660,7 +1661,7 @@ abstract class AbstractAgent implements AgentInterface
         } else {
             // Serial execution (single tool or non-batch executor)
             foreach ($approved as $position => $entry) {
-                if ($cancelled || $this->cancellationToken?->isCancelled()) {
+                if ($cancelled || $this->cancelled()) {
                     $cancelled = true;
                     $executedResults[$position] = $this->cancelledToolResult($entry['toolCall']);
                     continue;
@@ -2024,4 +2025,20 @@ abstract class AbstractAgent implements AgentInterface
 
     /** The last exception an observer threw from notify(), so run() does not mistake it for the provider's. */
     private ?\Throwable $observerException = null;
+
+    /** Whether the cancellation token has reported a cancel during the current run. */
+    private bool $runCancelled = false;
+
+    /**
+     * Whether the run is cancelled. Once the token reports a cancel, the run stays cancelled
+     * until the next run() starts, whatever the token reports afterwards.
+     */
+    private function cancelled(): bool
+    {
+        if (!$this->runCancelled && $this->cancellationToken?->isCancelled() === true) {
+            $this->runCancelled = true;
+        }
+
+        return $this->runCancelled;
+    }
 }

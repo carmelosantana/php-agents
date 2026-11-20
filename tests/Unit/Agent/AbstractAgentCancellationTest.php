@@ -154,8 +154,11 @@ function cancelledBeforeItRan(string $callId): ToolResult
 }
 
 test('a cancel on a Tick mid-text returns the streamed text as Cancelled and abandons the stream', function () {
+    $readPastCancel = false;
     [$agent, $events, $provider] = cancellationAgent(
-        [[new TextDelta('Hello '), new TextDelta('wor'), new Tick(), new TextDelta('ld'), new Finish(ProviderFinishReason::Stop, 'stop', null, 'test-model')]],
+        [[new TextDelta('Hello '), new TextDelta('wor'), new Tick(), function () use (&$readPastCancel): void {
+            $readPastCancel = true;
+        }, new TextDelta('ld'), new Finish(ProviderFinishReason::Stop, 'stop', null, 'test-model')]],
         fn(string $event, mixed $data): bool => $event === 'agent.text_delta' && $data === 'wor',
     );
 
@@ -179,12 +182,16 @@ test('a cancel on a Tick mid-text returns the streamed text as Cancelled and aba
         ])
         ->and($events->dataFor('agent.error'))->toBe(['Task cancelled'])
         ->and($events->dataFor('agent.finish'))->toEqual([new RunFinish(AgentFinishReason::Cancelled, $output->usage ?? throw new LogicException(), 1, '')])
-        ->and($provider->closedStreams)->toBe(1);
+        ->and($provider->closedStreams)->toBe(1)
+        ->and($readPastCancel)->toBeFalse();
 });
 
 test('a cancel before any text returns the cancelled notice and appends no assistant message', function () {
+    $readPastCancel = false;
     [$agent, $events, $provider] = cancellationAgent(
-        [[new Tick(), new TextDelta('Hi'), new Finish(ProviderFinishReason::Stop, 'stop', null, 'test-model')]],
+        [[new Tick(), function () use (&$readPastCancel): void {
+            $readPastCancel = true;
+        }, new TextDelta('Hi'), new Finish(ProviderFinishReason::Stop, 'stop', null, 'test-model')]],
         fn(string $event): bool => $event === 'agent.iteration',
     );
 
@@ -196,7 +203,8 @@ test('a cancel before any text returns the cancelled notice and appends no assis
         ->and($output->content)->toBe('Task was cancelled.')
         ->and(end($messages))->toBe($input)
         ->and($events->names())->toBe(['agent.start', 'agent.iteration', 'agent.error', 'agent.finish'])
-        ->and($provider->closedStreams)->toBe(1);
+        ->and($provider->closedStreams)->toBe(1)
+        ->and($readPastCancel)->toBeFalse();
 });
 
 test('a cancel while a tool call streams discards every call of the response and runs none', function () {
@@ -514,6 +522,81 @@ test('a cancel from the execution policy while it allows done returns Cancelled,
         ->and($events->dataFor('agent.done'))->toBe([])
         ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'd1', 'done', 'cancelled')])
         ->and(array_slice($events->names(), -3))->toBe(['agent.tool_input_discarded', 'agent.error', 'agent.finish']);
+});
+
+test('a cancel from the execution policy while it denies done returns Cancelled', function () {
+    $token = new CancellationTestToken();
+    $policy = new class ($token) implements \CarmeloSantana\PHPAgents\Contract\ToolExecutionPolicyInterface {
+        public function __construct(private CancellationTestToken $token) {}
+
+        public function shouldExecute(string $toolName, array $arguments): true|string
+        {
+            $this->token->cancelled = true;
+
+            return 'Not now.';
+        }
+    };
+    $provider = new ScriptedEventsProvider([[
+        new ToolInputStart(0, 'd1', 'done'),
+        new ToolInputDelta(0, 'd1', '{"response":"The answer is 4."}'),
+        new ToolInputEnd(0, 'd1', 'done', ['response' => 'The answer is 4.']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ]]);
+    $agent = new CancellationTestAgent(provider: $provider, cancellationToken: $token, executionPolicy: $policy);
+    $events = new CancellationTestRecorder();
+    $agent->attach($events);
+
+    $output = $agent->run(new UserMessage('2+2?'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($provider->calls)->toBe(1)
+        ->and($events->dataFor('agent.done'))->toBe([])
+        ->and(array_slice($events->names(), -2))->toBe(['agent.error', 'agent.finish']);
+});
+
+test('a token that reports a cancel once is treated as cancelled for the rest of the run', function () {
+    $token = new class implements CancellationTokenInterface {
+        public bool $armed = false;
+
+        public function isCancelled(): bool
+        {
+            $fired = $this->armed;
+            $this->armed = false;
+
+            return $fired;
+        }
+    };
+    $provider = new ScriptedEventsProvider([cancellationToolRound([['c1', 'echo', ['text' => 'a']], ['c2', 'echo', ['text' => 'b']]])]);
+    $agent = new CancellationTestAgent(provider: $provider, cancellationToken: $token);
+    $agent->attach(new CallbackObserver(function (string $event) use ($token): void {
+        if ($event === 'agent.step_finish') {
+            $token->armed = true;
+        }
+    }));
+
+    $output = $agent->run(new UserMessage('Echo a and b.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->toolResults)->toEqual([cancelledBeforeItRan('c1'), cancelledBeforeItRan('c2')])
+        ->and($provider->calls)->toBe(1);
+});
+
+test('a cancel latched in one run does not carry into the next run', function () {
+    $token = new CancellationTestToken();
+    $provider = new ScriptedEventsProvider([
+        [new TextDelta('first'), new Finish(ProviderFinishReason::Stop, 'stop', null, 'test-model')],
+        [new TextDelta('second'), new Finish(ProviderFinishReason::Stop, 'stop', null, 'test-model')],
+    ]);
+    $agent = new CancellationTestAgent(provider: $provider, cancellationToken: $token);
+    $token->cancelled = true;
+    $first = $agent->run(new UserMessage('One.'));
+    $token->cancelled = false;
+
+    $second = $agent->run(new UserMessage('Two.'));
+
+    expect($first->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($second->finishReason)->toBe(AgentFinishReason::Stop)
+        ->and($second->content)->toBe('first');
 });
 
 test('a stream that ends without a finish once the token is set ends the run as Cancelled', function () {
