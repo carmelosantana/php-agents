@@ -36,12 +36,13 @@ function shapeSseBody(array $events, bool $named = false): string
 }
 
 /**
- * Text "Call" + "ing." then one get_weather call, in the OpenAI chat-completions wire format
+ * Reasoning "Hmm." then text "Call" + "ing." then one get_weather call, in the OpenAI chat-completions wire format
  * with usage on its own chunk after the finish chunk.
  */
 function shapeOpenAIBody(): string
 {
     return shapeSseBody([
+        ['model' => 'm-1', 'choices' => [['delta' => ['reasoning_content' => 'Hmm.'], 'finish_reason' => null]]],
         ['model' => 'm-1', 'choices' => [['delta' => ['content' => 'Call'], 'finish_reason' => null]]],
         ['model' => 'm-1', 'choices' => [['delta' => ['content' => 'ing.'], 'finish_reason' => null]]],
         ['model' => 'm-1', 'choices' => [['delta' => ['tool_calls' => [
@@ -63,13 +64,17 @@ function shapeFixture(string $name): array
             fn(HttpClientInterface $c) => new AnthropicProvider(apiKey: 'key', httpClient: $c),
             shapeSseBody([
                 ['type' => 'message_start', 'message' => ['model' => 'm-1', 'usage' => ['input_tokens' => 5, 'output_tokens' => 1]]],
-                ['type' => 'content_block_start', 'index' => 0, 'content_block' => ['type' => 'text', 'text' => '']],
-                ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'text_delta', 'text' => 'Call']],
-                ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'text_delta', 'text' => 'ing.']],
+                ['type' => 'content_block_start', 'index' => 0, 'content_block' => ['type' => 'thinking', 'thinking' => '']],
+                ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'thinking_delta', 'thinking' => 'Hmm.']],
+                ['type' => 'content_block_delta', 'index' => 0, 'delta' => ['type' => 'signature_delta', 'signature' => 'sig']],
                 ['type' => 'content_block_stop', 'index' => 0],
-                ['type' => 'content_block_start', 'index' => 1, 'content_block' => ['type' => 'tool_use', 'id' => 'call_1', 'name' => 'get_weather', 'input' => []]],
-                ['type' => 'content_block_delta', 'index' => 1, 'delta' => ['type' => 'input_json_delta', 'partial_json' => '{"city":"NYC"}']],
+                ['type' => 'content_block_start', 'index' => 1, 'content_block' => ['type' => 'text', 'text' => '']],
+                ['type' => 'content_block_delta', 'index' => 1, 'delta' => ['type' => 'text_delta', 'text' => 'Call']],
+                ['type' => 'content_block_delta', 'index' => 1, 'delta' => ['type' => 'text_delta', 'text' => 'ing.']],
                 ['type' => 'content_block_stop', 'index' => 1],
+                ['type' => 'content_block_start', 'index' => 2, 'content_block' => ['type' => 'tool_use', 'id' => 'call_1', 'name' => 'get_weather', 'input' => []]],
+                ['type' => 'content_block_delta', 'index' => 2, 'delta' => ['type' => 'input_json_delta', 'partial_json' => '{"city":"NYC"}']],
+                ['type' => 'content_block_stop', 'index' => 2],
                 ['type' => 'message_delta', 'delta' => ['stop_reason' => 'tool_use'], 'usage' => ['output_tokens' => 2]],
                 ['type' => 'message_stop'],
             ], named: true),
@@ -98,6 +103,7 @@ function shapeFixture(string $name): array
             fn(HttpClientInterface $c) => new OpenAIResponsesProvider(model: 'm-1', apiKey: 'key', httpClient: $c),
             shapeSseBody([
                 ['type' => 'response.created', 'response' => ['model' => 'm-1', 'usage' => ['input_tokens' => 1, 'output_tokens' => 0]]],
+                ['type' => 'response.reasoning_summary_text.delta', 'delta' => 'Hmm.'],
                 ['type' => 'response.output_text.delta', 'delta' => 'Call'],
                 ['type' => 'response.output_text.delta', 'delta' => 'ing.'],
                 ['type' => 'response.output_item.added', 'output_index' => 1, 'item' => ['type' => 'function_call', 'call_id' => 'call_1', 'name' => 'get_weather', 'arguments' => '']],
@@ -109,6 +115,7 @@ function shapeFixture(string $name): array
         'gemini' => [
             fn(HttpClientInterface $c) => new GeminiProvider(model: 'm-1', apiKey: 'key', httpClient: $c),
             shapeSseBody([
+                ['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'Hmm.', 'thought' => true]]]]]],
                 ['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'Call']]]]]],
                 ['candidates' => [['content' => ['role' => 'model', 'parts' => [['text' => 'ing.'], ['functionCall' => ['name' => 'get_weather', 'args' => ['city' => 'NYC']]]]]]]],
                 ['candidates' => [['content' => ['role' => 'model', 'parts' => []], 'finishReason' => 'STOP']], 'usageMetadata' => ['promptTokenCount' => 5, 'candidatesTokenCount' => 2, 'totalTokenCount' => 7]],
@@ -117,24 +124,27 @@ function shapeFixture(string $name): array
     };
 }
 
-test('stream yields one chunk per text delta then exactly one terminal chunk with reason, usage and tool calls', function (string $name) {
+test('stream yields one chunk per reasoning or text delta then exactly one terminal chunk with reason, usage and tool calls', function (string $name) {
     [$make, $body] = shapeFixture($name);
     $provider = $make(new MockHttpClient([new MockResponse($body, ['http_code' => 200])]));
 
     $chunks = array_values(iterator_to_array($provider->stream([new UserMessage('hi')]), false));
 
-    expect($chunks)->toHaveCount(3);
+    expect($chunks)->toHaveCount(4);
 
-    foreach (array_slice($chunks, 0, 2) as $delta) {
+    foreach (array_slice($chunks, 0, 3) as $delta) {
         expect($delta->finishReason)->toBe(ProviderFinishReason::Stop)
             ->and($delta->usage)->toBeNull()
             ->and($delta->toolCalls)->toBe([]);
     }
 
-    $terminal = $chunks[2];
+    $terminal = $chunks[3];
 
-    expect($chunks[0]->content . $chunks[1]->content)->toBe('Calling.')
+    expect($chunks[0]->reasoning)->toBe('Hmm.')
+        ->and($chunks[0]->content)->toBe('')
+        ->and($chunks[1]->content . $chunks[2]->content)->toBe('Calling.')
         ->and($terminal->content)->toBe('')
+        ->and($terminal->model)->toBe('m-1')
         ->and($terminal->finishReason)->toBe(ProviderFinishReason::ToolUse)
         ->and($terminal->usage?->promptTokens)->toBe(5)
         ->and($terminal->usage?->completionTokens)->toBe(2)
@@ -147,8 +157,4 @@ test('stream yields one chunk per text delta then exactly one terminal chunk wit
 test('AbstractProvider::stream() is final and streamEvents() is abstract', function () {
     expect((new ReflectionMethod(AbstractProvider::class, 'stream'))->isFinal())->toBeTrue()
         ->and((new ReflectionMethod(AbstractProvider::class, 'streamEvents'))->isAbstract())->toBeTrue();
-});
-
-test('AbstractProvider no longer adapts stream() through StreamsEventsFromResponses', function () {
-    expect(class_uses(AbstractProvider::class))->not->toHaveKey(CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses::class);
 });

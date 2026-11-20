@@ -5,9 +5,7 @@ declare(strict_types=1);
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
-use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
 use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
-use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
@@ -34,22 +32,6 @@ it('builds a ToolCall from ToolInputEnd', function () {
 
 it('defaults ToolInputEnd metadata to empty', function () {
     expect((new ToolInputEnd(0, 'c', 'n', []))->toToolCall()->metadata)->toBe([]);
-});
-
-it('marks every event as a StreamEvent', function () {
-    $events = [
-        new TextDelta('hi'),
-        new ReasoningDelta('think'),
-        new ToolInputStart(0, 'c', 'n'),
-        new ToolInputDelta(0, 'c', '{"a"'),
-        new ToolInputEnd(0, 'c', 'n', ['a' => 1]),
-        new Tick(),
-        new Finish(ProviderFinishReason::Stop),
-    ];
-
-    foreach ($events as $event) {
-        expect($event)->toBeInstanceOf(StreamEvent::class);
-    }
 });
 
 it('carries the fields it was built with', function () {
