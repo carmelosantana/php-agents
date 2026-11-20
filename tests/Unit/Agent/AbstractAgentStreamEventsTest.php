@@ -1249,3 +1249,78 @@ test('an id-less done preview streamed in many tiny fragments is held in linear 
 
     expect($large / $small)->toBeLessThan(20.0);
 });
+
+/**
+ * Bytes of memory the agent gains between the 10,000th and the last of $starts tool-input starts
+ * in one response, with no observer keeping events.
+ *
+ * @param \Closure(int): StreamEvent $start the i-th start
+ */
+function streamEventsStartGrowth(int $starts, \Closure $start, array $arguments = []): int
+{
+    $at = [];
+    $script = [];
+    for ($i = 0; $i < $starts; $i++) {
+        if ($i === 10_000) {
+            $script[] = function () use (&$at): void {
+                gc_collect_cycles();
+                $at[] = memory_get_usage();
+            };
+        }
+        $script[] = $start($i);
+    }
+    $script[] = function () use (&$at): void {
+        gc_collect_cycles();
+        $at[] = memory_get_usage();
+    };
+    $script[] = new Finish(ProviderFinishReason::Stop, 'stop', null, 'test-model');
+    $agent = new StreamEventsTestAgent(...['provider' => new ScriptedEventsProvider([$script]), ...$arguments]);
+
+    $agent->run(new UserMessage('Hi'));
+
+    return $at[1] - $at[0];
+}
+
+test('100k distinct nameless starts keep the agent\'s bookkeeping bounded', function (array $arguments) {
+    expect(streamEventsStartGrowth(100_000, fn(int $i) => new ToolInputStart($i, '', ''), $arguments))->toBeLessThan(500_000);
+})->with(['no per-turn cap' => [[]], 'cap of 1' => [['runLimits' => new RunLimits(maxToolCallsPerTurn: 1)]]]);
+
+test('100k nameless starts that repeat one index keep the agent\'s bookkeeping bounded', function () {
+    expect(streamEventsStartGrowth(100_000, fn(int $i) => new ToolInputStart(0, '', '')))->toBeLessThan(500_000);
+});
+
+test('100k distinct named starts past the per-turn cap keep the agent\'s bookkeeping bounded', function () {
+    expect(streamEventsStartGrowth(100_000, fn(int $i) => new ToolInputStart($i, "c{$i}", 'echo'), ['runLimits' => new RunLimits(maxToolCallsPerTurn: 1)]))->toBeLessThan(500_000);
+});
+
+test('a response stops tracking tool calls past MAX_TOOL_CALLS_PER_RESPONSE with one tool_call_overflow discard', function () {
+    $max = AbstractAgent::MAX_TOOL_CALLS_PER_RESPONSE;
+    $script = [];
+    for ($i = 0; $i < $max + 3; $i++) {
+        array_push($script, new ToolInputStart($i, "c{$i}", 'echo'), new ToolInputDelta($i, "c{$i}", '{}'), new ToolInputEnd($i, "c{$i}", 'echo', []));
+    }
+    $script[] = new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model');
+    [$agent, $events] = streamEventsAgent([$script, streamEventsText('Done.')]);
+
+    $output = $agent->run(new UserMessage('Echo.'));
+
+    expect($output->toolResults)->toHaveCount($max)
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded($max, "c{$max}", 'echo', 'tool_call_overflow')])
+        ->and($events->dataFor('agent.tool_input_start'))->toHaveCount($max)
+        ->and($events->dataFor('agent.tool_input_delta'))->toHaveCount($max)
+        ->and($events->dataFor('agent.tool_input_end'))->toHaveCount($max);
+});
+
+test('a nameless start that repeats a known index is ignored', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, '', ''),
+        new ToolInputStart(0, '', ''),
+        new ToolInputEnd(0, 'c1', 'echo', ['text' => 'a']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ], streamEventsText('Done.')]);
+
+    $output = $agent->run(new UserMessage('Echo.'));
+
+    expect($events->dataFor('agent.tool_input_start'))->toHaveCount(1)
+        ->and(array_map(fn($r) => $r->callId, $output->toolResults))->toBe(['c1']);
+});

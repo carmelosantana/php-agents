@@ -81,7 +81,10 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   sends `call_id` and `name` only on the done item still runs the tool under that id. A call that
   opens without a name joins the per-turn cap (and the `done` preview) when its end names it;
   nameless calls past the per-turn slots left plus one (128 with no per-turn cap) are discarded as
-  they open with `tool_call_limit`.
+  they open with `tool_call_limit`. One response tracks at most
+  `AbstractAgent::MAX_TOOL_CALLS_PER_RESPONSE` (1024) calls: the first call past it gets
+  `agent.tool_input_discarded` reason `tool_call_overflow`, and calls past it are neither forwarded
+  nor run.
 - `RunLimits::$maxResponseBytes` also counts tool call ids and names, each call's final argument
   JSON beyond its streamed deltas, call metadata, and the finish's raw reason and model, so a
   run with a tight byte cap reaches it slightly sooner.

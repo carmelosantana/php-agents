@@ -422,6 +422,7 @@ discard always share one id.
 | `denied` | The execution policy denied the response's first `done` call; the run continues |
 | `invalid_done` | The first `done` call's arguments failed validation; the run continues |
 | `duplicate_done` | A `done` call that was not the first in its response |
+| `tool_call_overflow` | The response opened more than `AbstractAgent::MAX_TOOL_CALLS_PER_RESPONSE` (1024) calls. It fires once, for the first call past that bound, in place of its `agent.tool_input_start` (or end); no event of any call past the bound is forwarded or kept |
 | `tool_call_limit` | The call opened past `RunLimits::$maxToolCallsPerTurn`; it fires right after its `agent.tool_input_start` (or, for a call whose end came without a start, in place of its `agent.tool_input_end`, with no start event), and the call's later input events are not forwarded |
 
 ### How a run ends

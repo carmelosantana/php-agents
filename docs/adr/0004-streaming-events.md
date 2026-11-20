@@ -155,6 +155,12 @@ text is cut to 128 characters plus a `…` (129 at most). `Finish` on the provid
     `agent.tool_input_end`, with no start event), its later input events are not forwarded, and it is never retained
     (its `tool_use` content block included), shown to the policy or answered with a tool result.
     The first `done` call is outside the cap.
+  - `tool_call_overflow`: the response opened more than `AbstractAgent::MAX_TOOL_CALLS_PER_RESPONSE`
+    (1024) calls, counting kept, waiting and capped ones. Fired once, for the first call past the
+    bound, in place of its start (or end); the agent keeps no state for, and forwards no event of,
+    any call past it, so a hostile stream cannot grow its bookkeeping. A nameless start that
+    repeats a known index is ignored, and a nameless call discarded under the pending bound is not
+    kept in the call order.
 - **Call identity.** A call keeps the id and name it opened with; the agent rewrites a delta or end
   that names another to them. An empty start id or name is unknown, not a disagreement: the first
   delta carrying an id, or the end, fills it, and the filled value is kept from then on. A call that

@@ -69,6 +69,14 @@ abstract class AbstractAgent implements AgentInterface
      */
     public const int MAX_PENDING_NAMELESS_CALLS = 128;
 
+    /**
+     * How many tool calls of one response the agent tracks (kept, waiting for a name, or
+     * discarded under the per-turn cap). A call that opens (or ends without a start) past it is
+     * not forwarded or retained; the first such call gets agent.tool_input_discarded with reason
+     * `tool_call_overflow`, and every later event of an untracked call is ignored.
+     */
+    public const int MAX_TOOL_CALLS_PER_RESPONSE = 1024;
+
     /** Characters of a provider exception message, and of an API error message, that reach Output and agent.error. */
     private const int PROVIDER_ERROR_MAX_CHARS = 300;
 
@@ -402,6 +410,10 @@ abstract class AbstractAgent implements AgentInterface
             // end names them.
             /** @var array<int, true> $nameless */
             $nameless = [];
+            // Calls given any state in this response, against MAX_TOOL_CALLS_PER_RESPONSE, and
+            // whether a call past it has been seen (its discard fires once).
+            $trackedCalls = 0;
+            $overflowed = false;
             $admitCall = function (ToolInputStart|ToolInputEnd $call) use ($perTurn, &$turnCalls, &$firstDoneIndex, &$limitedCalls): bool {
                 if ($call->name === DoneTool::NAME && ($firstDoneIndex ?? $call->index) === $call->index) {
                     $firstDoneIndex = $call->index;
@@ -464,9 +476,22 @@ abstract class AbstractAgent implements AgentInterface
                     } elseif ($event instanceof TextDelta) {
                         $contentParts[] = $event->delta;
                         $this->notify('agent.text_delta', $event->delta);
+                    } elseif (($event instanceof ToolInputStart || $event instanceof ToolInputDelta || $event instanceof ToolInputEnd)
+                        && !isset($startedCalls[$event->index]) && !isset($limitedCalls[$event->index]) && !isset($endedCalls[$event->index])
+                        && ($overflowed || (!$event instanceof ToolInputDelta && $trackedCalls >= self::MAX_TOOL_CALLS_PER_RESPONSE))) {
+                        // Past the per-response bound: nothing of an untracked call is kept or
+                        // forwarded. Only the first such call is reported.
+                        if (!$overflowed && !$event instanceof ToolInputDelta) {
+                            $overflowed = true;
+                            $this->discardCalls([$event], 'tool_call_overflow');
+                        }
+                        continue;
+                    } elseif ($event instanceof ToolInputStart && $event->name === '' && (isset($startedCalls[$event->index]) || isset($limitedCalls[$event->index]))) {
+                        // A nameless start that repeats a known index adds nothing.
+                        continue;
                     } elseif ($event instanceof ToolInputStart) {
                         $this->notify('agent.tool_input_start', $event);
-                        $callOrder[] = $event->index;
+                        $trackedCalls++;
                         if ($event->name === '') {
                             // Calls waiting for a name are bounded as they open: the ordinary
                             // slots left plus one for a possible first `done`, or, with no
@@ -476,17 +501,22 @@ abstract class AbstractAgent implements AgentInterface
                                 ? max(0, $perTurn - $turnCalls) + ($firstDoneIndex === null ? 1 : 0)
                                 : self::MAX_PENDING_NAMELESS_CALLS;
                             if (count($nameless) >= $pendingLimit) {
+                                // Not in $callOrder: a nameless call has no content block.
                                 $limitedCalls[$event->index] = $event->id;
                                 $this->discardCalls([$event], 'tool_call_limit');
                             } else {
+                                $callOrder[] = $event->index;
                                 $startedCalls[$event->index] = $event;
                                 $nameless[$event->index] = true;
                             }
-                        } elseif ($admitCall($event)) {
-                            $startedCalls[$event->index] = $event;
-                            if ($donePreview === null && $event->name === DoneTool::NAME) {
-                                $donePreview = new DonePreviewReader();
-                                $donePreviewIndex = $event->index;
+                        } else {
+                            $callOrder[] = $event->index;
+                            if ($admitCall($event)) {
+                                $startedCalls[$event->index] = $event;
+                                if ($donePreview === null && $event->name === DoneTool::NAME) {
+                                    $donePreview = new DonePreviewReader();
+                                    $donePreviewIndex = $event->index;
+                                }
                             }
                         }
                     } elseif (($event instanceof ToolInputDelta || $event instanceof ToolInputEnd) && isset($limitedCalls[$event->index])) {
@@ -517,6 +547,7 @@ abstract class AbstractAgent implements AgentInterface
                         $start = $startedCalls[$event->index] ?? null;
                         if ($start === null) {
                             $callOrder[] = $event->index;
+                            $trackedCalls++;
                             if (!$admitCall($event)) {
                                 continue;
                             }
@@ -1062,7 +1093,11 @@ abstract class AbstractAgent implements AgentInterface
 
         if ($event instanceof ToolInputDelta) {
             $bytes = strlen($event->delta);
-            $argumentBytes[$event->index] = ($argumentBytes[$event->index] ?? 0) + $bytes;
+            // The credit map is bounded like the calls themselves; a delta past it is counted
+            // but not credited against a later end (which counts in full, erring high).
+            if (isset($argumentBytes[$event->index]) || count($argumentBytes) < self::MAX_TOOL_CALLS_PER_RESPONSE) {
+                $argumentBytes[$event->index] = ($argumentBytes[$event->index] ?? 0) + $bytes;
+            }
             $start = $startedCalls[$event->index] ?? null;
 
             return $bytes + ($start !== null && $start->id === '' ? strlen($event->id) : 0);
