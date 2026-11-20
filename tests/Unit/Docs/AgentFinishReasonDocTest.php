@@ -40,6 +40,6 @@ test('AGENTS.md documents how a cancel ends the run', function () {
     expect($doc)->not->toContain('The cancellation check happens at the top of each iteration')
         ->and($doc)->toContain("after `agent.error` with `'Task cancelled'`")
         ->and($doc)->toContain("`content` is `'Task was cancelled.'`; the provider is not called")
-        ->and($doc)->toContain('each started call gets `agent.tool_input_discarded` with reason `cancelled`')
+        ->and($doc)->toContain('each started call, and each call whose end came without a start, gets `agent.tool_input_discarded` with reason `cancelled`')
         ->and($doc)->toContain("Every call that did not start gets an error `ToolResult` with content `'Cancelled before it ran.'` and `errorCode` `'cancelled'`");
 });

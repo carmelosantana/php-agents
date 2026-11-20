@@ -149,8 +149,11 @@ A negative value throws `\InvalidArgumentException`. The first `done` call of a 
   not added to the conversation, so it has no tool result. Its `tool_use` block is also removed from
   the provider content blocks the `AssistantMessage` keeps (matched by position, so a kept call
   that shares its id keeps its own block), and `AnthropicProvider` drops any
-  `tool_use` block without a matching call when it replays a conversation. After the response's tool results, `agent.warning` fires once with
-  `Tool call limit reached: at most N calls per turn.`
+  `tool_use` block without a matching call when it replays a conversation. When the response's kept
+  calls run, `agent.warning` fires once after their results with
+  `Tool call limit reached: at most N calls per turn.`; a response that ends the run instead (a
+  `done` call, a finish other than `ToolUse`, a cancel or a limit) fires no warning, and the
+  `tool_call_limit` discards are the only signal.
 - **Per run.** Calls beyond `maxToolCallsPerRun` get `Tool call limit reached: at most N calls per run.`
   After that round the run ends with `AgentFinishReason::BudgetExhausted` and the content
   `Tool call limit reached for this run.`
@@ -429,7 +432,7 @@ when the run ends for another reason.
 | `done` tool | `step_finish` → `tool_input_discarded` (the response's other calls) → `done` → `finish` | `Done` |
 | Tool-call limit per run | `step_finish` → … tools … → `warning` → `finish` | `BudgetExhausted` |
 | Budget wrap-up exhausted | `warning` → `finish` | `BudgetExhausted` |
-| Run limit while streaming (usage of a finish that already arrived is kept) | `tool_input_discarded` (`run_limit`, each started call) → `error` → `finish` | `BudgetExhausted` |
+| Run limit while streaming (no `step_finish`, even when the limit trips on the finish itself; that finish's usage is still kept) | `tool_input_discarded` (`run_limit`, each started or end-only call) → `error` → `finish` | `BudgetExhausted` |
 | Token limit after a response | `step_finish` → `tool_input_discarded` (`run_limit`, each completed call) → `error` → `finish` | `BudgetExhausted` |
 | Run limit elsewhere (time, input size) | `error` → `finish` | `BudgetExhausted` |
 | Repeated empty responses | `step_finish` → `empty_response` → `error` → `finish` | `EmptyResponse` |
@@ -437,10 +440,10 @@ when the run ends for another reason.
 | Refusal, content filter, context window | `step_finish` → `finish` | `Refusal`, `ContentFilter`, `ContextWindowExceeded` |
 | Provider error finish (`Error`, `PauseTurn`, `MaxTokens` with no text) | `step_finish` → `error` → `finish` | `Error` |
 | Stream ended without a finish | `tool_input_discarded` (`provider_error`) → `error` → `finish` | `Error` |
-| Provider exception (token not set) | `tool_input_discarded` (`provider_error`) → `error` → `finish` | `Error` |
+| Provider exception (token not set; usage of a finish that already arrived is kept) | `tool_input_discarded` (`provider_error`) → `error` → `finish` | `Error` |
 | Tool `TerminationException` | `step_finish` → … tools … → `finish` (no `agent.error`) | `Error` |
-| Cancel mid-stream (or a provider exception once the token is set) | `tool_input_discarded` (`cancelled`, each started call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
-| Cancel after a text or `done` answer finished, before it is accepted (refusal, filter, context-window and error finishes keep their reason) | `step_finish` → `tool_input_discarded` (`cancelled`, each call of a `done` response) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
+| Cancel mid-stream (or a provider exception once the token is set; no `step_finish`, even when the cancel lands on the finish, whose usage is still kept) | `tool_input_discarded` (`cancelled`, each started or end-only call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
+| Cancel after a text or `done` answer finished, before it is accepted (refusal, filter, context-window and error finishes keep their reason) | `step_finish` → (`budget_warning`) → `tool_input_discarded` (`cancelled`, each call of a `done` response) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 | Cancel after an empty response, landing anywhere from `step_finish` to `empty_response` (`budget_warning` included), before the empty-response policy retries, falls back to reasoning or gives up | `step_finish` → (`budget_warning`) → `empty_response` → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 | Cancel at the top of an iteration or during tools | `error` `'Task cancelled'` → `finish` | `Cancelled` |
 
@@ -493,7 +496,7 @@ The token is checked at the top of each iteration, on every stream event (includ
 | When | Outcome |
 |---|---|
 | Top of an iteration | `content` is `'Task was cancelled.'`; the provider is not called |
-| Mid-stream | The stream is abandoned (the HTTP response is cancelled). `content` is the text streamed so far in this step, followed by the `done` answer previewed so far (`agent.done_delta`) if one was streaming (a blank line between them when both are present), appended to the conversation as an `AssistantMessage` with no tool calls, or `'Task was cancelled.'` when none arrived. No call of the response runs: each started call gets `agent.tool_input_discarded` with reason `cancelled`. A provider that throws, or whose stream ends without a finish, once the token is set (a cancel that aborts the transport) ends the same way, not as a provider error |
+| Mid-stream | The stream is abandoned (the HTTP response is cancelled). `content` is the text streamed so far in this step, followed by the `done` answer previewed so far (`agent.done_delta`) if one was streaming (a blank line between them when both are present), appended to the conversation as an `AssistantMessage` with no tool calls, or `'Task was cancelled.'` when none arrived. No call of the response runs: each started call, and each call whose end came without a start, gets `agent.tool_input_discarded` with reason `cancelled`. A provider that throws, or whose stream ends without a finish, once the token is set (a cancel that aborts the transport) ends the same way, not as a provider error |
 | After the response finished, before its answer is accepted | Only for a response the run would accept as its answer: text (finish `Stop`, `ToolUse` or `MaxTokens`), a `done` call, or an empty response (before the empty-response policy retries, falls back to reasoning, or ends `EmptyResponse`). `content` is as for a mid-stream cancel: the full streamed text, then the `done` answer as its preview streamed (`agent.done_delta`), not the completed call's arguments; `'Task was cancelled.'` when both are empty (reasoning is never the content). Each of the response's calls gets `agent.tool_input_discarded` with reason `cancelled`, and no `agent.done` fires. A response of ordinary tool calls is answered as during tools; refusal, content-filter, context-window and provider-error finishes keep their own reason |
 | During tools | Calls that finished keep their results. Every call that did not start gets an error `ToolResult` with content `'Cancelled before it ran.'` and `errorCode` `'cancelled'`, so every call in the conversation has a result and `repairToolPairing()` keeps the group. A running tool or batch is not interrupted; a batch's results are all kept. `content` is `'Task was cancelled.'` |
 

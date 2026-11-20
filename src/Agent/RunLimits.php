@@ -10,7 +10,9 @@ namespace CarmeloSantana\PHPAgents\Agent;
  * - $maxToolCallsPerTurn caps the tool calls kept from one provider response, counted as they
  *   stream (denied and unknown calls count). A call that opens beyond it is discarded at once
  *   (agent.tool_input_discarded 'tool_call_limit'), never kept, shown to the policy or run, and
- *   gets no result; agent.warning fires after the response's tool results.
+ *   gets no result. When the response's kept calls run, agent.warning fires once after their
+ *   results; a response that ends the run instead (a done call, a finish other than ToolUse, a
+ *   cancel or limit) fires no warning, and the discards are the only signal.
  * - $maxToolCallsPerRun caps the tool calls sent to the policy and executor across the run. Calls
  *   beyond it get an error result, and the run then ends as AgentFinishReason::BudgetExhausted.
  * - $executeUnadvertisedTools lets the model execute any registered tool, including the ones

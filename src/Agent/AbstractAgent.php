@@ -538,7 +538,9 @@ abstract class AbstractAgent implements AgentInterface
                 } else {
                     $errorMessage = $this->providerErrorMessage($e);
 
-                    $this->discardCalls($startedCalls, 'provider_error');
+                    $this->discardCalls(self::openedCalls($startedCalls, $endedCalls), 'provider_error');
+                    // A Finish that arrived before the throw was spent all the same.
+                    $totalUsage = $this->spendEarlyFinishUsage($finish, $totalUsage);
                     $this->notify('agent.error', $errorMessage);
 
                     return new Output(
@@ -562,14 +564,14 @@ abstract class AbstractAgent implements AgentInterface
             // streamed so far and any `done` preview, separated by a blank line when both
             // are present, is the run's answer.
             if ($cancelled) {
-                $this->discardCalls($startedCalls, 'cancelled');
+                $this->discardCalls(self::openedCalls($startedCalls, $endedCalls), 'cancelled');
                 $totalUsage = $this->spendEarlyFinishUsage($finish, $totalUsage);
 
                 return $this->cancelledOutput(self::cancelledAnswer($contentParts, $donePreview), $conversation, $allToolResults, $totalUsage, $i + 1);
             }
 
             if ($streamLimit !== null) {
-                $this->discardCalls($startedCalls, 'run_limit');
+                $this->discardCalls(self::openedCalls($startedCalls, $endedCalls), 'run_limit');
                 $totalUsage = $this->spendEarlyFinishUsage($finish, $totalUsage);
 
                 return $this->runLimitOutput($streamLimit, $conversation, $allToolResults, $totalUsage, $i + 1);
@@ -585,7 +587,7 @@ abstract class AbstractAgent implements AgentInterface
                     UntrustedText::forDisplay($finish->model, self::FINISH_TELEMETRY_MAX_CHARS),
                 ));
             } else {
-                $this->discardCalls($startedCalls, 'provider_error');
+                $this->discardCalls(self::openedCalls($startedCalls, $endedCalls), 'provider_error');
             }
 
             // A stream that ended without a Finish is a provider error.
@@ -1125,17 +1127,30 @@ abstract class AbstractAgent implements AgentInterface
     }
 
     /**
+     * Every call of a response the agent kept, by index: the ones that started, then the ones
+     * whose end came without a start.
+     *
+     * @param array<int, ToolInputStart> $startedCalls
+     * @param array<int, ToolInputEnd> $endedCalls
+     * @return array<int, ToolInputStart|ToolInputEnd>
+     */
+    private static function openedCalls(array $startedCalls, array $endedCalls): array
+    {
+        return $startedCalls + $endedCalls;
+    }
+
+    /**
      * Fire agent.tool_input_discarded for each call of a finished response that will not run:
      * a call whose arguments never completed is 'invalid_arguments' when the response finished
-     * with Error, else 'not_tool_use'; a completed call is 'not_tool_use' when the response
-     * finished with a reason other than ToolUse.
+     * with Error, else 'not_tool_use'; a completed call (one whose end came without a start
+     * included) is 'not_tool_use' when the response finished with a reason other than ToolUse.
      *
      * @param array<int, ToolInputStart> $startedCalls
      * @param array<int, ToolInputEnd> $endedCalls
      */
     private function discardUnrunCalls(array $startedCalls, array $endedCalls, ProviderFinishReason $reason): void
     {
-        foreach ($startedCalls as $index => $start) {
+        foreach (self::openedCalls($startedCalls, $endedCalls) as $index => $start) {
             $discardReason = match (true) {
                 !isset($endedCalls[$index]) => $reason === ProviderFinishReason::Error ? 'invalid_arguments' : 'not_tool_use',
                 $reason !== ProviderFinishReason::ToolUse => 'not_tool_use',

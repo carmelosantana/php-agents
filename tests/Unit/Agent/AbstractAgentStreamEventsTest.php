@@ -1067,3 +1067,62 @@ test('a delta id that fills an empty start id counts toward maxResponseBytes onc
     expect($run(56)->content)->toBe('Done.')
         ->and($run(55)->content)->toBe('Response size limit reached.');
 });
+
+test('a provider throw after a Finish keeps that Finish\'s usage', function () {
+    $window = new ContextWindow(100_000);
+    [$agent] = streamEventsAgent([[
+        new TextDelta('ab'),
+        new Finish(ProviderFinishReason::Stop, 'stop', new Usage(9, 1, 10), 'test-model'),
+        new RuntimeException('boom'),
+    ]], ['contextWindow' => $window]);
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Error)
+        ->and($output->content)->toBe('Provider error: boom')
+        ->and($output->usage->promptTokens)->toBe(9)
+        ->and($output->usage->completionTokens)->toBe(1);
+});
+
+test('a call whose end came without a start is discarded on every path that does not run it', function (array $tail, string $reason, array $arguments = []) {
+    $token = new class implements \CarmeloSantana\PHPAgents\Contract\CancellationTokenInterface {
+        public bool $cancelled = false;
+
+        public function isCancelled(): bool
+        {
+            return $this->cancelled;
+        }
+    };
+    $tail = array_map(fn($e) => $e === 'cancel' ? function () use ($token): void {
+        $token->cancelled = true;
+    } : $e, $tail);
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputEnd(0, 'c1', 'echo', ['text' => 'a']),
+        ...$tail,
+    ]], ['cancellationToken' => $token, ...$arguments]);
+
+    $agent->run(new UserMessage('Echo.'));
+
+    expect($events->dataFor('agent.tool_input_discarded'))->toEqual([new ToolInputDiscarded(0, 'c1', 'echo', $reason)]);
+})->with([
+    'cancel' => [['cancel', new TextDelta('x')], 'cancelled'],
+    'provider exception' => [[new RuntimeException('boom')], 'provider_error'],
+    'no finish' => [[], 'provider_error'],
+    'run limit' => [[new TextDelta(str_repeat('x', 100))], 'run_limit', ['runLimits' => new RunLimits(maxResponseBytes: 50)]],
+    'not a ToolUse finish' => [[new Finish(ProviderFinishReason::MaxTokens, 'length', null, 'test-model')], 'not_tool_use'],
+]);
+
+test('a limited call in a response that done finishes fires no agent.warning, only its discard', function () {
+    [$agent, $events] = streamEventsAgent([[
+        ...streamEventsCall(0, 'c1', 'echo', ['text' => 'a']),
+        ...streamEventsCall(1, 'c2', 'echo', ['text' => 'b']),
+        ...streamEventsCall(2, 'd1', 'done', ['response' => 'Fin.']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ]], ['runLimits' => new RunLimits(maxToolCallsPerTurn: 1)]);
+
+    $output = $agent->run(new UserMessage('Hi'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Done)
+        ->and($events->dataFor('agent.warning'))->toBe([])
+        ->and(array_map(fn(ToolInputDiscarded $d): string => $d->reason, $events->dataFor('agent.tool_input_discarded')))->toBe(['tool_call_limit', 'done_finished_run']);
+});

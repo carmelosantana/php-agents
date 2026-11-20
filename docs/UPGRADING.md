@@ -56,7 +56,7 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   `agent.done`, finish `Cancelled`. Refusal, content-filter, context-window and provider-error
   finishes keep their own reason. A cancel during tools gives every call that did not start a
   `'Cancelled before it ran.'` result with `errorCode` `'cancelled'`. Usage of a finish that
-  arrived before a cancel or a streaming run limit abandoned the stream is counted in
+  arrived before a cancel, a streaming run limit or a provider exception ended the stream is counted in
   `Output->usage` and reported to the context window. See [Cooperative
   Cancellation](AGENTS.md#cooperative-cancellation).
 - `agent.finish` fires once on every exit path that returns. An exception that escapes `run()`
@@ -70,7 +70,9 @@ public function streamEvents(array $messages, array $tools = [], array $options 
 - `RunLimits::$maxToolCallsPerTurn` is applied while the response streams. A call past the cap is
   discarded as it opens (`agent.tool_input_discarded` reason `tool_call_limit`) and is no longer
   kept in the conversation with a `Tool call limit reached: at most N calls per turn.` error
-  result; `agent.warning` still fires once with that text. A second `done` call in one response now
+  result; `agent.warning` still fires once with that text after the response's kept calls run (a
+  response that ends the run instead, with `done`, a non-`ToolUse` finish, a cancel or a limit, fires
+  none; the discards are then the only signal). A second `done` call in one response now
   counts toward the cap.
 - The agent rewrites `agent.tool_input_delta` and `agent.tool_input_end` payloads to the id and name
   the call opened with when the provider's later event names another. An empty start id or name is

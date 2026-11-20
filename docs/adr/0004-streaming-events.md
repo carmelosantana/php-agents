@@ -116,7 +116,7 @@ payloads and order. New events:
 | `agent.tool_input_delta` | `ToolInputDelta` | each argument fragment |
 | `agent.tool_input_end` | `ToolInputEnd` | arguments complete, before `agent.tool_call` |
 | `agent.done_delta` | `DonePreview{callId, delta}` | provisional decoded text of the `done` call's `response` argument |
-| `agent.tool_input_discarded` | `ToolInputDiscarded{index, id, name, reason}` | a call that got `agent.tool_input_start` will not run |
+| `agent.tool_input_discarded` | `ToolInputDiscarded{index, id, name, reason}` | a call that got `agent.tool_input_start` (or, with no start, `agent.tool_input_end`) will not run |
 | `agent.step_finish` | `StepFinish{int iteration, ProviderFinishReason reason, string rawReason, ?Usage usage, string model}` | after each provider response |
 | `agent.finish` | `RunFinish{AgentFinishReason reason, Usage usage, int iterations, string model}` | exactly once, on every exit path, just before `run()` returns |
 
@@ -181,18 +181,18 @@ when the run ends for another reason. An exception that escapes `run()` gets no 
 | `done` tool | `step_finish` → `tool_input_discarded` (the response's other calls) → `done` → `finish` | `Done` |
 | Tool-call limit per run | `step_finish` → … tools … → `warning` → `finish` | `BudgetExhausted` |
 | Budget wrap-up exhausted | `warning` → `finish` | `BudgetExhausted` |
-| Run limit while streaming (bytes, time, tokens) | `tool_input_discarded` (`run_limit`, each started call) → `error` → `finish` | `BudgetExhausted` |
+| Run limit while streaming (bytes, time, tokens; no `step_finish`, even when it trips on the `Finish`, whose usage is still kept) | `tool_input_discarded` (`run_limit`, each started or end-only call) → `error` → `finish` | `BudgetExhausted` |
 | Token limit after a response | `step_finish` → `tool_input_discarded` (`run_limit`, each completed call) → `error` → `finish` | `BudgetExhausted` |
 | Run limit elsewhere (time at the top of an iteration or during tools, input size) | `error` → `finish` | `BudgetExhausted` |
 | Repeated empty responses | `step_finish` → `empty_response` → `error` → `finish` | `EmptyResponse` |
 | Max iterations | `error` → `finish` | `MaxIterations` |
 | Refusal, content filter, context window | `step_finish` → `finish` | `Refusal`, `ContentFilter`, `ContextWindowExceeded` |
 | Provider error finish (`Error`, `PauseTurn`, bare `MaxTokens`) | `step_finish` → `error` → `finish` | `Error` |
-| Stream ended without a `Finish` | `tool_input_discarded` (`provider_error`, each started call) → `error` → `finish` | `Error` |
-| Provider exception (token not set) | `tool_input_discarded` (`provider_error`, each started call) → `error` → `finish` | `Error` |
+| Stream ended without a `Finish` | `tool_input_discarded` (`provider_error`, each started or end-only call) → `error` → `finish` | `Error` |
+| Provider exception (token not set; usage of a `Finish` that already arrived is kept) | `tool_input_discarded` (`provider_error`, each started or end-only call) → `error` → `finish` | `Error` |
 | Tool `TerminationException` | `step_finish` → `finish` (no `agent.error`) | `Error` |
-| Cancel mid-stream (or a provider exception once the token is set) | `tool_input_discarded` (`cancelled`, each started call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
-| Cancel after a text or `done` answer finished, before it is accepted | `step_finish` → `tool_input_discarded` (`cancelled`, each call of a `done` response) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
+| Cancel mid-stream (or a provider exception once the token is set; no `step_finish`, even when it lands on the `Finish`, whose usage is still kept) | `tool_input_discarded` (`cancelled`, each started or end-only call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
+| Cancel after a text or `done` answer finished, before it is accepted | `step_finish` → (`budget_warning`) → `tool_input_discarded` (`cancelled`, each call of a `done` response) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 | Cancel after an empty response, landing anywhere from `step_finish` to `empty_response` (`budget_warning` included), before the empty-response policy retries, falls back to reasoning or gives up | `step_finish` → (`budget_warning`) → `empty_response` → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 | Cancel at top of iteration or during tools | (`step_finish` already fired for a completed response; no call is open, so no `tool_input_discarded`) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 
@@ -204,8 +204,9 @@ Tests pin each sequence.
 - Checked on every stream event (ticks included), at the top of each iteration, after the
   response finishes (after `agent.step_finish`, after the policy allows `done`, and just before a
   text answer is accepted, and after `agent.empty_response`), before each tool call and before a
-  batch starts. A `Finish` that arrived before a cancel or a streaming run limit abandoned the
-  stream has its usage counted and reported to the context window.
+  batch starts. A `Finish` that arrived before a cancel, a streaming run limit or a provider
+  exception ended the stream has its usage counted and reported to the context window; the run
+  still ends without `agent.step_finish` on those paths.
 - **Mid-stream.** Iteration stops and the HTTP response is cancelled. `Output->content` is the
   text streamed so far in this step, then a blank line (`"\n\n"`) and the provisional `done`
   preview when both are present, or `'Task was cancelled.'` when both are empty. The preview is
