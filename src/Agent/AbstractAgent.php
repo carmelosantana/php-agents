@@ -455,6 +455,11 @@ abstract class AbstractAgent implements AgentInterface
                     } elseif (($event instanceof ToolInputDelta || $event instanceof ToolInputEnd) && isset($limitedCalls[$event->index])) {
                         continue;
                     } elseif ($event instanceof ToolInputDelta) {
+                        // Like an end, a delta goes by the id its call opened with.
+                        $start = $startedCalls[$event->index] ?? null;
+                        if ($start !== null && $start->id !== $event->id) {
+                            $event = new ToolInputDelta($event->index, $start->id, $event->delta);
+                        }
                         $this->notify('agent.tool_input_delta', $event);
                         if ($event->index === $donePreviewIndex) {
                             $previewDelta = $donePreview?->push($event->delta) ?? '';

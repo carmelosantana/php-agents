@@ -920,3 +920,18 @@ test('when blocks and calls do not line up, a dropped call\'s block is removed b
 
     expect($assistant[0]->contentBlocks())->toBe([$blocks[0]]);
 });
+
+test('argument deltas and the done preview carry the id the call opened with', function () {
+    [$agent, $events] = streamEventsAgent([[
+        new ToolInputStart(0, 'd1', 'done'),
+        new ToolInputDelta(0, 'other', '{"response":"Hi'),
+        new ToolInputDelta(0, 'other', '."}'),
+        new ToolInputEnd(0, 'd1', 'done', ['response' => 'Hi.']),
+        new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+    ]]);
+
+    $agent->run(new UserMessage('Hi'));
+
+    expect(array_map(fn(ToolInputDelta $d): string => $d->id, $events->dataFor('agent.tool_input_delta')))->toBe(['d1', 'd1'])
+        ->and(array_map(fn(DonePreview $p): string => $p->callId, $events->dataFor('agent.done_delta')))->each->toBe('d1');
+});
