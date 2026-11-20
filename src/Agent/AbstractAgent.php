@@ -220,16 +220,22 @@ abstract class AbstractAgent implements AgentInterface
     public function run(MessageInterface $input, ?Conversation $history = null): Output
     {
         $this->runCancelled = false;
-        $output = $this->runLoop($input, $history);
+        $this->observerException = null;
+        try {
+            $output = $this->runLoop($input, $history);
 
-        $this->notify('agent.finish', new RunFinish(
-            $output->finishReason,
-            $output->usage ?? new Usage(),
-            $output->iterations,
-            UntrustedText::forDisplay($output->model, self::FINISH_TELEMETRY_MAX_CHARS),
-        ));
+            $this->notify('agent.finish', new RunFinish(
+                $output->finishReason,
+                $output->usage ?? new Usage(),
+                $output->iterations,
+                UntrustedText::forDisplay($output->model, self::FINISH_TELEMETRY_MAX_CHARS),
+            ));
 
-        return $output;
+            return $output;
+        } finally {
+            // An observer's exception is only told apart within its own run, and not kept after it.
+            $this->observerException = null;
+        }
     }
 
     private function runLoop(MessageInterface $input, ?Conversation $history): Output
@@ -2023,7 +2029,7 @@ abstract class AbstractAgent implements AgentInterface
     private string $lastEvent = '';
     private mixed $lastEventData = null;
 
-    /** The last exception an observer threw from notify(), so run() does not mistake it for the provider's. */
+    /** The exception an observer threw from notify() in this run, so run() does not mistake it for the provider's; cleared when run() ends. */
     private ?\Throwable $observerException = null;
 
     /** Whether the cancellation token has reported a cancel during the current run. */
