@@ -133,7 +133,8 @@ abstract class AbstractAgent implements AgentInterface
      * @param array<string, mixed> $providerOptions Provider-specific request options (e.g. max_tokens,
      *                                              thinking) sent with every stream() call in the loop.
      * @param ?RunLimits $runLimits Tool-call caps and the execution boundary for each run();
-     *                              null means new RunLimits() (no caps, advertised tools only).
+     *                              null means new RunLimits() (32 MiB of response bytes per run,
+     *                              no other caps, advertised tools only).
      */
     public function __construct(
         private readonly ProviderInterface $provider,

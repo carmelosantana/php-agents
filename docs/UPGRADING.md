@@ -1,5 +1,13 @@
 # Upgrading
 
+## Upgrading to 0.18.1
+
+### Behaviour changes
+
+| Change | Who is affected | What to do |
+|--------|-----------------|------------|
+| `RunLimits::$maxResponseBytes` defaults to `RunLimits::DEFAULT_MAX_RESPONSE_BYTES` (32 MiB), the same as one request's `RequestLimits::DEFAULT_MAX_RESPONSE_BYTES`; it was `0` (no limit). An agent built with no `runLimits`, or with a `RunLimits` that leaves the field out, ends a run that receives more than 32 MiB from the provider in total as `BudgetExhausted` (`Response size limit reached.`). This closes the 0.18 known issue: a hostile endpoint could return many tool rounds, each within the per-request cap, that together exhausted memory | Runs whose provider responses add up to more than 32 MiB, and applications that raised `RequestLimits::$maxResponseBytes` above 32 MiB | Pass a larger `maxResponseBytes`, or `new RunLimits(maxResponseBytes: 0)` to opt out. `maxEstimatedTokens` keeps no default: its estimate re-counts the whole conversation on every iteration, so any fixed default would cut long legitimate runs |
+
 ## Upgrading to 0.18
 
 0.18 streams typed events from every provider (see [Streaming Events](PROVIDERS.md#streaming-events))
@@ -128,13 +136,6 @@ public function streamEvents(array $messages, array $tools = [], array $options 
 - `SseStreamParser` applies its 1 MiB line cap (`maxLineBytes`) to every line, not only to one
   still waiting for its newline: a provider stream with a longer complete line now throws a
   `ProviderException` (`SSE line exceeded … bytes`) instead of decoding it.
-
-### Known issue
-
-- No cumulative per-run byte or token default: `RunLimits` is unlimited unless you set it, so a
-  hostile endpoint can return many tool rounds, each within the per-request cap, that together
-  exhaust memory. Set `RunLimits` (`maxResponseBytes`, `maxEstimatedTokens`) for untrusted
-  endpoints; a default lands in 0.18.1.
 
 ### Deprecated
 

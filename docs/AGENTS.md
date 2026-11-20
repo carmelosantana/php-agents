@@ -127,7 +127,7 @@ time, response data and tokens it may use whatever the provider reports:
 | `maxToolCallsPerRun` | `0` | Tool calls sent to the policy and executor across the run; `0` means no cap |
 | `executeUnadvertisedTools` | `false` | `true` lets the model execute any registered tool, even one `maxTools` left out |
 | `maxRunSeconds` | `0.0` | Wall time of the run in seconds, from the start of `run()`; `0.0` means no limit |
-| `maxResponseBytes` | `0` | Bytes received from the provider across the run; `0` means no limit |
+| `maxResponseBytes` | `33_554_432` | Bytes received from the provider across the run (32 MiB, `RunLimits::DEFAULT_MAX_RESPONSE_BYTES`); `0` means no limit |
 | `maxEstimatedTokens` | `0` | Local token estimate across the run; `0` means no limit |
 | `maxInputTokens` | `0` | Estimated tokens of the new input message; `0` means no limit |
 

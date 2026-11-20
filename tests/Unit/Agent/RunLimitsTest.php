@@ -16,6 +16,7 @@ use CarmeloSantana\PHPAgents\Enum\ModelCapability;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Message\Conversation;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
+use CarmeloSantana\PHPAgents\Provider\RequestLimits;
 use CarmeloSantana\PHPAgents\Provider\Response;
 use CarmeloSantana\PHPAgents\Provider\Stream\StreamsEventsFromResponses;
 use CarmeloSantana\PHPAgents\Provider\Usage;
@@ -219,11 +220,12 @@ function runLimitsTextRound(string $text = 'Finished.', ?Usage $usage = null): \
     return fn(): array => [new Response(content: $text, finishReason: ProviderFinishReason::Stop, model: 'test-model', usage: $usage)];
 }
 
-test('RunLimits adds the cumulative limits, off by default', function () {
+test('RunLimits adds the cumulative limits; only response bytes are capped by default', function () {
     $limits = new RunLimits();
 
     expect($limits->maxRunSeconds)->toBe(0.0)
-        ->and($limits->maxResponseBytes)->toBe(0)
+        ->and($limits->maxResponseBytes)->toBe(RunLimits::DEFAULT_MAX_RESPONSE_BYTES)
+        ->and(RunLimits::DEFAULT_MAX_RESPONSE_BYTES)->toBe(RequestLimits::DEFAULT_MAX_RESPONSE_BYTES)
         ->and($limits->maxEstimatedTokens)->toBe(0)
         ->and($limits->maxInputTokens)->toBe(0);
 });
@@ -298,6 +300,40 @@ test('maxResponseBytes stops a stream mid-way', function () {
         ->and($output->content)->toBe('Response size limit reached.')
         ->and($events->dataFor('agent.error'))->toContain('Response size limit reached.')
         ->and($provider->chunksConsumed)->toBeLessThanOrEqual(11);
+});
+
+/** A tool round whose text streams in 1 MiB chunks before one call to `first`. */
+function runLimitsMiBToolRound(int $mib): \Closure
+{
+    return function () use ($mib): Generator {
+        for ($i = 0; $i < $mib; $i++) {
+            yield new Response(content: str_repeat('a', 1_048_576), finishReason: ProviderFinishReason::Stop, model: 'test-model');
+        }
+        yield new Response(content: '', finishReason: ProviderFinishReason::ToolUse, toolCalls: [new ToolCall('c' . $mib, 'first', [])], model: 'test-model');
+    };
+}
+
+test('the default RunLimits caps response bytes across iterations, each round under the request cap', function () {
+    // Three rounds of 12 MiB: each fits RequestLimits' 32 MiB, together they pass the run default.
+    $provider = new RunLimitsScriptedProvider([runLimitsMiBToolRound(12), runLimitsMiBToolRound(12), runLimitsMiBToolRound(12), runLimitsTextRound()]);
+    $agent = new RunLimitsTestAgent(provider: $provider);
+
+    $output = $agent->run(new UserMessage('Talk a lot.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::BudgetExhausted)
+        ->and($output->content)->toBe('Response size limit reached.')
+        ->and($agent->ran)->toBe(['first', 'first'])
+        ->and($provider->calls)->toBe(3);
+});
+
+test('maxResponseBytes 0 opts out of the default run byte cap', function () {
+    $provider = new RunLimitsScriptedProvider([runLimitsMiBToolRound(12), runLimitsMiBToolRound(12), runLimitsMiBToolRound(12), runLimitsTextRound()]);
+    $agent = new RunLimitsTestAgent(provider: $provider, runLimits: new RunLimits(maxResponseBytes: 0));
+
+    $output = $agent->run(new UserMessage('Talk a lot.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Stop)
+        ->and($agent->ran)->toBe(['first', 'first', 'first']);
 });
 
 test('maxResponseBytes counts tool calls and content blocks', function () {
