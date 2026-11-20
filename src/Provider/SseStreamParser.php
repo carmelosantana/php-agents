@@ -28,7 +28,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * $tickInterval seconds, from the request onward (headers included), and
  * yields a Tick for each poll that brings no bytes. While data flows it also
  * yields a Tick whenever $tickInterval has passed since the last one, before
- * the next payload and after each chunk, so a consumer whose provider turns
+ * the next payload, after each chunk and every few hundred lines it scans inside a chunk, so a consumer whose provider turns
  * many payloads into no event (fragments of a call over the argument cap,
  * pings, signature deltas) still gets a checkpoint that often. The idle deadline is
  * then the parser's: once $idleTimeout seconds (0.0 = none) pass without
@@ -44,6 +44,12 @@ final class SseStreamParser
     public const int DEFAULT_MAX_LINE_BYTES = 1_048_576;
 
     private string $lineBuffer = '';
+
+    /** Lines parseLines() scans between two looks at the clock. */
+    private const int LINES_PER_TICK_CHECK = 256;
+
+    /** When the last Tick went out (hrtime seconds); data-flow ticks are due $tickInterval after it. */
+    private float $lastTick = 0.0;
 
     public function __construct(
         private readonly HttpClientInterface $httpClient,
@@ -79,7 +85,7 @@ final class SseStreamParser
     {
         $pollTimeout = $this->tickInterval > 0.0 ? $this->tickInterval : null;
         $lastData = hrtime(true) / 1e9;
-        $lastTick = $lastData;
+        $this->lastTick = $lastData;
 
         while (true) {
             // A timeout chunk ends symfony's iterator for that response, so each
@@ -91,7 +97,7 @@ final class SseStreamParser
                     }
 
                     yield new Tick();
-                    $lastTick = hrtime(true) / 1e9;
+                    $this->lastTick = hrtime(true) / 1e9;
 
                     continue 2;
                 }
@@ -102,16 +108,15 @@ final class SseStreamParser
                     $this->assertSuccessfulStatus();
                 }
 
+                // parseLines() yields its own Ticks while it scans lines that yield nothing.
                 foreach ($this->parseLines($chunk->getContent()) as $json) {
-                    if ($pollTimeout !== null && hrtime(true) / 1e9 - $lastTick >= $pollTimeout) {
+                    if (!$json instanceof Tick && $this->tickDue()) {
                         yield new Tick();
-                        $lastTick = hrtime(true) / 1e9;
                     }
                     yield $json;
                 }
-                if ($pollTimeout !== null && hrtime(true) / 1e9 - $lastTick >= $pollTimeout) {
+                if ($this->tickDue()) {
                     yield new Tick();
-                    $lastTick = hrtime(true) / 1e9;
                 }
 
                 if ($chunk->isLast()) {
@@ -129,14 +134,21 @@ final class SseStreamParser
      * held for the next chunk. Every line, complete or partial, is measured against the
      * line cap before it is built or decoded, and the chunk is never split into an array.
      *
-     * @return \Generator<int, array<string, mixed>>
+     * @return \Generator<int, array<string, mixed>|Tick>
      */
     private function parseLines(string $content): \Generator
     {
         $offset = 0;
         $length = strlen($content);
+        $scanned = 0;
 
         while ($offset < $length) {
+            // Skipped lines (comments, blanks, [DONE], malformed JSON) yield nothing, so a large
+            // chunk of them gets a Tick every so often too.
+            if (++$scanned % self::LINES_PER_TICK_CHECK === 0 && $this->tickDue()) {
+                yield new Tick();
+            }
+
             $newline = strpos($content, "\n", $offset);
 
             if ($newline === false) {
@@ -174,6 +186,25 @@ final class SseStreamParser
 
             yield $json;
         }
+    }
+
+    /**
+     * Whether a data-flow Tick is due ($tickInterval since the last one); when it is, the tick
+     * is counted as sent now.
+     */
+    private function tickDue(): bool
+    {
+        if ($this->tickInterval <= 0.0) {
+            return false;
+        }
+
+        $now = hrtime(true) / 1e9;
+        if ($now - $this->lastTick < $this->tickInterval) {
+            return false;
+        }
+        $this->lastTick = $now;
+
+        return true;
     }
 
     /**

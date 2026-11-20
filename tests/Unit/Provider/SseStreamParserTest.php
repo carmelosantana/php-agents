@@ -431,3 +431,17 @@ test('a steady stream still yields a tick at least every tick interval', functio
     expect(count(array_filter($items, fn($i) => $i === 'tick')))->toBeGreaterThanOrEqual(4)
         ->and(array_values(array_filter($items, fn($i) => $i !== 'tick')))->toHaveCount(10);
 });
+
+test('one huge chunk of skipped lines still yields ticks while it is scanned', function () {
+    // Comments, blank lines, [DONE] and malformed JSON yield nothing; scanning 2.4 million of
+    // them takes far longer than the 5 ms interval, so ticks must come from inside the chunk.
+    $skipped = str_repeat(": keep-alive\n\ndata: [DONE]\ndata: {oops\n", 600_000);
+    $client = new ScriptedStreamClient([[new FirstChunk(), new DataChunk(0, $skipped . "data: {\"n\":1}\n\n"), new LastChunk()]]);
+    $parser = new SseStreamParser($client, $client->response, SseStreamParser::DEFAULT_MAX_LINE_BYTES, 0.005, 5.0);
+
+    $items = sseParserDrain($parser);
+    $beforePayload = array_slice($items, 0, (int) array_search(['n' => 1], $items, true));
+
+    expect(array_values(array_filter($items, fn($i) => $i !== 'tick')))->toBe([['n' => 1]])
+        ->and(count($beforePayload))->toBeGreaterThanOrEqual(3);
+});

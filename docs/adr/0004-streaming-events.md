@@ -96,7 +96,8 @@ Alternatives considered, one line each:
   chunk. Polling also covers the wait for headers; the status check happens on the first
   non-timeout chunk.
 - While data flows, the parser also yields a `Tick` whenever `tickInterval` has passed since the
-  last one (checked before each payload and after each chunk). A provider can turn many payloads
+  last one (checked before each payload, after each chunk, and every 256 lines scanned inside a
+  chunk, so a large chunk of skipped lines such as comments or malformed JSON is no exception). A provider can turn many payloads
   into no event (fragments of a call over the argument cap, pings, signature deltas), and these
   ticks keep the agent's cancellation and run-time checks running through such traffic.
 - The parser tracks the time since the last data and throws the same idle-timeout error symfony
