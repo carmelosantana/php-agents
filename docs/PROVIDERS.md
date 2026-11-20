@@ -744,7 +744,11 @@ foreach ($provider->streamEvents($messages, $tools) as $event) {
 ```
 
 - `index` is the call's 0-based position in the response, in the order calls opened; `id` is the
-  provider's call id, repeated on every event of the call.
+  provider's call id, repeated on every event of the call. The Responses API can send `call_id`
+  (and `name`) only on the call's `output_item.done`: `OpenAIResponsesProvider` then gives
+  `ToolInputStart` and the `ToolInputDelta` events before the done item an empty `id` (and the
+  start an empty `name`), and `ToolInputEnd` the real ones. Key a call by `index`; the agent fills
+  the empty values from the end.
 - Providers that receive a call whole (Gemini, Ollama, the llama.cpp tool parser, CLI) emit
   `ToolInputStart`, one `ToolInputDelta` with the full JSON-encoded arguments, then `ToolInputEnd`.
 - Empty or whitespace-only arguments and an empty object decode to empty arguments (`{}`). Arguments

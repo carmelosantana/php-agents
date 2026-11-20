@@ -177,7 +177,8 @@ text is cut to 128 characters plus a `…` (129 at most). `Finish` on the provid
   `tool_call_limit`, and its later events are ignored.
   End or delta id and name bytes that differ from the start's, fill-ins included, count toward
   `maxResponseBytes`. (The Responses API can send a call's `call_id` and `name` only on its
-  `output_item.done`.)
+  `output_item.done`; `OpenAIResponsesProvider` then emits `ToolInputStart` and the deltas before
+  it with an empty id, and `ToolInputEnd` with the real one.)
 - `agent.finish` fires from one place: `run()` wraps the loop and notifies with the `Output` it
   is about to return.
 - **`done` previews.** `DonePreviewReader` reads the `done` call's argument JSON incrementally and
