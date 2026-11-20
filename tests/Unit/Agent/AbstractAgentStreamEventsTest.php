@@ -1211,3 +1211,41 @@ test('a done preview held for a missing id is released under the id the first de
 
     expect($events->dataFor('agent.done_delta'))->toEqual([new DonePreview('d1', 'Hello.')]);
 });
+
+/**
+ * Run an id-less `done` call streamed as $fragments one-byte deltas; returns the seconds the run
+ * took, after checking the preview is correct.
+ */
+function streamEventsTinyPreviewRun(int $fragments): float
+{
+    $script = [new ToolInputStart(0, '', 'done'), new ToolInputDelta(0, '', '{"response":"')];
+    for ($i = 0; $i < $fragments; $i++) {
+        $script[] = new ToolInputDelta(0, '', 'x');
+    }
+    $script[] = new ToolInputDelta(0, '', '"}');
+    $script[] = new ToolInputEnd(0, 'd1', 'done', ['response' => str_repeat('x', $fragments)]);
+    $script[] = new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model');
+    [$agent, $events] = streamEventsAgent([$script]);
+
+    $started = hrtime(true);
+    $output = $agent->run(new UserMessage('Hi'));
+    $seconds = (hrtime(true) - $started) / 1e9;
+    $previews = $events->dataFor('agent.done_delta');
+
+    expect($output->content)->toBe(str_repeat('x', $fragments))
+        ->and($previews)->toHaveCount(1)
+        ->and($previews[0]->callId)->toBe('d1')
+        ->and(strlen($previews[0]->delta))->toBe($fragments);
+
+    return $seconds;
+}
+
+test('an id-less done preview streamed in many tiny fragments is held in linear time', function () {
+    // Eight times the fragments should take about eight times as long. Copying the held text on
+    // every fragment makes it grow with the square instead (about 40x here); 20x is the margin.
+    streamEventsTinyPreviewRun(10_000);
+    $small = streamEventsTinyPreviewRun(100_000);
+    $large = streamEventsTinyPreviewRun(800_000);
+
+    expect($large / $small)->toBeLessThan(20.0);
+});
