@@ -117,7 +117,14 @@ test('text after the response string ends is ignored', function () {
 
 test('unicode escapes decode at every UTF-8 length boundary', function () {
     $reader = new DonePreviewReader();
-    $reader->push('{"response":"0\u007f\u0080߿ࠀ￿𐀀􏿿"}');
+    $reader->push('{"response":"\u0030\u007f\u0080\u07ff\u0800\uffff\ud800\udc00\udbff\udfff"}');
 
     expect($reader->text())->toBe("0\u{7F}\u{80}\u{7FF}\u{800}\u{FFFF}\u{10000}\u{10FFFF}");
+});
+
+test('a lone high surrogate at the end of the response decodes as the replacement character', function () {
+    $reader = new DonePreviewReader();
+    $reader->push('{"response":"a\udbff"}');
+
+    expect($reader->text())->toBe("a\u{FFFD}");
 });
