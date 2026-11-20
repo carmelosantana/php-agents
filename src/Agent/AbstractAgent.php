@@ -411,6 +411,12 @@ abstract class AbstractAgent implements AgentInterface
                 foreach ($this->provider->streamEvents($conversation->messages(), $advertisedTools, $this->providerOptions) as $event) {
                     $this->tickCallback->tick();
 
+                    // A Finish is recorded before the checks below, so a cancel or limit that
+                    // trips on it still counts its usage (spendEarlyFinishUsage).
+                    if ($event instanceof Finish) {
+                        $finish = $event;
+                    }
+
                     // Check cancellation on every event, ticks included, so ESC/Ctrl+C
                     // returns to the prompt without waiting for the full response.
                     if ($this->cancellationToken?->isCancelled()) {
@@ -479,8 +485,6 @@ abstract class AbstractAgent implements AgentInterface
                         }
                         $endedCalls[$event->index] = $event;
                         $this->notify('agent.tool_input_end', $event);
-                    } elseif ($event instanceof Finish) {
-                        $finish = $event;
                     }
                 }
 

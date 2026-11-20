@@ -754,3 +754,36 @@ test('a cancel on agent.step_finish still scrubs the raw reason and model in the
         ->and($events->dataFor('agent.finish')[0]->model)->toBe('evil model [redacted]');
 });
 
+test('a cancel seen on the Finish event itself keeps and reports that Finish\'s usage', function () {
+    $window = new ContextWindow(maxTok: 100_000, reservedTok: 0);
+    [$agent] = cancellationAgent(
+        [[new TextDelta('Hel'), new Finish(ProviderFinishReason::Stop, 'stop', new Usage(promptTokens: 4_000, completionTokens: 1_000, totalTokens: 5_000), 'test-model')]],
+        fn(string $event): bool => $event === 'agent.text_delta',
+        ['contextWindow' => $window],
+    );
+
+    $output = $agent->run(new UserMessage('Say hello.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->content)->toBe('Hel')
+        ->and($output->usage?->totalTokens)->toBe(5_000)
+        ->and($window->usedTokens())->toBe(5_000);
+});
+
+test('a stream limit that trips on the Finish event itself keeps and reports that Finish\'s usage', function () {
+    $window = new ContextWindow(maxTok: 100_000, reservedTok: 0);
+    $agent = new CancellationTestAgent(
+        provider: new ScriptedEventsProvider([[
+            new TextDelta('Hel'),
+            new Finish(ProviderFinishReason::Stop, 'stop', new Usage(promptTokens: 4_000, completionTokens: 1_000, totalTokens: 5_000), 'test-model'),
+        ]]),
+        contextWindow: $window,
+        runLimits: new RunLimits(maxResponseBytes: 10),
+    );
+
+    $output = $agent->run(new UserMessage('Say hello.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::BudgetExhausted)
+        ->and($output->usage?->totalTokens)->toBe(5_000)
+        ->and($window->usedTokens())->toBe(5_000);
+});
