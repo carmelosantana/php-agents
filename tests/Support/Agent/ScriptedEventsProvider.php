@@ -13,7 +13,8 @@ use CarmeloSantana\PHPAgents\Provider\Stream\StreamProjector;
 
 /**
  * Yields one scripted list of stream events per streamEvents() call; stream() is their
- * projection. A Throwable in a script is thrown at that point, and running out of scripts
+ * projection. A Throwable in a script is thrown at that point, a Closure is called there (to act
+ * between two reads, as a transport would) and yields nothing, and running out of scripts
  * throws, as a provider failure would. $closedStreams counts the generators whose `finally` ran,
  * so a test can see that the agent abandoned a stream. $options records the options of each
  * streamEvents() call.
@@ -27,7 +28,7 @@ final class ScriptedEventsProvider implements ProviderInterface
     /** @var list<array<string, mixed>> */
     public array $options = [];
 
-    /** @param list<list<StreamEvent|\Throwable>> $scripts */
+    /** @param list<list<StreamEvent|\Throwable|\Closure(): mixed>> $scripts */
     public function __construct(private array $scripts) {}
 
     public function chat(array $messages, array $tools = [], array $options = []): Response
@@ -49,6 +50,11 @@ final class ScriptedEventsProvider implements ProviderInterface
 
         try {
             foreach ($script as $event) {
+                if ($event instanceof \Closure) {
+                    $event();
+                    continue;
+                }
+
                 yield $event instanceof \Throwable ? throw $event : $event;
             }
         } finally {

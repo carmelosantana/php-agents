@@ -640,3 +640,26 @@ test('a cancel on agent.step_finish of a done response with other calls discards
             new ToolInputDiscarded(1, 'd1', 'done', 'cancelled'),
         ]);
 });
+
+test('a cancel-driven throw after the Finish arrived keeps that Finish\'s usage', function () {
+    $token = new CancellationTestToken();
+    $agent = new CancellationTestAgent(
+        provider: new ScriptedEventsProvider([[
+            new TextDelta('Hel'),
+            new Finish(ProviderFinishReason::Stop, 'stop', new Usage(promptTokens: 12, completionTokens: 3, totalTokens: 15), 'test-model'),
+            function () use ($token): void {
+                $token->cancelled = true;
+            },
+            new RuntimeException('Request cancelled by transport'),
+        ]]),
+        cancellationToken: $token,
+    );
+
+    $output = $agent->run(new UserMessage('Say hello.'));
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->content)->toBe('Hel')
+        ->and($output->usage?->promptTokens)->toBe(12)
+        ->and($output->usage?->completionTokens)->toBe(3)
+        ->and($output->usage?->totalTokens)->toBe(15);
+});

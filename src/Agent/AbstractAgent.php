@@ -497,6 +497,11 @@ abstract class AbstractAgent implements AgentInterface
             // are present, is the run's answer.
             if ($cancelled) {
                 $this->discardCalls($startedCalls, 'cancelled');
+                // A Finish can arrive before the cancel is seen (a transport abort throws on the
+                // next read); its usage was spent.
+                if ($finish?->usage !== null) {
+                    $totalUsage = $totalUsage->plus($finish->usage);
+                }
 
                 return $this->cancelledOutput(self::cancelledAnswer($contentParts, $donePreview), $conversation, $allToolResults, $totalUsage, $i + 1);
             }
