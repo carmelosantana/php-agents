@@ -382,3 +382,50 @@ test('a cancel mid-preview with no streamed text returns the done preview alone'
     expect($output->content)->toBe('The ans')
         ->and(end($messages)->content())->toBe('The ans');
 });
+
+test('a provider that throws once the token is set ends the run as Cancelled with the streamed text', function () {
+    [$agent, $events, $provider] = cancellationAgent(
+        [[new TextDelta('Hel'), new RuntimeException('Request cancelled by transport'), new TextDelta('lo')]],
+        fn(string $event): bool => $event === 'agent.text_delta',
+    );
+
+    $output = $agent->run(new UserMessage('Say hello.'));
+    $messages = $output->conversation?->messages() ?? [];
+    $last = end($messages);
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->content)->toBe('Hel')
+        ->and($last)->toBeInstanceOf(AssistantMessage::class)
+        ->and($last->content())->toBe('Hel')
+        ->and($events->names())->toBe(['agent.start', 'agent.iteration', 'agent.text_delta', 'agent.error', 'agent.finish'])
+        ->and($events->dataFor('agent.error'))->toBe(['Task cancelled'])
+        ->and($provider->closedStreams)->toBe(1);
+});
+
+test('a provider that throws once the token is set discards open calls as cancelled and keeps the done preview', function () {
+    [$agent, $events] = cancellationAgent(
+        [[
+            new TextDelta('Wrapping up.'),
+            new ToolInputStart(0, 'c1', 'echo'),
+            new ToolInputDelta(0, 'c1', '{"text":"a"}'),
+            new ToolInputEnd(0, 'c1', 'echo', ['text' => 'a']),
+            new ToolInputStart(1, 'd1', 'done'),
+            new ToolInputDelta(1, 'd1', '{"response":"The ans'),
+            new RuntimeException('Request cancelled by transport'),
+        ]],
+        fn(string $event): bool => $event === 'agent.done_delta',
+    );
+
+    $output = $agent->run(new UserMessage('2+2?'));
+    $messages = $output->conversation?->messages() ?? [];
+
+    expect($output->finishReason)->toBe(AgentFinishReason::Cancelled)
+        ->and($output->content)->toBe("Wrapping up.\n\nThe ans")
+        ->and(end($messages)->content())->toBe("Wrapping up.\n\nThe ans")
+        ->and($output->toolResults)->toBe([])
+        ->and($events->dataFor('agent.tool_input_discarded'))->toEqual([
+            new ToolInputDiscarded(0, 'c1', 'echo', 'cancelled'),
+            new ToolInputDiscarded(1, 'd1', 'done', 'cancelled'),
+        ])
+        ->and($events->dataFor('agent.error'))->toBe(['Task cancelled']);
+});

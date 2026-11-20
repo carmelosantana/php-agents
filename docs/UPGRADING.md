@@ -49,7 +49,8 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   `Stop`, and a stream that ends without a finish reason finishes `Stop`.
 - A mid-stream cancel ends `Cancelled`. `Output->content` is the text streamed so far, followed by
   the `done` answer previewed so far, and that text is added to the conversation; with neither it
-  is `'Task was cancelled.'`. A cancel during tools gives every call that did not start a
+  is `'Task was cancelled.'`. A provider exception thrown once the token is set (a cancel that
+  aborts the transport) ends the same way, not `Error`. A cancel during tools gives every call that did not start a
   `'Cancelled before it ran.'` result with `errorCode` `'cancelled'`. See
   [Cooperative Cancellation](AGENTS.md#cooperative-cancellation).
 - `agent.finish` fires once on every exit path that returns. An exception that escapes `run()`

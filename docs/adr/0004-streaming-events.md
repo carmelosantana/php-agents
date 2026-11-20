@@ -168,9 +168,9 @@ when the run ends for another reason. An exception that escapes `run()` gets no 
 | Refusal, content filter, context window | `step_finish` → `finish` | `Refusal`, `ContentFilter`, `ContextWindowExceeded` |
 | Provider error finish (`Error`, `PauseTurn`, bare `MaxTokens`) | `step_finish` → `error` → `finish` | `Error` |
 | Stream ended without a `Finish` | `tool_input_discarded` (`provider_error`, each started call) → `error` → `finish` | `Error` |
-| Provider exception | `tool_input_discarded` (`provider_error`, each started call) → `error` → `finish` | `Error` |
+| Provider exception (token not set) | `tool_input_discarded` (`provider_error`, each started call) → `error` → `finish` | `Error` |
 | Tool `TerminationException` | `step_finish` → `finish` (no `agent.error`) | `Error` |
-| Cancel mid-stream | `tool_input_discarded` (`cancelled`, each started call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
+| Cancel mid-stream (or a provider exception once the token is set) | `tool_input_discarded` (`cancelled`, each started call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 | Cancel at top of iteration or during tools | (`step_finish` already fired for a completed response; no call is open, so no `tool_input_discarded`) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 
 Tests pin each sequence.
@@ -188,6 +188,8 @@ Tests pin each sequence.
   `AssistantMessage` with no tool calls. Calls still streaming are dropped,
   and every open call, a `done` preview included, gets `agent.tool_input_discarded` with reason
   `cancelled`.
+  A provider that throws once the token is set (a cancel that aborts the transport) ends the
+  same way, not as a provider error.
 - **During tools.** The assistant's tool-call message is already in the conversation. Finished
   calls keep their results; every call that did not start gets
   `ToolResult::error('Cancelled before it ran.')` with error code `cancelled`, so

@@ -418,9 +418,9 @@ when the run ends for another reason.
 | Refusal, content filter, context window | `step_finish` → `finish` | `Refusal`, `ContentFilter`, `ContextWindowExceeded` |
 | Provider error finish (`Error`, `PauseTurn`, `MaxTokens` with no text) | `step_finish` → `error` → `finish` | `Error` |
 | Stream ended without a finish | `tool_input_discarded` (`provider_error`) → `error` → `finish` | `Error` |
-| Provider exception | `tool_input_discarded` (`provider_error`) → `error` → `finish` | `Error` |
+| Provider exception (token not set) | `tool_input_discarded` (`provider_error`) → `error` → `finish` | `Error` |
 | Tool `TerminationException` | `step_finish` → … tools … → `finish` (no `agent.error`) | `Error` |
-| Cancel mid-stream | `tool_input_discarded` (`cancelled`, each started call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
+| Cancel mid-stream (or a provider exception once the token is set) | `tool_input_discarded` (`cancelled`, each started call) → `error` `'Task cancelled'` → `finish` | `Cancelled` |
 | Cancel at the top of an iteration or during tools | `error` `'Task cancelled'` → `finish` | `Cancelled` |
 
 Rows that start with `error` follow whatever the step already fired: a cancel or time limit during
@@ -471,7 +471,7 @@ The token is checked at the top of each iteration, on every stream event (includ
 | When | Outcome |
 |---|---|
 | Top of an iteration | `content` is `'Task was cancelled.'`; the provider is not called |
-| Mid-stream | The stream is abandoned (the HTTP response is cancelled). `content` is the text streamed so far in this step, followed by the `done` answer previewed so far (`agent.done_delta`) if one was streaming (a blank line between them when both are present), appended to the conversation as an `AssistantMessage` with no tool calls, or `'Task was cancelled.'` when none arrived. No call of the response runs: each started call gets `agent.tool_input_discarded` with reason `cancelled` |
+| Mid-stream | The stream is abandoned (the HTTP response is cancelled). `content` is the text streamed so far in this step, followed by the `done` answer previewed so far (`agent.done_delta`) if one was streaming (a blank line between them when both are present), appended to the conversation as an `AssistantMessage` with no tool calls, or `'Task was cancelled.'` when none arrived. No call of the response runs: each started call gets `agent.tool_input_discarded` with reason `cancelled`. A provider that throws once the token is set (a cancel that aborts the transport) ends the same way, not as a provider error |
 | During tools | Calls that finished keep their results. Every call that did not start gets an error `ToolResult` with content `'Cancelled before it ran.'` and `errorCode` `'cancelled'`, so every call in the conversation has a result and `repairToolPairing()` keeps the group. A running tool or batch is not interrupted; a batch's results are all kept. `content` is `'Task was cancelled.'` |
 
 ## Pending Input Injection

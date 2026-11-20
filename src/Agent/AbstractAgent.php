@@ -431,19 +431,25 @@ abstract class AbstractAgent implements AgentInterface
 
                 $this->tickCallback->tick();
             } catch (\Throwable $e) {
-                $errorMessage = $this->providerErrorMessage($e);
+                // A cancel that aborts the transport surfaces as a throw; it ends the run
+                // the way a cancel seen between events does.
+                if ($this->cancellationToken?->isCancelled()) {
+                    $cancelled = true;
+                } else {
+                    $errorMessage = $this->providerErrorMessage($e);
 
-                $this->discardCalls($startedCalls, 'provider_error');
-                $this->notify('agent.error', $errorMessage);
+                    $this->discardCalls($startedCalls, 'provider_error');
+                    $this->notify('agent.error', $errorMessage);
 
-                return new Output(
-                    content: 'Provider error: ' . $errorMessage,
-                    toolResults: $allToolResults,
-                    usage: $totalUsage,
-                    iterations: $i + 1,
-                    conversation: $conversation,
-                    finishReason: AgentFinishReason::Error,
-                );
+                    return new Output(
+                        content: 'Provider error: ' . $errorMessage,
+                        toolResults: $allToolResults,
+                        usage: $totalUsage,
+                        iterations: $i + 1,
+                        conversation: $conversation,
+                        finishReason: AgentFinishReason::Error,
+                    );
+                }
             }
 
             // A cancel mid-stream abandons the response: no call of it runs, and the text
