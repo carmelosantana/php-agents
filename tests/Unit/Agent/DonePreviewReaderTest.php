@@ -114,3 +114,10 @@ test('text after the response string ends is ignored', function () {
 
     expect($reader->text())->toBe('first');
 });
+
+test('unicode escapes decode at every UTF-8 length boundary', function () {
+    $reader = new DonePreviewReader();
+    $reader->push('{"response":"0\u007f\u0080߿ࠀ￿𐀀􏿿"}');
+
+    expect($reader->text())->toBe("0\u{7F}\u{80}\u{7FF}\u{800}\u{FFFF}\u{10000}\u{10FFFF}");
+});

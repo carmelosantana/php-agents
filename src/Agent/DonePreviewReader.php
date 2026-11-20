@@ -254,13 +254,13 @@ final class DonePreviewReader
         return $length;
     }
 
+    /**
+     * UTF-8 for a code point; one mb_chr() cannot encode (a surrogate, or out of range) is U+FFFD.
+     */
     private static function utf8(int $code): string
     {
-        return match (true) {
-            $code < 0x80 => chr($code),
-            $code < 0x800 => chr(0xC0 | ($code >> 6)) . chr(0x80 | ($code & 0x3F)),
-            $code < 0x10000 => chr(0xE0 | ($code >> 12)) . chr(0x80 | (($code >> 6) & 0x3F)) . chr(0x80 | ($code & 0x3F)),
-            default => chr(0xF0 | ($code >> 18)) . chr(0x80 | (($code >> 12) & 0x3F)) . chr(0x80 | (($code >> 6) & 0x3F)) . chr(0x80 | ($code & 0x3F)),
-        };
+        $char = mb_chr($code, 'UTF-8');
+
+        return $char === false ? self::REPLACEMENT : $char;
     }
 }
