@@ -929,8 +929,8 @@ abstract class AbstractAgent implements AgentInterface
      * they differ from the start's; and a Finish's raw reason, model and the JSON of its content
      * blocks.
      *
-     * @param array<int, int> $argumentBytes Argument bytes streamed per started call index so
-     *                                       far; a start opens an entry and its deltas add to it
+     * @param array<int, int> $argumentBytes Argument bytes streamed per call index so far, with
+     *                                       or without a start; credited against the call's end
      * @param array<int, ToolInputStart> $startedCalls Calls kept so far, by index
      * @param array<int, string> $limitedCalls Ids of calls discarded under the per-turn cap, by index
      */
@@ -941,17 +941,12 @@ abstract class AbstractAgent implements AgentInterface
         }
 
         if ($event instanceof ToolInputStart) {
-            $argumentBytes[$event->index] ??= 0;
-
             return strlen($event->id) + strlen($event->name);
         }
 
         if ($event instanceof ToolInputDelta) {
             $bytes = strlen($event->delta);
-            // A delta with no start is counted here and not credited to the call's end.
-            if (isset($argumentBytes[$event->index])) {
-                $argumentBytes[$event->index] += $bytes;
-            }
+            $argumentBytes[$event->index] = ($argumentBytes[$event->index] ?? 0) + $bytes;
 
             return $bytes;
         }

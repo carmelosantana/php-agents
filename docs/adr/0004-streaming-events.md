@@ -140,7 +140,8 @@ removed, at most 128 characters) before notifying. `Finish` on the provider stre
   - `duplicate_done`: a `done` call that was not the first in its response;
   - `tool_call_limit`: the call opened past `RunLimits::$maxToolCallsPerTurn`. The per-turn cap is
     applied while the response streams, so such a call is discarded right after its
-    `agent.tool_input_start`, its later input events are not forwarded, and it is never retained
+    `agent.tool_input_start` (a call whose end came without a start is discarded in place of its
+    `agent.tool_input_end`, with no start event), its later input events are not forwarded, and it is never retained
     (its `tool_use` content block included), shown to the policy or answered with a tool result.
     The first `done` call is outside the cap.
 - `agent.finish` fires from one place: `run()` wraps the loop and notifies with the `Output` it

@@ -402,7 +402,7 @@ call id retracts it.
 | `denied` | The execution policy denied the response's first `done` call; the run continues |
 | `invalid_done` | The first `done` call's arguments failed validation; the run continues |
 | `duplicate_done` | A `done` call that was not the first in its response |
-| `tool_call_limit` | The call opened past `RunLimits::$maxToolCallsPerTurn`; it fires right after its `agent.tool_input_start`, and the call's later input events are not forwarded |
+| `tool_call_limit` | The call opened past `RunLimits::$maxToolCallsPerTurn`; it fires right after its `agent.tool_input_start` (or, for a call whose end came without a start, in place of its `agent.tool_input_end`, with no start event), and the call's later input events are not forwarded |
 
 ### How a run ends
 

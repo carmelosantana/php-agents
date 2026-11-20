@@ -855,3 +855,19 @@ test('non-ASCII and slashes in streamed arguments are counted once, as raw bytes
         ->and($run(117)->content)->toBe('Done.')
         ->and($run(116)->content)->toBe('Response size limit reached.');
 });
+
+test('deltas that came without a start are credited to the call\'s end, not counted twice', function () {
+    // Delta {"text":"hi"} 13 + end id and name c1 echo 6 + tool_use test-model 18 = 37; round 2 = 19.
+    $run = function (int $cap): Output {
+        [$agent] = streamEventsAgent([[
+            new ToolInputDelta(0, 'c1', '{"text":"hi"}'),
+            new ToolInputEnd(0, 'c1', 'echo', ['text' => 'hi']),
+            new Finish(ProviderFinishReason::ToolUse, 'tool_use', null, 'test-model'),
+        ], streamEventsText('Done.')], ['runLimits' => new RunLimits(maxResponseBytes: $cap)]);
+
+        return $agent->run(new UserMessage('Echo hi.'));
+    };
+
+    expect($run(56)->content)->toBe('Done.')
+        ->and($run(55)->content)->toBe('Response size limit reached.');
+});
