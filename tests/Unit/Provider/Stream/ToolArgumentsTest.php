@@ -109,3 +109,10 @@ test('the byte cap measures raw UTF-8 and slashes the same way in decode and fro
 test('toJson re-encodes decoded arguments without escaping unicode or slashes', function () {
     expect(ToolArguments::toJson(['a' => '日/x']))->toBe('{"a":"日/x"}');
 });
+
+test('a depth cap as large as PHP_INT_MAX is clamped to what json_decode accepts', function () {
+    $limits = new RequestLimits(maxToolArgumentDepth: PHP_INT_MAX);
+
+    expect(ToolArguments::decode('{"a":{"b":1}}', $limits))->toBe(['a' => ['b' => 1]])
+        ->and(ToolArguments::fromDecoded(['a' => ['b' => 1]], $limits))->toBe(['a' => ['b' => 1]]);
+});

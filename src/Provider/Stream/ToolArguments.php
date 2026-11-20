@@ -84,20 +84,20 @@ final class ToolArguments
 
     /**
      * The json_decode() depth for $limits: it counts the value inside the outermost object as
-     * a level, so it is one more than the nesting the cap allows. 0 is json_decode()'s 512.
+     * a level, so it is one more than the nesting the cap allows. 0 is json_decode()'s 512, and
+     * a cap above 2147483646 is clamped to it, since json_decode() takes at most 2147483647.
      *
-     * @return int<2, max>
+     * @return int<2, 2147483647>
      */
     private static function decodeDepth(RequestLimits $limits): int
     {
-        return $limits->maxToolArgumentDepth > 0 ? $limits->maxToolArgumentDepth + 1 : 512;
+        return $limits->maxToolArgumentDepth > 0 ? min($limits->maxToolArgumentDepth, 2_147_483_646) + 1 : 512;
     }
 
     /**
      * Argument JSON from a decoded SSE payload. Wire strings pass through; arguments
      * sent as a JSON object arrive decoded, so they are re-encoded (UTF-8 and slashes
-     * unescaped), with an empty
-     * object (decoded as []) becoming `{}`. A missing value is ''.
+     * unescaped), with an empty object (decoded as []) becoming `{}`. A missing value is ''.
      */
     public static function toJson(mixed $arguments): string
     {

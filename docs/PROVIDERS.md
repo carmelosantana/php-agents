@@ -784,7 +784,7 @@ Two requests are outside `RequestLimits`:
 | `maxRedirects` | `0` | Redirects followed; any caller `max_redirects` is replaced |
 | `tickInterval` | `0.25` | Seconds between polls of a silent stream, each yielding a `Tick` event; `0.0` turns ticks off. Not sent to the client |
 | `maxToolArgumentBytes` | `4_194_304` | Bytes of one tool call's argument JSON (4 MiB); `0` means no cap. Not sent to the client |
-| `maxToolArgumentDepth` | `64` | Nesting depth of one tool call's arguments (`{"a":1}` is 1); `0` means `json_decode()`'s default. Not sent to the client |
+| `maxToolArgumentDepth` | `64` | Nesting depth of one tool call's arguments (`{"a":1}` is 1); `0` means `json_decode()`'s default, and a value above `json_decode()`'s maximum is clamped to it. Not sent to the client |
 
 Embedding providers (`OpenAIEmbeddingProvider`, `OllamaEmbeddingProvider`) use the same defaults with `idleTimeout` `60.0`. Some requests keep a shorter idle timeout of their own: `isAvailable()` waits 5 s, and `models()` on Anthropic and Gemini and Ollama's `/api/show` model lookup wait 10 s. Ollama `pull()` keeps the provider's idle timeout and refuses redirects, but has no total limit and no byte cap, because a model download can run far longer than 600 s.
 
