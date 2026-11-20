@@ -110,6 +110,8 @@ public function streamEvents(array $messages, array $tools = [], array $options 
 - `CliProvider` honours `RequestLimits::$maxResponseBytes` (default 32 MiB) on the process's stdout:
   `streamEvents()` stops reading the process stream past it and `chat()` refuses a larger result,
   each with a `ProviderException` (`response exceeded N bytes`). Pass `maxResponseBytes: 0` for no cap.
+  `ProviderFactory` builds a `CliProvider` with the default `RequestLimits`; set other caps with
+  `withRequestLimits()` on the provider it returns.
 - Image downloads (Gemini image URLs, `RemoteImageResolver`) log a refused URL as scheme, host and
   `/[redacted]` instead of the full URL, and log a failure as the exception class plus that URL
   form instead of the exception message.

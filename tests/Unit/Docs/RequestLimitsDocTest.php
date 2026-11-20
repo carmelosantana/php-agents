@@ -57,3 +57,9 @@ test('the docs list every range in the Gemini IPv6 deny-list', function (string 
     }
     expect($doc)->toContain('`::/8` (reserved)');
 })->with(['docs/PROVIDERS.md', 'docs/adr/0003-provider-request-limits.md']);
+
+test('PROVIDERS and UPGRADING say a factory-built CliProvider takes its caps from withRequestLimits()', function (string $path) {
+    $doc = (string) file_get_contents(dirname(__DIR__, 3) . '/' . $path);
+
+    expect($doc)->toContain('`ProviderFactory` builds a `CliProvider` with the default `RequestLimits`');
+})->with(['docs/PROVIDERS.md', 'docs/UPGRADING.md']);
