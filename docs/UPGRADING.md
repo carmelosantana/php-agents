@@ -126,6 +126,6 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   [The ready-made `Agent`](AGENTS.md#the-ready-made-agent)).
 - `LlamaServerProvider` runs a local GGUF through llama.cpp's `llama-server` (see
   [LlamaServerProvider](PROVIDERS.md#llamaserverprovider)). `ProviderFactory` makes one for
-  `llama-cpp/<model>` (or `llamacpp/<model>`) when that provider's config has a `baseUrl`; a config
+  `llama-cpp/<model>` (or `llamacpp/<model>` or `llama-server/<model>`) when that provider's config has a `baseUrl`; a config
   with a `baseUrl` used to be ignored in favour of the injected runtime. Without a `baseUrl` the
   factory still makes the deprecated `LlamaCppProvider` from the injected runtime.

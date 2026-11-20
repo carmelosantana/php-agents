@@ -48,6 +48,9 @@ $provider = new LlamaServerProvider(model: 'local');
 | `model` | `string` | — | Sent as `model`; a single-model server ignores it, a router-mode server picks the model by it |
 | `baseUrl` | `string` | `'http://localhost:8080/v1'` | Server URL including `/v1` |
 | `apiKey` | `string` | `''` | Only when the server runs with `--api-key`; empty sends no `Authorization` header |
+| `httpClient` | `?HttpClientInterface` | `null` | Symfony HTTP client to use |
+| `logger` | `?LoggerInterface` | `null` | PSR-3 logger |
+| `discoveredProviderName` | `string` | `'llama-server'` | The `provider` of the models `models()` returns |
 
 Start the server with `--jinja`: it then applies the model's own chat template, parses the model's
 native tool-call format and streams `tool_calls`, `reasoning_content` and text per token. Closing the
@@ -63,8 +66,11 @@ What differs from `OpenAICompatibleProvider`:
 - `models()` reads the served context size from `/v1/models` `data[].meta.n_ctx` and image input
   from `architecture.input_modalities`.
 
-With `ProviderFactory`, a `llama-cpp` (alias `llamacpp`) provider config that has a `baseUrl` makes
-a `LlamaServerProvider` for `llama-cpp/<model>`; `apiKey` is read from the same config:
+With `ProviderFactory`, a `llama-cpp` (aliases `llamacpp` and `llama-server`) provider config that
+has a `baseUrl` makes a `LlamaServerProvider` for `llama-cpp/<model>`; `apiKey` is read from the same
+config. Its discovered models carry the config's provider name, and a directly constructed
+provider's carry `llama-server`, so `$model->provider . '/' . $model->id` resolves back to the same
+server either way:
 
 ```json
 {

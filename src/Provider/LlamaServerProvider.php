@@ -21,6 +21,11 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  *   - Streaming falls back to the final chunk's `timings` for usage when the caller
  *     turns `stream_options.include_usage` off (it is on by default).
  *   - models() reads the served context size from `/v1/models` `data[].meta.n_ctx`.
+ *
+ * Discovered models are labelled `llama-server` (or `$discoveredProviderName`);
+ * ProviderFactory resolves `llama-server/<model>` as an alias of `llama-cpp`, and labels
+ * the models of a provider it made with the config's provider name, so a discovered
+ * `provider/model` string round-trips through the factory.
  */
 final class LlamaServerProvider extends OpenAICompatibleProvider
 {
@@ -30,6 +35,7 @@ final class LlamaServerProvider extends OpenAICompatibleProvider
         string $apiKey = '',
         ?HttpClientInterface $httpClient = null,
         ?LoggerInterface $logger = null,
+        string $discoveredProviderName = 'llama-server',
     ) {
         parent::__construct(
             model: $model,
@@ -37,7 +43,7 @@ final class LlamaServerProvider extends OpenAICompatibleProvider
             apiKey: $apiKey,
             httpClient: $httpClient,
             logger: $logger,
-            discoveredProviderName: 'llama-server',
+            discoveredProviderName: $discoveredProviderName,
         );
     }
 

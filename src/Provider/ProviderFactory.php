@@ -43,7 +43,8 @@ final class ProviderFactory
                 'type' => 'ollama',
             ],
             'llama-cpp' => [
-                'aliases' => ['llamacpp'],
+                // llama-server: the name LlamaServerProvider gives the models it discovers.
+                'aliases' => ['llamacpp', 'llama-server'],
                 'apiKeyEnvVar' => null,
                 'defaultBaseUrl' => '',
                 'type' => 'llama-cpp',
@@ -144,6 +145,7 @@ final class ProviderFactory
                     baseUrl: $baseUrl,
                     apiKey: $apiKey,
                     httpClient: $httpClient,
+                    discoveredProviderName: $providerName,
                 )
                 : self::makeLlamaCppProvider($model, $providerConfig, $config, $localModelRuntime),
             'cli' => self::makeCliProvider($model, $providerName, $providerConfig, $cliRuntime),

@@ -128,6 +128,27 @@ test('fromModelString routes llama-cpp with a configured baseUrl to LlamaServerP
         ->and($requests[0]['headers'])->toContain('Authorization: Bearer server-key');
 })->with(['llama-cpp', 'llamacpp']);
 
+test('a model llama-server discovers round-trips through fromModelString to the same server', function (?string $providerName) {
+    $requests = [];
+    $client = new MockHttpClient(function (string $method, string $url) use (&$requests): MockResponse {
+        $requests[] = $url;
+
+        return new MockResponse(json_encode(['object' => 'list', 'data' => [['id' => 'qwen.gguf', 'object' => 'model', 'meta' => ['n_ctx' => 4096]]]]), ['http_code' => 200]);
+    });
+    $config = makeProviderFactoryConfig(['llama-cpp' => ['baseUrl' => 'http://127.0.0.1:18089/v1']]);
+    $provider = $providerName === null
+        ? new LlamaServerProvider('qwen.gguf', 'http://127.0.0.1:18089/v1', httpClient: $client)
+        : ProviderFactory::fromModelString("{$providerName}/qwen.gguf", $config, $client);
+
+    $model = $provider->models()[0];
+    $again = ProviderFactory::fromModelString($model->provider . '/' . $model->id, $config, $client);
+    $again->models();
+
+    expect($again)->toBeInstanceOf(LlamaServerProvider::class)
+        ->and($again->getModel())->toBe('qwen.gguf')
+        ->and($requests[1])->toBe('http://127.0.0.1:18089/v1/models');
+})->with(['factory llama-cpp' => 'llama-cpp', 'factory llamacpp' => 'llamacpp', 'constructed directly' => null]);
+
 test('fromModelString without a baseUrl or a local runtime names both ways to configure llama-cpp', function () {
     ProviderFactory::fromModelString('llama-cpp/qwen2.5');
 })->throws(\InvalidArgumentException::class, 'baseUrl');
