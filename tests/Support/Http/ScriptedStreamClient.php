@@ -15,7 +15,8 @@ use Symfony\Contracts\HttpClient\ResponseStreamInterface;
  * An HTTP client whose stream() plays back one scripted poll per call, in wall-clock time.
  *
  * Each poll is a list of steps: a float sleeps that many seconds, self::TIMEOUT yields a timeout
- * chunk, and a chunk is yielded as is. Like symfony, a poll's iterator ends only at a timeout or
+ * chunk, a Closure is called (to count how far the consumer pulled, say) and yields nothing, and
+ * a chunk is yielded as is. Like symfony, a poll's iterator ends only at a timeout or
  * last chunk: a poll that ends otherwise waits $tailWait seconds and times out. Once the script
  * runs out, every further poll does the same. The timeout passed to each stream() call is
  * recorded in $timeouts.
@@ -32,7 +33,7 @@ final class ScriptedStreamClient implements HttpClientInterface
     public readonly ResponseInterface $response;
 
     /**
-     * @param list<list<ChunkInterface|float|string>> $polls
+     * @param list<list<ChunkInterface|float|string|\Closure(): mixed>> $polls
      */
     public function __construct(private array $polls, private readonly float $tailWait = 0.01)
     {
@@ -55,6 +56,8 @@ final class ScriptedStreamClient implements HttpClientInterface
             foreach ($poll as $step) {
                 if (is_float($step)) {
                     usleep((int) ($step * 1_000_000));
+                } elseif ($step instanceof \Closure) {
+                    $step();
                 } elseif ($step === self::TIMEOUT) {
                     yield $response => self::timeoutChunk();
 

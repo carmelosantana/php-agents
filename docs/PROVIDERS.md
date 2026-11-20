@@ -724,7 +724,7 @@ events from `CarmeloSantana\PHPAgents\Provider\Stream`:
 | `ToolInputStart` | `index`, `id`, `name` | A tool call opens |
 | `ToolInputDelta` | `index`, `id`, `delta` | A raw fragment of the call's argument JSON |
 | `ToolInputEnd` | `index`, `id`, `name`, `arguments`, `metadata` | The call's arguments are complete and decoded to a JSON object |
-| `Tick` | none | The stream has been silent for `RequestLimits::$tickInterval` |
+| `Tick` | none | The stream has been silent for `RequestLimits::$tickInterval`, or (SSE providers) that long has passed since the last tick while data keeps arriving |
 | `Finish` | `reason`, `rawReason`, `usage`, `model`, `contentBlocks` | Exactly once, last, on every stream that does not throw |
 
 ```php
@@ -857,7 +857,7 @@ Two requests are outside `RequestLimits`:
 | `maxDuration` | `600.0` | Seconds for the whole request, stream included (`max_duration`); `0.0` sends none, leaving the client's default |
 | `maxResponseBytes` | `33_554_432` | Bytes of response body (32 MiB); `0` means no cap |
 | `maxRedirects` | `0` | Redirects followed; any caller `max_redirects` is replaced |
-| `tickInterval` | `0.25` | Seconds between polls of a silent stream, each yielding a `Tick` event; `0.0` turns ticks off. Not sent to the client |
+| `tickInterval` | `0.25` | Seconds between polls of a silent stream, each yielding a `Tick` event; a stream that keeps sending data also yields a `Tick` at least this often; `0.0` turns ticks off. Not sent to the client |
 | `maxToolArgumentBytes` | `4_194_304` | Bytes of one tool call's argument JSON (4 MiB); `0` means no cap. Not sent to the client |
 | `maxToolArgumentDepth` | `64` | Nesting depth of one tool call's arguments (`{"a":1}` is 1); `0` means `json_decode()`'s default, and a value above `json_decode()`'s maximum is clamped to it. Not sent to the client |
 

@@ -26,7 +26,11 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  *
  * With a $tickInterval above 0.0 the parser polls the response every
  * $tickInterval seconds, from the request onward (headers included), and
- * yields a Tick for each poll that brings no bytes. The idle deadline is
+ * yields a Tick for each poll that brings no bytes. While data flows it also
+ * yields a Tick whenever $tickInterval has passed since the last one, before
+ * the next payload and after each chunk, so a consumer whose provider turns
+ * many payloads into no event (fragments of a call over the argument cap,
+ * pings, signature deltas) still gets a checkpoint that often. The idle deadline is
  * then the parser's: once $idleTimeout seconds (0.0 = none) pass without
  * a chunk it throws symfony's idle-timeout TimeoutException. The
  * response's `max_duration` stays with symfony.
@@ -75,6 +79,7 @@ final class SseStreamParser
     {
         $pollTimeout = $this->tickInterval > 0.0 ? $this->tickInterval : null;
         $lastData = hrtime(true) / 1e9;
+        $lastTick = $lastData;
 
         while (true) {
             // A timeout chunk ends symfony's iterator for that response, so each
@@ -86,6 +91,7 @@ final class SseStreamParser
                     }
 
                     yield new Tick();
+                    $lastTick = hrtime(true) / 1e9;
 
                     continue 2;
                 }
@@ -96,7 +102,17 @@ final class SseStreamParser
                     $this->assertSuccessfulStatus();
                 }
 
-                yield from $this->parseLines($chunk->getContent());
+                foreach ($this->parseLines($chunk->getContent()) as $json) {
+                    if ($pollTimeout !== null && hrtime(true) / 1e9 - $lastTick >= $pollTimeout) {
+                        yield new Tick();
+                        $lastTick = hrtime(true) / 1e9;
+                    }
+                    yield $json;
+                }
+                if ($pollTimeout !== null && hrtime(true) / 1e9 - $lastTick >= $pollTimeout) {
+                    yield new Tick();
+                    $lastTick = hrtime(true) / 1e9;
+                }
 
                 if ($chunk->isLast()) {
                     return;

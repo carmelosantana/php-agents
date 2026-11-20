@@ -207,7 +207,8 @@ returns that fixed content:
 
 The limits are cooperative: the agent checks them on every stream event, before each tool and
 around batch calls. Providers that poll their stream yield an idle `Tick` while the model is silent,
-so `maxRunSeconds` holds then too. A provider that yields nothing, not even a tick (see the
+and a `Tick` at least every `tickInterval` while data flows that turns into no other event (a tool
+call over the argument cap, keep-alives), so `maxRunSeconds` holds then too. A provider that yields nothing, not even a tick (see the
 cancellation column in [Streaming Events](PROVIDERS.md#streaming-events)), is bounded only by the
 provider's `RequestLimits`, and a single slow tool only by the tool itself.
 One oversized chunk is a transport concern too: `RequestLimits::$maxResponseBytes` caps the

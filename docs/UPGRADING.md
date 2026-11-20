@@ -140,8 +140,10 @@ public function streamEvents(array $messages, array $tools = [], array $options 
   [Events Reference](AGENTS.md#events-reference)). Observers with a `default` arm ignore them.
 - `Usage::$cacheReadTokens`, `$cacheWriteTokens` and `$reasoningTokens`, `null` when not reported.
 - `RequestLimits::$tickInterval` (default `0.25`): the cancellation token and run limits are
-  checked while a model is silent, on the providers listed under
-  [Cancellation and idle ticks](PROVIDERS.md#cancellation-and-idle-ticks).
+  checked while a model is silent, and at least every `tickInterval` while a stream sends data that
+  yields no other event (a tool call over the argument cap, keep-alives), on the providers listed
+  under [Cancellation and idle ticks](PROVIDERS.md#cancellation-and-idle-ticks). A `streamEvents()`
+  consumer sees these ticks between ordinary events on a long stream.
 - `Agent` takes `runLimits`, `cancellationToken` and `providerOptions` (see
   [The ready-made `Agent`](AGENTS.md#the-ready-made-agent)).
 - `LlamaServerProvider` runs a local GGUF through llama.cpp's `llama-server` (see

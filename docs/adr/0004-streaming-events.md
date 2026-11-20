@@ -95,6 +95,10 @@ Alternatives considered, one line each:
   checking `isTimeout()` before reading content, and re-enters `stream()` after each timeout
   chunk. Polling also covers the wait for headers; the status check happens on the first
   non-timeout chunk.
+- While data flows, the parser also yields a `Tick` whenever `tickInterval` has passed since the
+  last one (checked before each payload and after each chunk). A provider can turn many payloads
+  into no event (fragments of a call over the argument cap, pings, signature deltas), and these
+  ticks keep the agent's cancellation and run-time checks running through such traffic.
 - The parser tracks the time since the last data and throws the same idle-timeout error symfony
   would once `idleTimeout` passes; `maxDuration` still works through `max_duration`. A tick never
   extends either deadline.

@@ -360,7 +360,9 @@ test('silence past the idle timeout throws symfony\'s idle timeout after ticking
 
 test('comment lines reset the idle deadline without yielding an event', function () {
     // Four polls of 80 ms, each with a keep-alive comment halfway: 320 ms in all, never 100 ms
-    // without a chunk. Counting only `data:` lines would time out on the second poll.
+    // without a chunk. Counting only `data:` lines would time out on the second poll. Each
+    // keep-alive arrives 40 ms after the last tick, past the 20 ms interval, so it brings a
+    // data-flow tick of its own before the poll's idle tick.
     $polls = [];
     for ($i = 0; $i < 4; $i++) {
         $polls[] = [0.04, new DataChunk(0, ": keep-alive\n"), 0.04, ScriptedStreamClient::TIMEOUT];
@@ -370,7 +372,7 @@ test('comment lines reset the idle deadline without yielding an event', function
     $client = new ScriptedStreamClient($polls);
     $parser = new SseStreamParser($client, $client->response, SseStreamParser::DEFAULT_MAX_LINE_BYTES, 0.02, 0.1);
 
-    expect(sseParserDrain($parser))->toBe(['tick', 'tick', 'tick', 'tick', ['n' => 1]]);
+    expect(sseParserDrain($parser))->toBe([...array_fill(0, 8, 'tick'), ['n' => 1]]);
 });
 
 test('ticks never extend the idle deadline when no idle timeout is set', function () {
@@ -411,4 +413,21 @@ test('a 3xx answer is still refused when ticking', function () {
     ]);
 
     expect(sseParserCatch($parser)?->getMessage())->toContain('redirect not followed');
+});
+
+test('a steady stream still yields a tick at least every tick interval', function () {
+    // Ten payloads 30 ms apart with a 50 ms interval: never a silent poll, yet ticks interleave.
+    $steps = [new FirstChunk()];
+    for ($i = 0; $i < 10; $i++) {
+        $steps[] = 0.03;
+        $steps[] = new DataChunk(0, "data: {\"n\":{$i}}\n\n");
+    }
+    $steps[] = new LastChunk();
+    $client = new ScriptedStreamClient([$steps]);
+    $parser = new SseStreamParser($client, $client->response, SseStreamParser::DEFAULT_MAX_LINE_BYTES, 0.05, 5.0);
+
+    $items = sseParserDrain($parser);
+
+    expect(count(array_filter($items, fn($i) => $i === 'tick')))->toBeGreaterThanOrEqual(4)
+        ->and(array_values(array_filter($items, fn($i) => $i !== 'tick')))->toHaveCount(10);
 });
