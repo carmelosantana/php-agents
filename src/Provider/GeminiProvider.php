@@ -12,6 +12,7 @@ use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Image\Internal\PublicImageDownloader;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
 use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolArguments;
@@ -21,8 +22,8 @@ use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
 use CarmeloSantana\PHPAgents\Schema\JsonSchemaRepair;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
-use Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Symfony\Contracts\HttpClient\ResponseInterface;
 
 /**
  * Native provider for Google Gemini models.
@@ -128,6 +129,16 @@ final class GeminiProvider extends AbstractProvider
             ]),
         );
 
+        yield from self::cancelOnAbandon($response, $this->readStreamEvents($response));
+    }
+
+    /**
+     * The events of the response streamEvents() requested; cancelOnAbandon() closes it.
+     *
+     * @return \Generator<int, StreamEvent, mixed, void>
+     */
+    private function readStreamEvents(ResponseInterface $response): \Generator
+    {
         // Each chunk's parts, in order:
         //   text                → TextDelta (ReasoningDelta when `thought: true`)
         //   functionCall        → ToolInputStart, one ToolInputDelta with the whole JSON
@@ -143,7 +154,6 @@ final class GeminiProvider extends AbstractProvider
         $usage = null;
         /** @var array{reason: ProviderFinishReason, raw: string}|null $finish */
         $finish = null;
-        $keepResponse = false;
 
         $parser = new SseStreamParser(
             $this->httpClient,
@@ -153,96 +163,81 @@ final class GeminiProvider extends AbstractProvider
             $this->requestLimits->idleTimeout,
         );
 
-        try {
-            foreach ($parser->events() as $json) {
-                if ($json instanceof Tick) {
-                    yield $json;
+        foreach ($parser->events() as $json) {
+            if ($json instanceof Tick) {
+                yield $json;
 
-                    continue;
-                }
+                continue;
+            }
 
-                $usage = $this->parseUsage($json) ?? $usage;
+            $usage = $this->parseUsage($json) ?? $usage;
 
-                if ($finish !== null) {
-                    continue;
-                }
+            if ($finish !== null) {
+                continue;
+            }
 
-                $candidate = $json['candidates'][0] ?? [];
-                $parts = $candidate['content']['parts'] ?? [];
-                $reason = $this->finishReasonOf($json);
-                $dropsToolCalls = $this->dropsToolCalls($reason);
+            $candidate = $json['candidates'][0] ?? [];
+            $parts = $candidate['content']['parts'] ?? [];
+            $reason = $this->finishReasonOf($json);
+            $dropsToolCalls = $this->dropsToolCalls($reason);
 
-                foreach ($parts as $part) {
-                    if (is_string($part['text'] ?? null)) {
-                        if ($part['text'] === '') {
-                            continue;
-                        }
-                        yield ($part['thought'] ?? false) === true
-                            ? new ReasoningDelta($part['text'])
-                            : new TextDelta($part['text']);
-                    } elseif (isset($part['functionCall']) && !$dropsToolCalls) {
-                        $index = $callCount++;
-                        $id = sprintf('g%08x', $index);
-                        $name = is_string($part['functionCall']['name'] ?? null) ? $part['functionCall']['name'] : '';
-                        $argumentsJson = ToolArguments::toJson($part['functionCall']['args'] ?? []);
-
-                        yield new ToolInputStart($index, $id, $name);
-
-                        // Checked before the delta, so arguments over a cap are never yielded.
-                        $arguments = ToolArguments::decode($argumentsJson, $this->requestLimits);
-                        if ($arguments === null) {
-                            $this->logger?->debug('Tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [
-                                'tool' => $name,
-                                'length' => strlen($argumentsJson),
-                            ]);
-                            $invalidArguments = true;
-
-                            continue;
-                        }
-
-                        yield new ToolInputDelta($index, $id, $argumentsJson);
-                        $metadata = isset($part['thoughtSignature']) ? ['thoughtSignature' => $part['thoughtSignature']] : [];
-                        yield new ToolInputEnd($index, $id, $name, $arguments, $metadata);
+            foreach ($parts as $part) {
+                if (is_string($part['text'] ?? null)) {
+                    if ($part['text'] === '') {
+                        continue;
                     }
-                }
+                    yield ($part['thought'] ?? false) === true
+                        ? new ReasoningDelta($part['text'])
+                        : new TextDelta($part['text']);
+                } elseif (isset($part['functionCall']) && !$dropsToolCalls) {
+                    $index = $callCount++;
+                    $id = sprintf('g%08x', $index);
+                    $name = is_string($part['functionCall']['name'] ?? null) ? $part['functionCall']['name'] : '';
+                    $argumentsJson = ToolArguments::toJson($part['functionCall']['args'] ?? []);
 
-                $rawFinish = $candidate['finishReason'] ?? null;
-                $blockReason = $json['promptFeedback']['blockReason'] ?? null;
-                if ($rawFinish === null && $blockReason === null) {
-                    continue;
-                }
+                    yield new ToolInputStart($index, $id, $name);
 
-                if ($reason === ProviderFinishReason::Stop && $callCount > 0) {
-                    $reason = $invalidArguments ? ProviderFinishReason::Error : ProviderFinishReason::ToolUse;
-                }
+                    // Checked before the delta, so arguments over a cap are never yielded.
+                    $arguments = ToolArguments::decode($argumentsJson, $this->requestLimits);
+                    if ($arguments === null) {
+                        $this->logger?->debug('Tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [
+                            'tool' => $name,
+                            'length' => strlen($argumentsJson),
+                        ]);
+                        $invalidArguments = true;
 
-                $finish = [
-                    'reason' => $reason,
-                    'raw' => match (true) {
-                        is_string($rawFinish) => $rawFinish,
-                        is_string($blockReason) => $blockReason,
-                        default => '',
-                    },
-                ];
+                        continue;
+                    }
+
+                    yield new ToolInputDelta($index, $id, $argumentsJson);
+                    $metadata = isset($part['thoughtSignature']) ? ['thoughtSignature' => $part['thoughtSignature']] : [];
+                    yield new ToolInputEnd($index, $id, $name, $arguments, $metadata);
+                }
             }
 
-            yield $finish === null
-                ? new Finish(ProviderFinishReason::Error, usage: $usage, model: $this->model)
-                : new Finish($finish['reason'], $finish['raw'], $usage, $this->model);
-        } catch (\Throwable $e) {
-            // Only an HTTP status error leaves the response open: the caller reads its error
-            // body. Anything else after a successful status (a parser limit, a provider error
-            // event) is cancelled below like an abandoned stream.
-            $keepResponse = $e instanceof HttpExceptionInterface;
-
-            throw $e;
-        } finally {
-            // An abandoned generator (the consumer stopped iterating) must not leave the
-            // response open, whatever the client does when it is destroyed.
-            if (!$keepResponse) {
-                $response->cancel();
+            $rawFinish = $candidate['finishReason'] ?? null;
+            $blockReason = $json['promptFeedback']['blockReason'] ?? null;
+            if ($rawFinish === null && $blockReason === null) {
+                continue;
             }
+
+            if ($reason === ProviderFinishReason::Stop && $callCount > 0) {
+                $reason = $invalidArguments ? ProviderFinishReason::Error : ProviderFinishReason::ToolUse;
+            }
+
+            $finish = [
+                'reason' => $reason,
+                'raw' => match (true) {
+                    is_string($rawFinish) => $rawFinish,
+                    is_string($blockReason) => $blockReason,
+                    default => '',
+                },
+            ];
         }
+
+        yield $finish === null
+            ? new Finish(ProviderFinishReason::Error, usage: $usage, model: $this->model)
+            : new Finish($finish['reason'], $finish['raw'], $usage, $this->model);
     }
 
     public function structured(array $messages, string $schema, array $options = []): mixed

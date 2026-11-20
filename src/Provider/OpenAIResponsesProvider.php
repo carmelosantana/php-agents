@@ -12,6 +12,7 @@ use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
 use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
@@ -20,8 +21,8 @@ use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
-use Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Symfony\Contracts\HttpClient\ResponseInterface;
 
 /**
  * Provider for OpenAI's Responses API (/v1/responses).
@@ -83,6 +84,16 @@ final class OpenAIResponsesProvider extends AbstractProvider
             'json' => $payload,
         ]));
 
+        yield from self::cancelOnAbandon($response, $this->readStreamEvents($response));
+    }
+
+    /**
+     * The events of the response streamEvents() requested; cancelOnAbandon() closes it.
+     *
+     * @return \Generator<int, StreamEvent, mixed, void>
+     */
+    private function readStreamEvents(ResponseInterface $response): \Generator
+    {
         // Events, in the order they arrive:
         //   response.output_text.delta | response.refusal.delta → TextDelta (a refusal makes the
         //                                                         completed finish Refusal)
@@ -113,7 +124,6 @@ final class OpenAIResponsesProvider extends AbstractProvider
         $refused = false;
         $invalidArguments = false;
         $model = $this->model;
-        $keepResponse = false;
 
         $parser = new SseStreamParser(
             $this->httpClient,
@@ -123,86 +133,118 @@ final class OpenAIResponsesProvider extends AbstractProvider
             $this->requestLimits->idleTimeout,
         );
 
-        try {
-            foreach ($parser->events() as $json) {
-                if ($json instanceof Tick) {
-                    yield $json;
+        foreach ($parser->events() as $json) {
+            if ($json instanceof Tick) {
+                yield $json;
+
+                continue;
+            }
+
+            $eventType = $json['type'] ?? null;
+            $responseData = is_array($json['response'] ?? null) ? $json['response'] : [];
+            if (is_string($responseData['model'] ?? null) && $responseData['model'] !== '') {
+                $model = $responseData['model'];
+            }
+
+            if ($eventType === 'response.output_text.delta' || $eventType === 'response.refusal.delta') {
+                if ($eventType === 'response.refusal.delta') {
+                    $refused = true;
+                }
+                $delta = $json['delta'] ?? null;
+                if (is_string($delta) && $delta !== '') {
+                    yield new TextDelta($delta);
+                }
+            } elseif ($eventType === 'response.reasoning_summary_text.delta') {
+                $delta = $json['delta'] ?? null;
+                if (is_string($delta) && $delta !== '') {
+                    yield new ReasoningDelta($delta);
+                }
+            } elseif ($eventType === 'response.output_item.added' || $eventType === 'response.output_item.done') {
+                $item = is_array($json['item'] ?? null) ? $json['item'] : [];
+                if (($item['type'] ?? '') !== 'function_call') {
+                    continue;
+                }
+
+                $outputIndex = (int) ($json['output_index'] ?? 0);
+                if (!isset($callAt[$outputIndex])) {
+                    if (count($calls) >= RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE) {
+                        // Stop reading: no further per-call state is kept.
+                        $this->logger?->debug('The response opened more than {max} tool calls; it is abandoned', ['max' => RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE]);
+                        yield new Finish(ProviderFinishReason::Error, 'tool_call_overflow', null, $model);
+
+                        return;
+                    }
+                    $position = count($calls);
+                    $callAt[$outputIndex] = $position;
+                    $calls[$position] = [
+                        'id' => is_string($item['call_id'] ?? null) ? $item['call_id'] : '',
+                        'name' => is_string($item['name'] ?? null) ? $item['name'] : '',
+                        'arguments' => '',
+                        'ended' => false,
+                    ];
+                    yield new ToolInputStart($position, $calls[$position]['id'], $calls[$position]['name']);
+                }
+
+                if ($eventType === 'response.output_item.done') {
+                    $position = $callAt[$outputIndex];
+                    $call = $calls[$position];
+                    if ($call['ended']) {
+                        continue;
+                    }
+
+                    // An id or name the added item lacked comes from the done item.
+                    if ($call['id'] === '' && is_string($item['call_id'] ?? null)) {
+                        $call['id'] = $item['call_id'];
+                    }
+                    if ($call['name'] === '' && is_string($item['name'] ?? null)) {
+                        $call['name'] = $item['name'];
+                    }
+
+                    $itemArguments = ToolArguments::toJson($item['arguments'] ?? null);
+                    if ($call['arguments'] === '' && $itemArguments !== '' && !isset($overCap[$position])) {
+                        if (ToolArguments::overByteCap(strlen($itemArguments), $this->requestLimits)) {
+                            $overCap[$position] = true;
+                        } else {
+                            $call['arguments'] = $itemArguments;
+                            yield new ToolInputDelta($position, $call['id'], $itemArguments);
+                        }
+                    }
+
+                    $call['ended'] = true;
+                    $calls[$position] = $call;
+                    $end = $this->endToolInput($position, $call, isset($overCap[$position]));
+                    if ($end === null) {
+                        $invalidArguments = true;
+                    } else {
+                        yield $end;
+                    }
+                }
+            } elseif ($eventType === 'response.function_call_arguments.delta') {
+                $position = $callAt[(int) ($json['output_index'] ?? 0)] ?? null;
+                $delta = ToolArguments::toJson($json['delta'] ?? null);
+                if ($position === null || $calls[$position]['ended'] || $delta === '' || isset($overCap[$position])) {
+                    continue; // Fragments for a call that is not open carry nothing usable.
+                }
+                $call = $calls[$position];
+                if (ToolArguments::overByteCap(strlen($call['arguments']) + strlen($delta), $this->requestLimits)) {
+                    $overCap[$position] = true;
+                    $call['arguments'] = '';
+                    $calls[$position] = $call;
 
                     continue;
                 }
 
-                $eventType = $json['type'] ?? null;
-                $responseData = is_array($json['response'] ?? null) ? $json['response'] : [];
-                if (is_string($responseData['model'] ?? null) && $responseData['model'] !== '') {
-                    $model = $responseData['model'];
-                }
+                $call['arguments'] .= $delta;
+                $calls[$position] = $call;
+                yield new ToolInputDelta($position, $calls[$position]['id'], $delta);
+            } elseif ($eventType === 'response.completed') {
+                $reason = $this->mapStatus(['status' => 'completed'], $calls !== [], $refused);
 
-                if ($eventType === 'response.output_text.delta' || $eventType === 'response.refusal.delta') {
-                    if ($eventType === 'response.refusal.delta') {
-                        $refused = true;
-                    }
-                    $delta = $json['delta'] ?? null;
-                    if (is_string($delta) && $delta !== '') {
-                        yield new TextDelta($delta);
-                    }
-                } elseif ($eventType === 'response.reasoning_summary_text.delta') {
-                    $delta = $json['delta'] ?? null;
-                    if (is_string($delta) && $delta !== '') {
-                        yield new ReasoningDelta($delta);
-                    }
-                } elseif ($eventType === 'response.output_item.added' || $eventType === 'response.output_item.done') {
-                    $item = is_array($json['item'] ?? null) ? $json['item'] : [];
-                    if (($item['type'] ?? '') !== 'function_call') {
-                        continue;
-                    }
-
-                    $outputIndex = (int) ($json['output_index'] ?? 0);
-                    if (!isset($callAt[$outputIndex])) {
-                        if (count($calls) >= RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE) {
-                            // Stop reading: no further per-call state is kept.
-                            $this->logger?->debug('The response opened more than {max} tool calls; it is abandoned', ['max' => RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE]);
-                            yield new Finish(ProviderFinishReason::Error, 'tool_call_overflow', null, $model);
-
-                            return;
-                        }
-                        $position = count($calls);
-                        $callAt[$outputIndex] = $position;
-                        $calls[$position] = [
-                            'id' => is_string($item['call_id'] ?? null) ? $item['call_id'] : '',
-                            'name' => is_string($item['name'] ?? null) ? $item['name'] : '',
-                            'arguments' => '',
-                            'ended' => false,
-                        ];
-                        yield new ToolInputStart($position, $calls[$position]['id'], $calls[$position]['name']);
-                    }
-
-                    if ($eventType === 'response.output_item.done') {
-                        $position = $callAt[$outputIndex];
-                        $call = $calls[$position];
+                if ($reason === ProviderFinishReason::ToolUse) {
+                    foreach ($calls as $position => $call) {
                         if ($call['ended']) {
                             continue;
                         }
-
-                        // An id or name the added item lacked comes from the done item.
-                        if ($call['id'] === '' && is_string($item['call_id'] ?? null)) {
-                            $call['id'] = $item['call_id'];
-                        }
-                        if ($call['name'] === '' && is_string($item['name'] ?? null)) {
-                            $call['name'] = $item['name'];
-                        }
-
-                        $itemArguments = ToolArguments::toJson($item['arguments'] ?? null);
-                        if ($call['arguments'] === '' && $itemArguments !== '' && !isset($overCap[$position])) {
-                            if (ToolArguments::overByteCap(strlen($itemArguments), $this->requestLimits)) {
-                                $overCap[$position] = true;
-                            } else {
-                                $call['arguments'] = $itemArguments;
-                                yield new ToolInputDelta($position, $call['id'], $itemArguments);
-                            }
-                        }
-
-                        $call['ended'] = true;
-                        $calls[$position] = $call;
                         $end = $this->endToolInput($position, $call, isset($overCap[$position]));
                         if ($end === null) {
                             $invalidArguments = true;
@@ -210,92 +252,45 @@ final class OpenAIResponsesProvider extends AbstractProvider
                             yield $end;
                         }
                     }
-                } elseif ($eventType === 'response.function_call_arguments.delta') {
-                    $position = $callAt[(int) ($json['output_index'] ?? 0)] ?? null;
-                    $delta = ToolArguments::toJson($json['delta'] ?? null);
-                    if ($position === null || $calls[$position]['ended'] || $delta === '' || isset($overCap[$position])) {
-                        continue; // Fragments for a call that is not open carry nothing usable.
+
+                    if ($invalidArguments) {
+                        $reason = ProviderFinishReason::Error;
                     }
-                    $call = $calls[$position];
-                    if (ToolArguments::overByteCap(strlen($call['arguments']) + strlen($delta), $this->requestLimits)) {
-                        $overCap[$position] = true;
-                        $call['arguments'] = '';
-                        $calls[$position] = $call;
-
-                        continue;
-                    }
-
-                    $call['arguments'] .= $delta;
-                    $calls[$position] = $call;
-                    yield new ToolInputDelta($position, $calls[$position]['id'], $delta);
-                } elseif ($eventType === 'response.completed') {
-                    $reason = $this->mapStatus(['status' => 'completed'], $calls !== [], $refused);
-
-                    if ($reason === ProviderFinishReason::ToolUse) {
-                        foreach ($calls as $position => $call) {
-                            if ($call['ended']) {
-                                continue;
-                            }
-                            $end = $this->endToolInput($position, $call, isset($overCap[$position]));
-                            if ($end === null) {
-                                $invalidArguments = true;
-                            } else {
-                                yield $end;
-                            }
-                        }
-
-                        if ($invalidArguments) {
-                            $reason = ProviderFinishReason::Error;
-                        }
-                    }
-
-                    yield new Finish($reason, 'completed', $this->parseUsage($responseData), $model);
-
-                    return;
-                } elseif ($eventType === 'response.incomplete' || $eventType === 'response.failed') {
-                    $status = $eventType === 'response.failed' ? 'failed' : 'incomplete';
-                    $error = is_array($responseData['error'] ?? null) ? $responseData['error'] : [];
-                    $errorMessage = $error['message'] ?? null;
-
-                    if ($status === 'failed' && is_string($errorMessage) && $errorMessage !== '') {
-                        throw ProviderException::streamError($this->errorCode($error['code'] ?? null, 'response.failed'), $errorMessage);
-                    }
-
-                    $incompleteReason = $responseData['incomplete_details']['reason'] ?? null;
-
-                    yield new Finish(
-                        $this->mapStatus([...$responseData, 'status' => $status], false, false),
-                        $status === 'incomplete' && is_string($incompleteReason) && $incompleteReason !== '' ? $incompleteReason : $status,
-                        $this->parseUsage($responseData),
-                        $model,
-                    );
-
-                    return;
-                } elseif ($eventType === 'error') {
-                    $errorMessage = $json['message'] ?? null;
-
-                    throw ProviderException::streamError(
-                        $this->errorCode($json['code'] ?? null, 'error'),
-                        is_string($errorMessage) && $errorMessage !== '' ? $errorMessage : 'unknown stream error',
-                    );
                 }
-            }
 
-            yield new Finish(ProviderFinishReason::Error, model: $model);
-        } catch (\Throwable $e) {
-            // Only an HTTP status error leaves the response open: the caller reads its error
-            // body. Anything else after a successful status (a parser limit, a provider error
-            // event) is cancelled below like an abandoned stream.
-            $keepResponse = $e instanceof HttpExceptionInterface;
+                yield new Finish($reason, 'completed', $this->parseUsage($responseData), $model);
 
-            throw $e;
-        } finally {
-            // An abandoned generator (the consumer stopped iterating) must not leave the
-            // response open, whatever the client does when it is destroyed.
-            if (!$keepResponse) {
-                $response->cancel();
+                return;
+            } elseif ($eventType === 'response.incomplete' || $eventType === 'response.failed') {
+                $status = $eventType === 'response.failed' ? 'failed' : 'incomplete';
+                $error = is_array($responseData['error'] ?? null) ? $responseData['error'] : [];
+                $errorMessage = $error['message'] ?? null;
+
+                if ($status === 'failed' && is_string($errorMessage) && $errorMessage !== '') {
+                    throw ProviderException::streamError($this->errorCode($error['code'] ?? null, 'response.failed'), $errorMessage);
+                }
+
+                $incompleteReason = $responseData['incomplete_details']['reason'] ?? null;
+
+                yield new Finish(
+                    $this->mapStatus([...$responseData, 'status' => $status], false, false),
+                    $status === 'incomplete' && is_string($incompleteReason) && $incompleteReason !== '' ? $incompleteReason : $status,
+                    $this->parseUsage($responseData),
+                    $model,
+                );
+
+                return;
+            } elseif ($eventType === 'error') {
+                $errorMessage = $json['message'] ?? null;
+
+                throw ProviderException::streamError(
+                    $this->errorCode($json['code'] ?? null, 'error'),
+                    is_string($errorMessage) && $errorMessage !== '' ? $errorMessage : 'unknown stream error',
+                );
             }
         }
+
+        yield new Finish(ProviderFinishReason::Error, model: $model);
     }
 
     /**
