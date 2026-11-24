@@ -7,6 +7,9 @@ namespace CarmeloSantana\PHPAgents\Provider;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ProviderInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
+use CarmeloSantana\PHPAgents\Contract\UsageListener;
+use CarmeloSantana\PHPAgents\Contract\UsageReporting;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
 use CarmeloSantana\PHPAgents\Provider\Stream\StreamProjector;
@@ -17,7 +20,7 @@ use Symfony\Contracts\HttpClient\Exception\RedirectionExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
-abstract class AbstractProvider implements ProviderInterface
+abstract class AbstractProvider implements ProviderInterface, UsageReporting
 {
     protected const int OPENAI_MAX_TOOLS = 128;
 
@@ -26,6 +29,8 @@ abstract class AbstractProvider implements ProviderInterface
     protected string $apiKey;
     protected HttpClientInterface $httpClient;
     protected ?LoggerInterface $logger;
+
+    private ?UsageListener $usageListener = null;
 
     /** Time, size and redirect limits that every request of this provider passes through apply(). */
     protected RequestLimits $requestLimits;
@@ -72,6 +77,51 @@ abstract class AbstractProvider implements ProviderInterface
     public function requestLimits(): RequestLimits
     {
         return $this->requestLimits;
+    }
+
+    public function withUsageListener(UsageListener $listener): static
+    {
+        $clone = clone $this;
+        $clone->usageListener = $listener;
+
+        return $clone;
+    }
+
+    protected function reportUsage(UsageReport $report): void
+    {
+        try {
+            $this->usageListener?->onUsage($report);
+        } catch (\Throwable $e) {
+            try {
+                $this->logger?->warning('Usage listener failed.', ['exception_class' => $e::class]);
+            } catch (\Throwable) {
+                // Logging is best-effort so inference outcomes are preserved.
+            }
+        }
+    }
+
+    /** @param array<string, mixed> $options */
+    protected function usageOperation(array &$options, string $own): string
+    {
+        $operation = $options[UsageReport::OPERATION_OPTION] ?? $own;
+        unset($options[UsageReport::OPERATION_OPTION]);
+
+        return $operation;
+    }
+
+    protected function startClock(): int
+    {
+        return (int) hrtime(true);
+    }
+
+    protected function elapsedMs(int $start): int
+    {
+        return intdiv($this->startClock() - $start, 1_000_000);
+    }
+
+    protected static function finishedFailed(ProviderFinishReason $r): bool
+    {
+        return $r === ProviderFinishReason::Error;
     }
 
     /**
