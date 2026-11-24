@@ -20,7 +20,12 @@ $root = dirname(__DIR__, 3);
 test('the FFI provider and every Runtime\\LlamaCpp class are deprecated in favour of LlamaServerProvider', function (string $class) {
     $doc = (string) (new ReflectionClass($class))->getDocComment();
 
-    expect($doc)->toMatch('/@deprecated 0\.18\b[^\n]*LlamaServerProvider/');
+    // Docblock lines wrap: compare with the leading `*` and line breaks folded to single spaces.
+    $text = strtolower((string) preg_replace('/\s*\n\s*\*\s*/', ' ', $doc));
+
+    expect($doc)->toMatch('/@deprecated 0\.18\b[^\n]*LlamaServerProvider/')
+        ->and($text)->toContain('removed or fixed in 0.20')
+        ->not->toContain('0.19');
 })->with([
     LlamaCppProvider::class,
     FfiLlamaCppNativeApi::class,
@@ -50,8 +55,13 @@ test('LlamaCppToolCallParser is not deprecated', function () {
 });
 
 test('the llama.cpp setup and test scripts say they are deprecated', function (string $script) use ($root) {
-    expect((string) file_get_contents($root . '/scripts/' . $script))->toContain('Deprecated in 0.18')
-        ->toContain('LlamaServerProvider');
+    $text = (string) file_get_contents($root . '/scripts/' . $script);
+    $folded = strtolower((string) preg_replace('/\s*\n\s*(?:\/\/|#)?\s*/', ' ', $text));
+
+    expect($text)->toContain('Deprecated in 0.18')
+        ->toContain('LlamaServerProvider')
+        ->and($folded)->toContain('removed or fixed in 0.20')
+        ->not->toContain('removed or fixed in 0.19');
 })->with(['setup-llama-cpp.sh', 'test-llama-cpp-runtime.sh', 'benchmark-llama-cpp-runtime.php', 'benchmark-llama-cpp-cache.php', 'compare-llama-cpp-vs-ollama.php']);
 
 test('the docs record the FFI deprecation, its b9174 limit and the Agent buffering', function (string $path) use ($root) {
@@ -61,7 +71,9 @@ test('the docs record the FFI deprecation, its b9174 limit and the Agent bufferi
         ->and($doc)->toContain('b9174')
         ->toContain('buffers the whole generation')
         ->toContain('LlamaServerProvider')
-        ->toContain('0.19');
+        ->and(strtolower((string) preg_replace('/\s*\n\s*>?\s*/', ' ', $doc)))
+        ->toContain('removed or fixed in 0.20')
+        ->not->toContain('removed or fixed in 0.19');
 })->with(['docs/PROVIDERS.md', 'docs/UPGRADING.md', 'docs/LOCAL-RUNTIME.md']);
 
 test('setup-llama-cpp.sh builds llama.cpp at b9174, the last tag the FFI binding works with', function () use ($root) {

@@ -85,7 +85,7 @@ deprecated `LlamaCppProvider`.
 
 ## LlamaCppProvider
 
-> **Deprecated in 0.18. Removal or a fix is scheduled for 0.20.** Use [`LlamaServerProvider`](#llamaserverprovider).
+> **Deprecated in 0.18; removed or fixed in 0.20.** Use [`LlamaServerProvider`](#llamaserverprovider).
 > `LlamaCppProvider` and every class under `Runtime\LlamaCpp` are marked `@deprecated`.
 >
 > - The FFI binding mirrors `llama.h` structs that llama.cpp changed after **b9174** (2026-05-16):

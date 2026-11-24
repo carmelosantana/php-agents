@@ -51,7 +51,7 @@ usage() {
 Usage: $0 [options]
 
 Deprecated in 0.18: the in-process FFI runtime works only with llama.cpp up to b9174 and is
-removed or fixed in 0.19. Run llama-server instead and use LlamaServerProvider
+removed or fixed in 0.20. Run llama-server instead and use LlamaServerProvider
 (docs/PROVIDERS.md#llamaserverprovider).
 
 Build or locate llama.cpp, download a default GGUF model unless told not to, and write a reusable env file.
