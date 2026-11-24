@@ -48,7 +48,6 @@ final class UsageFixtures
 
     public const PENDING = [
         CliProvider::class,
-        GeminiProvider::class,
     ];
 
     private const FORMATS = [

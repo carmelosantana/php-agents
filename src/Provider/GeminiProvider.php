@@ -102,34 +102,97 @@ final class GeminiProvider extends AbstractProvider
 
     public function chat(array $messages, array $tools = [], array $options = []): Response
     {
+        $operation = $this->usageOperation($options, 'chat');
         $payload = $this->buildPayload($messages, $tools, $options);
+        $requestOptions = $this->requestLimits->apply([
+            'headers' => $this->headers(),
+            'json' => $payload,
+        ]);
+        $data = [];
+        $result = null;
+        $start = $this->startClock();
 
-        $response = $this->httpClient->request(
-            'POST',
-            "{$this->baseUrl}/models/{$this->model}:generateContent",
-            $this->requestLimits->apply([
-                'headers' => $this->headers(),
-                'json' => $payload,
-            ]),
-        );
+        try {
+            $response = $this->httpClient->request('POST', "{$this->baseUrl}/models/{$this->model}:generateContent", $requestOptions);
+            $data = $this->decodeResponse($response);
+            $result = $this->parseResponse($data);
 
-        return $this->parseResponse($this->decodeResponse($response));
+            return $result;
+        } finally {
+            $this->reportGenerationUsage(
+                $operation,
+                $start,
+                $data['responseId'] ?? null,
+                $data['modelVersion'] ?? null,
+                $result === null ? $this->usageAfterParseFailure($data) : $result->usage,
+                $result->finishReason ?? ProviderFinishReason::Error,
+            );
+        }
+    }
+
+    /** @param array<string, mixed> $data */
+    private function usageAfterParseFailure(array $data): ?Usage
+    {
+        try {
+            return $this->parseUsage($data);
+        } catch (\Throwable) {
+            // Usage recovery is best-effort so the original parse error can propagate.
+            return null;
+        }
     }
 
     public function streamEvents(array $messages, array $tools = [], array $options = []): iterable
     {
+        $operation = $this->usageOperation($options, 'stream');
         $payload = $this->buildPayload($messages, $tools, $options);
+        $requestOptions = $this->requestLimits->apply([
+            'headers' => $this->headers(),
+            'json' => $payload,
+        ]);
+        $usage = $responseId = $modelVersion = null;
+        $finished = false;
+        $start = $this->startClock();
 
-        $response = $this->httpClient->request(
-            'POST',
-            "{$this->baseUrl}/models/{$this->model}:streamGenerateContent?alt=sse",
-            $this->requestLimits->apply([
-                'headers' => $this->headers(),
-                'json' => $payload,
-            ]),
-        );
+        try {
+            $response = $this->httpClient->request('POST', "{$this->baseUrl}/models/{$this->model}:streamGenerateContent?alt=sse", $requestOptions);
+            $events = $this->readStreamEvents($response, $usage, $responseId, $modelVersion);
+            foreach (self::cancelOnAbandon($response, $events) as $event) {
+                if ($event instanceof Finish) {
+                    $finished = true;
+                    $this->reportGenerationUsage($operation, $start, $responseId, $modelVersion, $event->usage, $event->reason);
+                }
 
-        yield from self::cancelOnAbandon($response, $this->readStreamEvents($response));
+                yield $event;
+            }
+        } finally {
+            if (!$finished) {
+                $this->reportGenerationUsage($operation, $start, $responseId, $modelVersion, $usage, ProviderFinishReason::Error);
+            }
+        }
+    }
+
+    private function reportGenerationUsage(
+        string $operation,
+        int $start,
+        mixed $responseId,
+        mixed $modelVersion,
+        ?Usage $usage,
+        ProviderFinishReason $reason,
+    ): void {
+        $failed = self::finishedFailed($reason);
+        $requestedModel = $this->getModel();
+        $this->reportUsage(new UsageReport(
+            operation: $operation,
+            provider: 'GeminiProvider',
+            requestedModel: $requestedModel,
+            model: !$failed && is_string($modelVersion) && $modelVersion !== '' ? $modelVersion : $requestedModel,
+            usage: $usage,
+            requestId: null,
+            responseId: is_string($responseId) ? $responseId : null,
+            finishReason: $reason,
+            durationMs: $this->elapsedMs($start),
+            failed: $failed,
+        ));
     }
 
     /**
@@ -137,8 +200,12 @@ final class GeminiProvider extends AbstractProvider
      *
      * @return \Generator<int, StreamEvent, mixed, void>
      */
-    private function readStreamEvents(ResponseInterface $response): \Generator
-    {
+    private function readStreamEvents(
+        ResponseInterface $response,
+        ?Usage &$usage,
+        ?string &$responseId,
+        ?string &$modelVersion,
+    ): \Generator {
         // Each chunk's parts, in order:
         //   text                → TextDelta (ReasoningDelta when `thought: true`)
         //   functionCall        → ToolInputStart, one ToolInputDelta with the whole JSON
@@ -151,7 +218,6 @@ final class GeminiProvider extends AbstractProvider
         // arguments were not a JSON object. A stream that ends without a finish yields Finish(Error).
         $callCount = 0;
         $invalidArguments = false;
-        $usage = null;
         /** @var array{reason: ProviderFinishReason, raw: string}|null $finish */
         $finish = null;
 
@@ -170,6 +236,12 @@ final class GeminiProvider extends AbstractProvider
                 continue;
             }
 
+            if (is_string($json['responseId'] ?? null)) {
+                $responseId = $json['responseId'];
+            }
+            if (is_string($json['modelVersion'] ?? null)) {
+                $modelVersion = $json['modelVersion'];
+            }
             $usage = $this->parseUsage($json) ?? $usage;
 
             if ($finish !== null) {
@@ -249,6 +321,7 @@ final class GeminiProvider extends AbstractProvider
 
     public function structured(array $messages, string $schema, array $options = []): mixed
     {
+        $options[UsageReport::OPERATION_OPTION] = 'structured';
         $schemaData = json_decode($schema, true);
         if ($schemaData === null) {
             return $this->chat($messages, [], $options);
