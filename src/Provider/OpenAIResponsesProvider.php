@@ -53,6 +53,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
 
     public function chat(array $messages, array $tools = [], array $options = []): Response
     {
+        $operation = $this->usageOperation($options, 'chat');
         $tools = $this->trimToolsToLimit($tools, self::OPENAI_MAX_TOOLS, 'openai-responses', '/responses');
 
         $payload = $this->buildPayload($messages, $options);
@@ -61,16 +62,12 @@ final class OpenAIResponsesProvider extends AbstractProvider
             $payload['tools'] = $this->formatTools($tools);
         }
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $this->requestLimits->apply([
-            'headers' => $this->headers(),
-            'json' => $payload,
-        ]));
-
-        return $this->parseResponse($this->decodeResponse($response));
+        return $this->requestResponse($payload, $operation);
     }
 
     public function streamEvents(array $messages, array $tools = [], array $options = []): iterable
     {
+        $operation = $this->usageOperation($options, 'stream');
         $tools = $this->trimToolsToLimit($tools, self::OPENAI_MAX_TOOLS, 'openai-responses', '/responses');
 
         $payload = [...$this->buildPayload($messages, $options), 'stream' => true];
@@ -79,12 +76,29 @@ final class OpenAIResponsesProvider extends AbstractProvider
             $payload['tools'] = $this->formatTools($tools);
         }
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $this->requestLimits->apply([
+        $requestOptions = $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
-        ]));
+        ]);
+        $response = $responseId = $usage = null;
+        $finished = false;
+        $start = $this->startClock();
 
-        yield from self::cancelOnAbandon($response, $this->readStreamEvents($response));
+        try {
+            $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $requestOptions);
+            foreach (self::cancelOnAbandon($response, $this->readStreamEvents($response, $responseId, $usage)) as $event) {
+                if ($event instanceof Finish) {
+                    $finished = true;
+                    $this->reportResponseUsage($operation, $start, $response, $responseId, $event->model, $event->usage ?? $usage, $event->reason);
+                }
+
+                yield $event;
+            }
+        } finally {
+            if (!$finished) {
+                $this->reportResponseUsage($operation, $start, $response, $responseId, null, $usage, ProviderFinishReason::Error);
+            }
+        }
     }
 
     /**
@@ -92,7 +106,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
      *
      * @return \Generator<int, StreamEvent, mixed, void>
      */
-    private function readStreamEvents(ResponseInterface $response): \Generator
+    private function readStreamEvents(ResponseInterface $response, ?string &$responseId, ?Usage &$usage): \Generator
     {
         // Events, in the order they arrive:
         //   response.output_text.delta | response.refusal.delta → TextDelta (a refusal makes the
@@ -142,6 +156,10 @@ final class OpenAIResponsesProvider extends AbstractProvider
 
             $eventType = $json['type'] ?? null;
             $responseData = is_array($json['response'] ?? null) ? $json['response'] : [];
+            if (is_string($responseData['id'] ?? null)) {
+                $responseId = $responseData['id'];
+            }
+            $usage = $this->usageForReport($responseData) ?? $usage;
             if (is_string($responseData['model'] ?? null) && $responseData['model'] !== '') {
                 $model = $responseData['model'];
             }
@@ -356,8 +374,11 @@ final class OpenAIResponsesProvider extends AbstractProvider
     {
         $schemaData = json_decode($schema, true);
         if ($schemaData === null) {
+            $options[UsageReport::OPERATION_OPTION] = 'structured';
+
             return $this->chat($messages, [], $options);
         }
+        unset($options[UsageReport::OPERATION_OPTION]);
 
         $toolName = $schemaData['name'] ?? 'structured_output';
         $description = $schemaData['description'] ?? 'Generate structured output matching the schema.';
@@ -380,20 +401,109 @@ final class OpenAIResponsesProvider extends AbstractProvider
             ...$options,
         ]);
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $this->requestLimits->apply([
+        return $this->requestResponse($payload, 'structured', $toolName);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return ($toolName is null ? Response : mixed)
+     */
+    private function requestResponse(array $payload, string $operation, mixed $toolName = null): mixed
+    {
+        $requestOptions = $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
-        ]));
+        ]);
+        $response = $result = null;
+        $data = [];
+        $reason = ProviderFinishReason::Error;
+        $start = $this->startClock();
 
-        $data = $this->decodeResponse($response);
+        try {
+            $response = $this->httpClient->request('POST', "{$this->baseUrl}/responses", $requestOptions);
+            $data = $this->decodeResponse($response);
 
-        foreach ($data['output'] ?? [] as $item) {
-            if (($item['type'] ?? '') === 'function_call' && ($item['name'] ?? '') === $toolName) {
-                return json_decode($item['arguments'] ?? '{}', true) ?? [];
+            if ($toolName !== null) {
+                foreach ($data['output'] ?? [] as $item) {
+                    if (($item['type'] ?? '') === 'function_call' && ($item['name'] ?? '') === $toolName) {
+                        $decoded = json_decode($item['arguments'] ?? '{}', true) ?? [];
+                        $reason = $this->mapStatus($data, true, false);
+
+                        return $decoded;
+                    }
+                }
+            }
+
+            $result = $this->parseResponse($data);
+            $reason = $result->finishReason;
+
+            return $result;
+        } finally {
+            $this->reportResponseUsage(
+                $operation,
+                $start,
+                $response,
+                $data['id'] ?? null,
+                $data['model'] ?? null,
+                $result === null ? $this->usageForReport($data) : $result->usage,
+                $reason,
+            );
+        }
+    }
+
+    private function reportResponseUsage(
+        string $operation,
+        int $start,
+        ?ResponseInterface $response,
+        mixed $responseId,
+        mixed $model,
+        ?Usage $usage,
+        ProviderFinishReason $reason,
+    ): void {
+        $durationMs = $this->elapsedMs($start);
+        $requestedModel = $this->getModel();
+        $failed = self::finishedFailed($reason);
+        $this->reportUsage(new UsageReport(
+            operation: $operation,
+            provider: 'OpenAIResponsesProvider',
+            requestedModel: $requestedModel,
+            model: !$failed && is_string($model) && $model !== '' ? $model : $requestedModel,
+            usage: $usage,
+            requestId: $this->responseRequestId($response),
+            responseId: is_string($responseId) ? $responseId : null,
+            finishReason: $reason,
+            durationMs: $durationMs,
+            failed: $failed,
+        ));
+    }
+
+    private function responseRequestId(?ResponseInterface $response): ?string
+    {
+        // Read received headers without advancing or throwing on the HTTP response.
+        try {
+            $headers = $response?->getInfo('response_headers');
+        } catch (\Throwable) {
+            return null;
+        }
+
+        foreach (is_array($headers) ? array_reverse($headers) : [] as $header) {
+            if (is_string($header) && stripos($header, 'x-request-id:') === 0) {
+                return trim(substr($header, strlen('x-request-id:')));
             }
         }
 
-        return $this->parseResponse($data);
+        return null;
+    }
+
+    /** @param array<mixed> $data */
+    private function usageForReport(array $data): ?Usage
+    {
+        try {
+            return $this->parseUsage($data);
+        } catch (\Throwable) {
+            // Recovering usage is best-effort and preserves the inference outcome.
+            return null;
+        }
     }
 
     public function models(): array

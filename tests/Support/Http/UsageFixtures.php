@@ -49,7 +49,6 @@ final class UsageFixtures
     public const PENDING = [
         CliProvider::class,
         GeminiProvider::class,
-        OpenAIResponsesProvider::class,
     ];
 
     private const FORMATS = [
