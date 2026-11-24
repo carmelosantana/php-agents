@@ -47,7 +47,6 @@ final class UsageFixtures
     public const MARKER = 'PHPAGENTS-SECRET-MARKER';
 
     public const PENDING = [
-        AnthropicProvider::class,
         CliProvider::class,
         GeminiProvider::class,
         LlamaServerProvider::class,
