@@ -160,6 +160,22 @@ test('streamEvents emits tool input events in tool order and ends each call at i
         ->and($events[7]->rawReason)->toBe('tool_use');
 });
 
+test('streamEvents settles a valid tool_use block with no content_block_stop at message_stop on tool use', function () {
+    $events = anthropicStreamEvents(
+        anthropicEvStart(),
+        anthropicEvTool(0, 'toolu_1', 'lookup'),
+        anthropicEvJson(0, '{"q":"php"}'),
+        anthropicEvStop('tool_use'),
+        ANTHROPIC_EV_MESSAGE_STOP,
+    );
+    $finish = end($events);
+
+    expect(anthropicEventClasses($events))->toBe([ToolInputStart::class, ToolInputDelta::class, ToolInputEnd::class, Finish::class])
+        ->and($events[2])->toEqual(new ToolInputEnd(0, 'toolu_1', 'lookup', ['q' => 'php']))
+        ->and($finish->reason)->toBe(ProviderFinishReason::ToolUse)
+        ->and($finish->rawReason)->toBe('tool_use');
+});
+
 test('streamEvents decodes empty or whitespace tool arguments as an empty object', function (string $json) {
     $events = anthropicStreamEvents(
         anthropicEvStart(),

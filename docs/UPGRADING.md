@@ -1,5 +1,19 @@
 # Upgrading
 
+## Upgrading to 0.18.1
+
+### Behaviour changes
+
+| Change | Who is affected | What to do |
+|--------|-----------------|------------|
+| `RunLimits::$maxResponseBytes` defaults to `RunLimits::DEFAULT_MAX_RESPONSE_BYTES` (32 MiB), the same as one request's `RequestLimits::DEFAULT_MAX_RESPONSE_BYTES`; it was `0` (no limit). An agent built with no `runLimits`, or with a `RunLimits` that leaves the field out, ends a run that receives more than 32 MiB from the provider in total as `BudgetExhausted` (`Response size limit reached.`). This closes the 0.18 known issue: a hostile endpoint could return many tool rounds, each within the per-request cap, that together exhausted memory | Runs whose provider responses add up to more than 32 MiB, and applications that raised `RequestLimits::$maxResponseBytes` above 32 MiB | Pass a larger `maxResponseBytes`, or `new RunLimits(maxResponseBytes: 0)` to opt out. `maxEstimatedTokens` keeps no default: its estimate re-counts the whole conversation on every iteration, so any fixed default would cut long legitimate runs |
+| `RunLimits::$maxResponseBytes` no longer counts an Anthropic response twice: a finish's content-block JSON counts only beyond the thinking, text and tool input the response already streamed | Anthropic runs near a `maxResponseBytes` you set, which 0.18 ended at about half the bytes | None; lower the limit if you sized it for double counting |
+| An exception an observer throws while a response streams escapes `run()`, as it does everywhere else; 0.18 caught it and ended the run `Error` with `Provider error: …` and `agent.error` | Hosts whose observers throw (a closed client connection, for example) and that relied on getting an `Output` back | Catch the exception around `run()`, or catch it inside the observer; to stop a run from an observer, use the cancellation token |
+| `SseStreamParser` checks the HTTP status on the first chunk that is not a timeout, whether or not the HTTP client marks it first; it checked only a chunk marked first, so a 4xx or 5xx from a client that never sends one was parsed as a stream | Custom `HttpClientInterface` implementations or decorators that do not yield symfony's first chunk | None; such an error answer now throws the Symfony `ClientException` or `ServerException`, as it does on the bundled clients |
+| An Anthropic stream whose `tool_use` arguments passed `RequestLimits::$maxToolArgumentBytes` and that ends on a reason other than tool use (`end_turn`, say) gives `Finish::$contentBlocks` `[]`, as a call whose arguments are not a JSON object does; 0.18 kept that call in the blocks with `input: {}` | `streamEvents()` and `stream()` callers that read `contentBlocks` | None; replay falls back to the message without its blocks |
+| A Gemini `functionCall` with no name is dropped (logged at debug), in `streamEvents()` and `chat()`, like a call whose arguments are not a JSON object: a finish that would have been `ToolUse` is `Error`. `chat()` used to fail with a `TypeError`, and the stream ended the call with an empty name | Gemini responses with a nameless call | None |
+| Once the cancellation token reports a cancel, the run stays cancelled until `run()` returns, even if the token later reports `false`; 0.18 re-read it at each check, so a token that un-cancelled could, for example, answer every tool call as cancelled and then carry on to the next iteration | Tokens whose `isCancelled()` can go back to `false` within a run | None; reset the token between runs as before, since each `run()` reads it afresh |
+
 ## Upgrading to 0.18
 
 0.18 streams typed events from every provider (see [Streaming Events](PROVIDERS.md#streaming-events))
@@ -128,13 +142,6 @@ public function streamEvents(array $messages, array $tools = [], array $options 
 - `SseStreamParser` applies its 1 MiB line cap (`maxLineBytes`) to every line, not only to one
   still waiting for its newline: a provider stream with a longer complete line now throws a
   `ProviderException` (`SSE line exceeded … bytes`) instead of decoding it.
-
-### Known issue
-
-- No cumulative per-run byte or token default: `RunLimits` is unlimited unless you set it, so a
-  hostile endpoint can return many tool rounds, each within the per-request cap, that together
-  exhaust memory. Set `RunLimits` (`maxResponseBytes`, `maxEstimatedTokens`) for untrusted
-  endpoints; a default lands in 0.18.1.
 
 ### Deprecated
 

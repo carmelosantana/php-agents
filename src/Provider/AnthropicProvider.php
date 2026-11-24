@@ -15,6 +15,7 @@ use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
 use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
@@ -23,7 +24,6 @@ use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
-use Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
@@ -126,6 +126,16 @@ final class AnthropicProvider extends AbstractProvider
             'json' => $payload,
         ]));
 
+        yield from self::cancelOnAbandon($response, $this->readStreamEvents($response));
+    }
+
+    /**
+     * The events of the response streamEvents() requested; cancelOnAbandon() closes it.
+     *
+     * @return \Generator<int, StreamEvent, mixed, void>
+     */
+    private function readStreamEvents(ResponseInterface $response): \Generator
+    {
         // Anthropic's stream, by the `type` field of each data payload:
         //   message_start        → model, input and cache token usage
         //   content_block_start  → opens the block at `index` (text, thinking, tool_use);
@@ -158,7 +168,6 @@ final class AnthropicProvider extends AbstractProvider
         /** @var array<string, mixed> $usage */
         $usage = [];
         $stopReason = null;
-        $keepResponse = false;
 
         $parser = new SseStreamParser(
             $this->httpClient,
@@ -168,148 +177,133 @@ final class AnthropicProvider extends AbstractProvider
             $this->requestLimits->idleTimeout,
         );
 
-        try {
-            foreach ($parser->events() as $json) {
-                if ($json instanceof Tick) {
-                    yield $json;
+        foreach ($parser->events() as $json) {
+            if ($json instanceof Tick) {
+                yield $json;
 
-                    continue;
+                continue;
+            }
+
+            $eventType = $json['type'] ?? null;
+
+            if ($eventType === 'content_block_start') {
+                if (!isset($blocks[$json['index'] ?? 0]) && count($blocks) >= RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE) {
+                    // Every block is kept until the message ends; past the ceiling, stop reading.
+                    $this->logger?->debug('The response opened more than {max} content blocks; it is abandoned', ['max' => RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE]);
+                    yield new Finish(ProviderFinishReason::Error, 'tool_call_overflow', $this->parseUsage($usage), $model);
+
+                    return;
                 }
+                $currentBlockIndex = $json['index'] ?? 0;
+                $block = $json['content_block'] ?? [];
+                $blocks[$currentBlockIndex] = [
+                    'type' => $block['type'] ?? 'text',
+                    'id' => $block['id'] ?? '',
+                    'name' => $block['name'] ?? '',
+                    'json' => '',
+                    'text' => '',
+                    'thinking' => '',
+                    'signature' => '',
+                    'data' => $block['data'] ?? '',
+                ];
 
-                $eventType = $json['type'] ?? null;
+                if ($blocks[$currentBlockIndex]['type'] === 'tool_use') {
+                    $toolPositions[$currentBlockIndex] = count($toolPositions);
+                    yield new ToolInputStart($toolPositions[$currentBlockIndex], $blocks[$currentBlockIndex]['id'], $blocks[$currentBlockIndex]['name']);
+                }
+            } elseif ($eventType === 'content_block_delta') {
+                $delta = $json['delta'] ?? [];
+                $index = $json['index'] ?? $currentBlockIndex;
+                $deltaType = $delta['type'] ?? '';
 
-                if ($eventType === 'content_block_start') {
-                    if (!isset($blocks[$json['index'] ?? 0]) && count($blocks) >= RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE) {
-                        // Every block is kept until the message ends; past the ceiling, stop reading.
-                        $this->logger?->debug('The response opened more than {max} content blocks; it is abandoned', ['max' => RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE]);
-                        yield new Finish(ProviderFinishReason::Error, 'tool_call_overflow', $this->parseUsage($usage), $model);
-
-                        return;
-                    }
-                    $currentBlockIndex = $json['index'] ?? 0;
-                    $block = $json['content_block'] ?? [];
-                    $blocks[$currentBlockIndex] = [
-                        'type' => $block['type'] ?? 'text',
-                        'id' => $block['id'] ?? '',
-                        'name' => $block['name'] ?? '',
-                        'json' => '',
-                        'text' => '',
-                        'thinking' => '',
-                        'signature' => '',
-                        'data' => $block['data'] ?? '',
-                    ];
-
-                    if ($blocks[$currentBlockIndex]['type'] === 'tool_use') {
-                        $toolPositions[$currentBlockIndex] = count($toolPositions);
-                        yield new ToolInputStart($toolPositions[$currentBlockIndex], $blocks[$currentBlockIndex]['id'], $blocks[$currentBlockIndex]['name']);
-                    }
-                } elseif ($eventType === 'content_block_delta') {
-                    $delta = $json['delta'] ?? [];
-                    $index = $json['index'] ?? $currentBlockIndex;
-                    $deltaType = $delta['type'] ?? '';
-
-                    if ($deltaType === 'input_json_delta' && isset($blocks[$index]) && !isset($overCap[$index])) {
-                        $partialJson = (string) ($delta['partial_json'] ?? '');
-                        if (isset($toolPositions[$index]) && ToolArguments::overByteCap(strlen($blocks[$index]['json']) + strlen($partialJson), $this->requestLimits)) {
-                            $overCap[$index] = true;
-                            $blocks[$index]['json'] = '';
-                        } else {
-                            $blocks[$index]['json'] .= $partialJson;
-                            if (isset($toolPositions[$index])) {
-                                yield new ToolInputDelta($toolPositions[$index], $blocks[$index]['id'], $partialJson);
-                            }
+                if ($deltaType === 'input_json_delta' && isset($blocks[$index]) && !isset($overCap[$index])) {
+                    $partialJson = (string) ($delta['partial_json'] ?? '');
+                    if (isset($toolPositions[$index]) && ToolArguments::overByteCap(strlen($blocks[$index]['json']) + strlen($partialJson), $this->requestLimits)) {
+                        $overCap[$index] = true;
+                        $blocks[$index]['json'] = '';
+                    } else {
+                        $blocks[$index]['json'] .= $partialJson;
+                        if (isset($toolPositions[$index])) {
+                            yield new ToolInputDelta($toolPositions[$index], $blocks[$index]['id'], $partialJson);
                         }
-                    } elseif ($deltaType === 'signature_delta' && isset($blocks[$index])) {
-                        $blocks[$index]['signature'] .= $delta['signature'] ?? '';
-                    } elseif ($deltaType === 'thinking_delta' && isset($delta['thinking'])) {
-                        if (isset($blocks[$index])) {
-                            $blocks[$index]['thinking'] .= $delta['thinking'];
-                        }
-                        yield new ReasoningDelta($delta['thinking']);
-                    } elseif ($deltaType === 'text_delta' && isset($delta['text'])) {
-                        if (isset($blocks[$index])) {
-                            $blocks[$index]['text'] .= $delta['text'];
-                        }
-                        yield new TextDelta($delta['text']);
                     }
-                } elseif ($eventType === 'content_block_stop') {
-                    $index = $json['index'] ?? $currentBlockIndex;
-                    if (isset($toolPositions[$index]) && !isset($endedTools[$index])) {
+                } elseif ($deltaType === 'signature_delta' && isset($blocks[$index])) {
+                    $blocks[$index]['signature'] .= $delta['signature'] ?? '';
+                } elseif ($deltaType === 'thinking_delta' && isset($delta['thinking'])) {
+                    if (isset($blocks[$index])) {
+                        $blocks[$index]['thinking'] .= $delta['thinking'];
+                    }
+                    yield new ReasoningDelta($delta['thinking']);
+                } elseif ($deltaType === 'text_delta' && isset($delta['text'])) {
+                    if (isset($blocks[$index])) {
+                        $blocks[$index]['text'] .= $delta['text'];
+                    }
+                    yield new TextDelta($delta['text']);
+                }
+            } elseif ($eventType === 'content_block_stop') {
+                $index = $json['index'] ?? $currentBlockIndex;
+                if (isset($toolPositions[$index]) && !isset($endedTools[$index])) {
+                    $endedTools[$index] = true;
+                    $end = $this->endToolInput($toolPositions[$index], $blocks[$index], isset($overCap[$index]));
+                    if ($end === null) {
+                        $badToolArguments = true;
+                    } else {
+                        yield $end;
+                    }
+                }
+            } elseif ($eventType === 'message_start') {
+                $model = $json['message']['model'] ?? $model;
+                $usage = $this->mergeUsage($usage, $json['message']['usage'] ?? []);
+            } elseif ($eventType === 'message_delta') {
+                $stopReason = $json['delta']['stop_reason'] ?? $stopReason;
+                $usage = $this->mergeUsage($usage, $json['usage'] ?? []);
+            } elseif ($eventType === 'message_stop') {
+                $reason = $stopReason === null ? ProviderFinishReason::Error : $this->mapStopReason($stopReason);
+
+                // A tool_use block that never got content_block_stop settles here
+                // when the message ends on tool use.
+                if ($reason === ProviderFinishReason::ToolUse) {
+                    foreach ($toolPositions as $index => $position) {
+                        if (isset($endedTools[$index])) {
+                            continue;
+                        }
                         $endedTools[$index] = true;
-                        $end = $this->endToolInput($toolPositions[$index], $blocks[$index], isset($overCap[$index]));
+                        $end = $this->endToolInput($position, $blocks[$index], isset($overCap[$index]));
                         if ($end === null) {
                             $badToolArguments = true;
                         } else {
                             yield $end;
                         }
                     }
-                } elseif ($eventType === 'message_start') {
-                    $model = $json['message']['model'] ?? $model;
-                    $usage = $this->mergeUsage($usage, $json['message']['usage'] ?? []);
-                } elseif ($eventType === 'message_delta') {
-                    $stopReason = $json['delta']['stop_reason'] ?? $stopReason;
-                    $usage = $this->mergeUsage($usage, $json['usage'] ?? []);
-                } elseif ($eventType === 'message_stop') {
-                    $reason = $stopReason === null ? ProviderFinishReason::Error : $this->mapStopReason($stopReason);
-
-                    // A tool_use block that never got content_block_stop settles here
-                    // when the message ends on tool use.
-                    if ($reason === ProviderFinishReason::ToolUse) {
-                        foreach ($toolPositions as $index => $position) {
-                            if (isset($endedTools[$index])) {
-                                continue;
-                            }
-                            $endedTools[$index] = true;
-                            $end = $this->endToolInput($position, $blocks[$index], isset($overCap[$index]));
-                            if ($end === null) {
-                                $badToolArguments = true;
-                            } else {
-                                yield $end;
-                            }
-                        }
-                    }
-
-                    // A tool call whose arguments are not a JSON object cannot run: a ToolUse
-                    // end becomes Error. Any other end keeps its reason (e.g. MaxTokens).
-                    if ($badToolArguments && $reason === ProviderFinishReason::ToolUse) {
-                        $reason = ProviderFinishReason::Error;
-                    }
-
-                    yield new Finish(
-                        reason: $reason,
-                        rawReason: $stopReason ?? '',
-                        usage: $this->parseUsage($usage),
-                        model: $model,
-                        contentBlocks: $reason === ProviderFinishReason::Stop || $reason === ProviderFinishReason::ToolUse
-                            ? $this->rebuildContentBlocks($blocks)
-                            : [],
-                    );
-
-                    return;
-                } elseif ($eventType === 'error') {
-                    throw ProviderException::streamError(
-                        (string) ($json['error']['type'] ?? 'error'),
-                        (string) ($json['error']['message'] ?? 'unknown stream error'),
-                    );
                 }
-            }
 
-            // EOF before message_stop: the message is incomplete, whatever arrived.
-            yield new Finish(ProviderFinishReason::Error, rawReason: $stopReason ?? '', usage: $this->parseUsage($usage), model: $model);
-        } catch (\Throwable $e) {
-            // Only an HTTP status error leaves the response open: the caller reads its error
-            // body. Anything else after a successful status (a parser limit, a provider error
-            // event) is cancelled below like an abandoned stream.
-            $keepResponse = $e instanceof HttpExceptionInterface;
+                // A tool call whose arguments are not a JSON object cannot run: a ToolUse
+                // end becomes Error. Any other end keeps its reason (e.g. MaxTokens).
+                if ($badToolArguments && $reason === ProviderFinishReason::ToolUse) {
+                    $reason = ProviderFinishReason::Error;
+                }
 
-            throw $e;
-        } finally {
-            // An abandoned generator (the consumer stopped iterating) must not leave the
-            // response open, whatever the client does when it is destroyed.
-            if (!$keepResponse) {
-                $response->cancel();
+                yield new Finish(
+                    reason: $reason,
+                    rawReason: $stopReason ?? '',
+                    usage: $this->parseUsage($usage),
+                    model: $model,
+                    contentBlocks: $reason === ProviderFinishReason::Stop || $reason === ProviderFinishReason::ToolUse
+                        ? $this->rebuildContentBlocks($blocks, $overCap)
+                        : [],
+                );
+
+                return;
+            } elseif ($eventType === 'error') {
+                throw ProviderException::streamError(
+                    (string) ($json['error']['type'] ?? 'error'),
+                    (string) ($json['error']['message'] ?? 'unknown stream error'),
+                );
             }
         }
+
+        // EOF before message_stop: the message is incomplete, whatever arrived.
+        yield new Finish(ProviderFinishReason::Error, rawReason: $stopReason ?? '', usage: $this->parseUsage($usage), model: $model);
     }
 
     /**
@@ -321,7 +315,7 @@ final class AnthropicProvider extends AbstractProvider
     private function endToolInput(int $position, array $block, bool $overCap = false): ?ToolInputEnd
     {
         if ($overCap) {
-            $this->logger?->debug('Anthropic tool {tool} arguments passed the {max}-byte cap; the call is dropped', [
+            $this->logger?->debug('Anthropic tool {tool} arguments passed the {max}-byte cap; the call will not run', [
                 'tool' => $block['name'],
                 'max' => $this->requestLimits->maxToolArgumentBytes,
             ]);
@@ -331,7 +325,7 @@ final class AnthropicProvider extends AbstractProvider
 
         $arguments = ToolArguments::decode($block['json'], $this->requestLimits);
         if ($arguments === null) {
-            $this->logger?->debug('Anthropic tool {tool} arguments ({length} bytes) are not a JSON object; the call is dropped', [
+            $this->logger?->debug('Anthropic tool {tool} arguments ({length} bytes) are not a JSON object; the call will not run', [
                 'tool' => $block['name'],
                 'length' => strlen($block['json']),
             ]);
@@ -401,18 +395,24 @@ final class AnthropicProvider extends AbstractProvider
     /**
      * Rebuild the streamed blocks in index order, in the shape the Messages API
      * returns them. Any block type other than thinking, redacted_thinking, text
-     * and tool_use, or tool JSON that is not an object, gives [] so that replay
-     * falls back to re-formatting the message without thinking.
+     * and tool_use, tool JSON that is not an object, or a tool_use block whose
+     * arguments passed the byte cap ($overCap), gives [] so that replay falls back
+     * to re-formatting the message without thinking.
      *
      * @param array<int, array{type: string, id: string, name: string, json: string, text: string, thinking: string, signature: string, data: string}> $blocks
+     * @param array<int, true> $overCap
      * @return list<array<string, mixed>>
      */
-    private function rebuildContentBlocks(array $blocks): array
+    private function rebuildContentBlocks(array $blocks, array $overCap = []): array
     {
         ksort($blocks);
         $rebuilt = [];
 
-        foreach ($blocks as $block) {
+        foreach ($blocks as $index => $block) {
+            if (isset($overCap[$index])) {
+                return [];
+            }
+
             // A text block that got no deltas would be sent back as an empty
             // text block, which the Messages API rejects.
             if ($block['type'] === 'text' && $block['text'] === '') {
@@ -1174,7 +1174,7 @@ final class AnthropicProvider extends AbstractProvider
             } elseif ($block['type'] === 'tool_use') {
                 $arguments = ToolArguments::fromDecoded($block['input'] ?? null, $this->requestLimits);
                 if ($arguments === null) {
-                    $this->logger?->debug('Anthropic tool {tool} arguments are not a JSON object; the call is dropped', ['tool' => $block['name'] ?? '']);
+                    $this->logger?->debug('Anthropic tool {tool} arguments are not a JSON object; the call will not run', ['tool' => $block['name'] ?? '']);
                     $droppedCalls = true;
 
                     continue;

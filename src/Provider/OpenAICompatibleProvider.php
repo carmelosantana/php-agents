@@ -10,6 +10,7 @@ use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
+use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
 use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
@@ -18,8 +19,8 @@ use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
 use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
 use CarmeloSantana\PHPAgents\Tool\ToolCall;
 use Psr\Log\LoggerInterface;
-use Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Symfony\Contracts\HttpClient\ResponseInterface;
 
 class OpenAICompatibleProvider extends AbstractProvider
 {
@@ -83,6 +84,16 @@ class OpenAICompatibleProvider extends AbstractProvider
             'json' => $payload,
         ]));
 
+        yield from self::cancelOnAbandon($response, $this->readStreamEvents($response));
+    }
+
+    /**
+     * The events of the response streamEvents() requested; cancelOnAbandon() closes it.
+     *
+     * @return \Generator<int, StreamEvent, mixed, void>
+     */
+    private function readStreamEvents(ResponseInterface $response): \Generator
+    {
         // Each chunk's choices[0].delta may carry, in this order of yielding:
         //   reasoning | reasoning_content | thinking → ReasoningDelta
         //   refusal                                  → TextDelta; the finish becomes Refusal
@@ -108,7 +119,6 @@ class OpenAICompatibleProvider extends AbstractProvider
         $usage = null;
         /** @var array{reason: ProviderFinishReason, raw: string}|null $finish */
         $finish = null;
-        $keepResponse = false;
 
         $parser = new SseStreamParser(
             $this->httpClient,
@@ -118,116 +128,101 @@ class OpenAICompatibleProvider extends AbstractProvider
             $this->requestLimits->idleTimeout,
         );
 
-        try {
-            foreach ($parser->events() as $json) {
-                if ($json instanceof Tick) {
-                    yield $json;
+        foreach ($parser->events() as $json) {
+            if ($json instanceof Tick) {
+                yield $json;
 
-                    continue;
+                continue;
+            }
+
+            $model = is_string($json['model'] ?? null) && $json['model'] !== '' ? $json['model'] : $model;
+            $chunkUsage = $this->streamChunkUsage($json);
+            $usage = $chunkUsage ?? $usage;
+
+            if ($finish === null) {
+                $choice = $json['choices'][0] ?? [];
+                $delta = $choice['delta'] ?? [];
+
+                $reasoningDelta = $delta['reasoning'] ?? $delta['reasoning_content'] ?? $delta['thinking'] ?? null;
+                if (is_string($reasoningDelta) && $reasoningDelta !== '') {
+                    yield new ReasoningDelta($reasoningDelta);
                 }
 
-                $model = is_string($json['model'] ?? null) && $json['model'] !== '' ? $json['model'] : $model;
-                $chunkUsage = $this->streamChunkUsage($json);
-                $usage = $chunkUsage ?? $usage;
+                $refusalDelta = $delta['refusal'] ?? null;
+                if (is_string($refusalDelta) && $refusalDelta !== '') {
+                    $refused = true;
+                    yield new TextDelta($refusalDelta);
+                }
 
-                if ($finish === null) {
-                    $choice = $json['choices'][0] ?? [];
-                    $delta = $choice['delta'] ?? [];
+                $contentDelta = $delta['content'] ?? null;
+                if (is_string($contentDelta) && $contentDelta !== '') {
+                    yield new TextDelta($contentDelta);
+                }
 
-                    $reasoningDelta = $delta['reasoning'] ?? $delta['reasoning_content'] ?? $delta['thinking'] ?? null;
-                    if (is_string($reasoningDelta) && $reasoningDelta !== '') {
-                        yield new ReasoningDelta($reasoningDelta);
+                foreach ($delta['tool_calls'] ?? [] as $fragment) {
+                    $index = (int) ($fragment['index'] ?? 0);
+                    $id = $fragment['id'] ?? null;
+                    // Some servers send arguments as a JSON object rather than a string.
+                    $argumentsDelta = ToolArguments::toJson($fragment['function']['arguments'] ?? null);
+
+                    if (is_string($id) && $id !== '' && (!isset($openCallAt[$index]) || $calls[$openCallAt[$index]]['id'] !== $id)) {
+                        if (count($calls) >= RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE) {
+                            yield $this->toolCallOverflow($usage, $model);
+
+                            return;
+                        }
+                        $position = count($calls);
+                        $openCallAt[$index] = $position;
+                        $calls[$position] = ['id' => $id, 'name' => (string) ($fragment['function']['name'] ?? ''), 'arguments' => ''];
+                        yield new ToolInputStart($position, $id, $calls[$position]['name']);
+                    } elseif (!isset($openCallAt[$index])) {
+                        continue; // A fragment for a call that never opened carries nothing usable.
                     }
 
-                    $refusalDelta = $delta['refusal'] ?? null;
-                    if (is_string($refusalDelta) && $refusalDelta !== '') {
-                        $refused = true;
-                        yield new TextDelta($refusalDelta);
+                    $position = $openCallAt[$index];
+                    $call = $calls[$position];
+                    if ($argumentsDelta === '' || isset($overCap[$position])) {
+                        continue;
                     }
-
-                    $contentDelta = $delta['content'] ?? null;
-                    if (is_string($contentDelta) && $contentDelta !== '') {
-                        yield new TextDelta($contentDelta);
-                    }
-
-                    foreach ($delta['tool_calls'] ?? [] as $fragment) {
-                        $index = (int) ($fragment['index'] ?? 0);
-                        $id = $fragment['id'] ?? null;
-                        // Some servers send arguments as a JSON object rather than a string.
-                        $argumentsDelta = ToolArguments::toJson($fragment['function']['arguments'] ?? null);
-
-                        if (is_string($id) && $id !== '' && (!isset($openCallAt[$index]) || $calls[$openCallAt[$index]]['id'] !== $id)) {
-                            if (count($calls) >= RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE) {
-                                yield $this->toolCallOverflow($usage, $model);
-
-                                return;
-                            }
-                            $position = count($calls);
-                            $openCallAt[$index] = $position;
-                            $calls[$position] = ['id' => $id, 'name' => (string) ($fragment['function']['name'] ?? ''), 'arguments' => ''];
-                            yield new ToolInputStart($position, $id, $calls[$position]['name']);
-                        } elseif (!isset($openCallAt[$index])) {
-                            continue; // A fragment for a call that never opened carries nothing usable.
-                        }
-
-                        $position = $openCallAt[$index];
-                        $call = $calls[$position];
-                        if ($argumentsDelta === '' || isset($overCap[$position])) {
-                            continue;
-                        }
-                        if (ToolArguments::overByteCap(strlen($call['arguments']) + strlen($argumentsDelta), $this->requestLimits)) {
-                            $overCap[$position] = true;
-                            $call['arguments'] = '';
-                            $calls[$position] = $call;
-
-                            continue;
-                        }
-                        $call['arguments'] .= $argumentsDelta;
+                    if (ToolArguments::overByteCap(strlen($call['arguments']) + strlen($argumentsDelta), $this->requestLimits)) {
+                        $overCap[$position] = true;
+                        $call['arguments'] = '';
                         $calls[$position] = $call;
-                        yield new ToolInputDelta($position, $call['id'], $argumentsDelta);
+
+                        continue;
                     }
+                    $call['arguments'] .= $argumentsDelta;
+                    $calls[$position] = $call;
+                    yield new ToolInputDelta($position, $call['id'], $argumentsDelta);
+                }
 
-                    $finishReason = $choice['finish_reason'] ?? null;
-                    if (is_string($finishReason)) {
-                        $finish = ['reason' => $this->streamFinishReason($finishReason, $refused, $calls !== []), 'raw' => $finishReason];
+                $finishReason = $choice['finish_reason'] ?? null;
+                if (is_string($finishReason)) {
+                    $finish = ['reason' => $this->streamFinishReason($finishReason, $refused, $calls !== []), 'raw' => $finishReason];
 
-                        if ($finish['reason'] === ProviderFinishReason::ToolUse) {
-                            foreach ($calls as $position => $call) {
-                                $end = isset($overCap[$position]) ? $this->dropOverCap($call['name']) : $this->endToolInput($position, $call);
-                                if ($end === null) {
-                                    $finish['reason'] = ProviderFinishReason::Error;
-                                } else {
-                                    yield $end;
-                                }
+                    if ($finish['reason'] === ProviderFinishReason::ToolUse) {
+                        foreach ($calls as $position => $call) {
+                            $end = isset($overCap[$position]) ? $this->dropOverCap($call['name']) : $this->endToolInput($position, $call);
+                            if ($end === null) {
+                                $finish['reason'] = ProviderFinishReason::Error;
+                            } else {
+                                yield $end;
                             }
                         }
                     }
-                }
-
-                if ($finish !== null && $chunkUsage !== null) {
-                    yield new Finish($finish['reason'], $finish['raw'], $usage, $model);
-
-                    return;
                 }
             }
 
-            yield $finish === null
-                ? new Finish(ProviderFinishReason::Error, usage: $usage, model: $model)
-                : new Finish($finish['reason'], $finish['raw'], $usage, $model);
-        } catch (\Throwable $e) {
-            // Only an HTTP status error leaves the response open: the caller reads its error
-            // body. Anything else after a successful status (a parser limit, a provider error
-            // event) is cancelled below like an abandoned stream.
-            $keepResponse = $e instanceof HttpExceptionInterface;
+            if ($finish !== null && $chunkUsage !== null) {
+                yield new Finish($finish['reason'], $finish['raw'], $usage, $model);
 
-            throw $e;
-        } finally {
-            // An abandoned generator (the consumer stopped iterating) must not leave the
-            // response open, whatever the client does when it is destroyed.
-            if (!$keepResponse) {
-                $response->cancel();
+                return;
             }
         }
+
+        yield $finish === null
+            ? new Finish(ProviderFinishReason::Error, usage: $usage, model: $model)
+            : new Finish($finish['reason'], $finish['raw'], $usage, $model);
     }
 
     /**

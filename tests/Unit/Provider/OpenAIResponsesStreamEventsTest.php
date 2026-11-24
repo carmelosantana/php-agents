@@ -293,7 +293,7 @@ test('stream projects a refusal with tool calls as one Refusal chunk with no too
         ->and($chunks[1]->toolCalls)->toBe([]);
 });
 
-test('streamEvents takes the call id and name from the done item when the added item lacked them', function () {
+test('streamEvents takes the call id and name from the done item when the added item lacked them, for End only', function () {
     $events = responsesStreamEvents([
         ['type' => 'response.output_item.added', 'output_index' => 0, 'item' => ['type' => 'function_call', 'arguments' => '']],
         responsesArgsDelta(0, '{"city":"NYC"}'),
@@ -301,9 +301,14 @@ test('streamEvents takes the call id and name from the done item when the added 
         responsesCompleted(),
     ]);
 
-    $ends = array_values(array_filter($events, fn($e) => $e instanceof ToolInputEnd));
+    $tools = array_values(array_filter($events, fn($e) => $e instanceof ToolInputStart || $e instanceof ToolInputDelta || $e instanceof ToolInputEnd));
 
-    expect($ends)->toEqual([new ToolInputEnd(0, 'call_1', 'get_weather', ['city' => 'NYC'])]);
+    // Start and the deltas streamed before the done item carry the empty id; only End has the real one.
+    expect($tools)->toEqual([
+        new ToolInputStart(0, '', ''),
+        new ToolInputDelta(0, '', '{"city":"NYC"}'),
+        new ToolInputEnd(0, 'call_1', 'get_weather', ['city' => 'NYC']),
+    ]);
 });
 
 test('streamEvents reads cached and reasoning tokens and keeps the provider total', function () {

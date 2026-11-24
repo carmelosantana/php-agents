@@ -12,6 +12,7 @@ use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
 use CarmeloSantana\PHPAgents\Provider\Stream\StreamProjector;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpClient\HttpClient;
+use Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface;
 use Symfony\Contracts\HttpClient\Exception\RedirectionExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
@@ -180,4 +181,30 @@ abstract class AbstractProvider implements ProviderInterface
      * @param array<string, mixed> $data
      */
     abstract protected function parseResponse(array $data): Response;
+
+    /**
+     * Yields $events and cancels $response however they end: completed, thrown, or abandoned
+     * (the consumer stopped iterating), whatever the client does when the response is destroyed.
+     * Only an HTTP status error leaves the response open, for the caller to read its error body;
+     * anything else after a successful status (a parser limit, a provider error event) cancels.
+     *
+     * @template T
+     * @param \Generator<int, T, mixed, mixed> $events
+     * @return \Generator<int, T, mixed, void>
+     */
+    protected static function cancelOnAbandon(ResponseInterface $response, \Generator $events): \Generator
+    {
+        $keepResponse = false;
+        try {
+            yield from $events;
+        } catch (\Throwable $e) {
+            $keepResponse = $e instanceof HttpExceptionInterface;
+
+            throw $e;
+        } finally {
+            if (!$keepResponse) {
+                $response->cancel();
+            }
+        }
+    }
 }

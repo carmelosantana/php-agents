@@ -69,7 +69,8 @@ final class SseStreamParser
      * - Skipping the `[DONE]` sentinel
      * - JSON decode errors (silently skipped)
      *
-     * Checks the status on the first chunk: a 3xx throws a ProviderException
+     * Checks the status on the first chunk that is not a timeout, whether or not
+     * the client marks it first: a 3xx throws a ProviderException
      * refusing the redirect, and a 4xx or 5xx throws Symfony's ClientException
      * or ServerException unchanged, so callers can still read the API error
      * body from it. Also throws a ProviderException when any line, complete
@@ -86,6 +87,7 @@ final class SseStreamParser
         $pollTimeout = $this->tickInterval > 0.0 ? $this->tickInterval : null;
         $lastData = hrtime(true) / 1e9;
         $this->lastTick = $lastData;
+        $statusChecked = false;
 
         while (true) {
             // A timeout chunk ends symfony's iterator for that response, so each
@@ -104,7 +106,8 @@ final class SseStreamParser
 
                 $lastData = hrtime(true) / 1e9;
 
-                if ($chunk->isFirst()) {
+                if (!$statusChecked) {
+                    $statusChecked = true;
                     $this->assertSuccessfulStatus();
                 }
 
@@ -218,7 +221,7 @@ final class SseStreamParser
     }
 
     /**
-     * Throw unless the status the first chunk carried is 2xx.
+     * Throw unless the response status is 2xx.
      *
      * A 3xx becomes ProviderException::redirectRefused(); a 4xx or 5xx
      * propagates as the Symfony exception getHeaders() raised.

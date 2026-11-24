@@ -133,7 +133,8 @@ abstract class AbstractAgent implements AgentInterface
      * @param array<string, mixed> $providerOptions Provider-specific request options (e.g. max_tokens,
      *                                              thinking) sent with every stream() call in the loop.
      * @param ?RunLimits $runLimits Tool-call caps and the execution boundary for each run();
-     *                              null means new RunLimits() (no caps, advertised tools only).
+     *                              null means new RunLimits() (32 MiB of response bytes per run,
+     *                              no other caps, advertised tools only).
      */
     public function __construct(
         private readonly ProviderInterface $provider,
@@ -218,16 +219,23 @@ abstract class AbstractAgent implements AgentInterface
      */
     public function run(MessageInterface $input, ?Conversation $history = null): Output
     {
-        $output = $this->runLoop($input, $history);
+        $this->runCancelled = false;
+        $this->observerException = null;
+        try {
+            $output = $this->runLoop($input, $history);
 
-        $this->notify('agent.finish', new RunFinish(
-            $output->finishReason,
-            $output->usage ?? new Usage(),
-            $output->iterations,
-            UntrustedText::forDisplay($output->model, self::FINISH_TELEMETRY_MAX_CHARS),
-        ));
+            $this->notify('agent.finish', new RunFinish(
+                $output->finishReason,
+                $output->usage ?? new Usage(),
+                $output->iterations,
+                UntrustedText::forDisplay($output->model, self::FINISH_TELEMETRY_MAX_CHARS),
+            ));
 
-        return $output;
+            return $output;
+        } finally {
+            // An observer's exception is only told apart within its own run, and not kept after it.
+            $this->observerException = null;
+        }
     }
 
     private function runLoop(MessageInterface $input, ?Conversation $history): Output
@@ -324,7 +332,7 @@ abstract class AbstractAgent implements AgentInterface
             }
 
             // Check cooperative cancellation before each iteration
-            if ($this->cancellationToken?->isCancelled()) {
+            if ($this->cancelled()) {
                 return $this->cancelledOutput('', $conversation, $allToolResults, $totalUsage, $i + 1);
             }
 
@@ -436,6 +444,10 @@ abstract class AbstractAgent implements AgentInterface
             // Argument bytes streamed per call index, for eventBytes().
             /** @var array<int, int> $argumentBytes */
             $argumentBytes = [];
+            // Text, reasoning and tool-input bytes this response counted, for eventBytes() to
+            // credit against the content blocks of its Finish, which repeat them.
+            /** @var array{text: int, thinking: int, input: int} $streamedBytes */
+            $streamedBytes = ['text' => 0, 'thinking' => 0, 'input' => 0];
 
             try {
                 foreach ($this->provider->streamEvents($conversation->messages(), $advertisedTools, $this->providerOptions) as $event) {
@@ -449,14 +461,14 @@ abstract class AbstractAgent implements AgentInterface
 
                     // Check cancellation on every event, ticks included, so ESC/Ctrl+C
                     // returns to the prompt without waiting for the full response.
-                    if ($this->cancellationToken?->isCancelled()) {
+                    if ($this->cancelled()) {
                         $cancelled = true;
                         break;
                     }
 
                     // Cumulative limits, checked before the event is used. Breaking
                     // abandons the stream.
-                    $eventBytes = $this->eventBytes($event, $argumentBytes, $startedCalls, $limitedCalls);
+                    $eventBytes = $this->eventBytes($event, $argumentBytes, $startedCalls, $limitedCalls, $streamedBytes);
                     $callBytes += $eventBytes;
                     $runResponseBytes += $eventBytes;
                     if ($this->runLimits->maxResponseBytes > 0 && $runResponseBytes > $this->runLimits->maxResponseBytes) {
@@ -603,9 +615,14 @@ abstract class AbstractAgent implements AgentInterface
 
                 $this->tickCallback->tick();
             } catch (\Throwable $e) {
+                // An observer's exception is the host's, not the provider's: it escapes run()
+                // as it does outside the stream, and leaving the loop closes the stream.
+                if ($e === $this->observerException) {
+                    throw $e;
+                }
                 // A cancel that aborts the transport surfaces as a throw; it ends the run
                 // the way a cancel seen between events does.
-                if ($this->cancellationToken?->isCancelled()) {
+                if ($this->cancelled()) {
                     $cancelled = true;
                 } else {
                     $errorMessage = $this->providerErrorMessage($e);
@@ -628,7 +645,7 @@ abstract class AbstractAgent implements AgentInterface
 
             // A stream cut short by a cancel can end without a Finish; that is the cancel, not a
             // provider error.
-            if ($finish === null && $streamLimit === null && $this->cancellationToken?->isCancelled()) {
+            if ($finish === null && $streamLimit === null && $this->cancelled()) {
                 $cancelled = true;
             }
 
@@ -704,7 +721,7 @@ abstract class AbstractAgent implements AgentInterface
             // mid-stream cancel. A response of ordinary tool calls goes on to executeToolCalls,
             // which answers each call as cancelled; a refusal, filter, context-window or provider
             // error finish keeps its own reason; an empty response is checked before a fallback.
-            if ($this->cancellationToken?->isCancelled() && $this->isFinalAnswer($response)) {
+            if ($this->cancelled() && $this->isFinalAnswer($response)) {
                 $this->discardCalls($response->toolCalls !== [] ? $completedCalls : [], 'cancelled');
 
                 return $this->cancelledOutput(self::cancelledAnswer($contentParts, $donePreview), $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
@@ -753,7 +770,7 @@ abstract class AbstractAgent implements AgentInterface
             $doneDiscards = [];
             $doneResults = $this->resolveDoneCalls($response->toolCalls, $finishingCall, $doneDiscards);
             // The execution policy may cancel while it allows `done`.
-            if ($finishingCall !== null && $this->cancellationToken?->isCancelled()) {
+            if ($finishingCall !== null && $this->cancelled()) {
                 $this->discardCalls($completedCalls, 'cancelled');
 
                 return $this->cancelledOutput(self::cancelledAnswer($contentParts, $donePreview), $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
@@ -824,7 +841,7 @@ abstract class AbstractAgent implements AgentInterface
                 }
 
                 // A cancel during tools ends the run after every call has a result.
-                if ($this->cancellationToken?->isCancelled()) {
+                if ($this->cancelled()) {
                     return $this->cancelledOutput('', $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
                 }
 
@@ -853,7 +870,7 @@ abstract class AbstractAgent implements AgentInterface
             // Text-only response (no tool calls) — this IS the response.
             // The done tool is only needed after tool use to present results.
             if ($response->content !== '') {
-                if ($this->cancellationToken?->isCancelled()) {
+                if ($this->cancelled()) {
                     return $this->cancelledOutput($response->content, $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
                 }
 
@@ -885,7 +902,7 @@ abstract class AbstractAgent implements AgentInterface
 
             // A cancel on agent.step_finish or agent.empty_response ends the run before the
             // empty-response policy can retry, fall back or give up.
-            if ($this->cancellationToken?->isCancelled()) {
+            if ($this->cancelled()) {
                 return $this->cancelledOutput('', $conversation, $allToolResults, $totalUsage, $i + 1, $response->model);
             }
 
@@ -1082,16 +1099,27 @@ abstract class AbstractAgent implements AgentInterface
      * that call, the JSON of its metadata, and its id and name when no start came first, or
      * each one that differs from the start's (an end that fills an empty start id or name, or
      * names another); the id of a delta that fills its start's empty id; and a Finish's raw
-     * reason, model and the JSON of its content blocks.
+     * reason, model and the JSON of its content blocks less what they repeat (see
+     * contentBlockCredit()), so an Anthropic response is not counted twice.
      *
      * @param array<int, int> $argumentBytes Argument bytes streamed per call index so far, with
      *                                       or without a start; credited against the call's end
      * @param array<int, ToolInputStart> $startedCalls Calls kept so far, by index
      * @param array<int, string> $limitedCalls Ids of calls discarded under the per-turn cap, by index
+     * @param array{text: int, thinking: int, input: int} $streamedBytes Text, reasoning and tool-input
+     *                                                                 bytes this response counted so far
      */
-    private function eventBytes(StreamEvent $event, array &$argumentBytes, array $startedCalls, array $limitedCalls): int
+    private function eventBytes(StreamEvent $event, array &$argumentBytes, array $startedCalls, array $limitedCalls, array &$streamedBytes): int
     {
-        if ($event instanceof TextDelta || $event instanceof ReasoningDelta) {
+        if ($event instanceof TextDelta) {
+            $streamedBytes['text'] += strlen($event->delta);
+
+            return strlen($event->delta);
+        }
+
+        if ($event instanceof ReasoningDelta) {
+            $streamedBytes['thinking'] += strlen($event->delta);
+
             return strlen($event->delta);
         }
 
@@ -1101,6 +1129,7 @@ abstract class AbstractAgent implements AgentInterface
 
         if ($event instanceof ToolInputDelta) {
             $bytes = strlen($event->delta);
+            $streamedBytes['input'] += $bytes;
             // The credit map is bounded like the calls themselves; a delta past it is counted
             // but not credited against a later end (which counts in full, erring high).
             if (isset($argumentBytes[$event->index]) || count($argumentBytes) < self::MAX_TOOL_CALLS_PER_RESPONSE) {
@@ -1112,8 +1141,9 @@ abstract class AbstractAgent implements AgentInterface
         }
 
         if ($event instanceof ToolInputEnd) {
-            $bytes = max(0, self::jsonBytes($event->arguments) - ($argumentBytes[$event->index] ?? 0))
-                + ($event->metadata === [] ? 0 : self::jsonBytes($event->metadata));
+            $remainder = max(0, self::jsonBytes($event->arguments) - ($argumentBytes[$event->index] ?? 0));
+            $streamedBytes['input'] += $remainder;
+            $bytes = $remainder + ($event->metadata === [] ? 0 : self::jsonBytes($event->metadata));
             $start = $startedCalls[$event->index] ?? null;
             $idAndName = strlen($event->id) + strlen($event->name);
 
@@ -1126,10 +1156,45 @@ abstract class AbstractAgent implements AgentInterface
 
         if ($event instanceof Finish) {
             return strlen($event->rawReason) + strlen($event->model)
-                + ($event->contentBlocks === [] ? 0 : self::jsonBytes($event->contentBlocks));
+                + ($event->contentBlocks === [] ? 0 : max(0, self::jsonBytes($event->contentBlocks) - self::contentBlockCredit($event->contentBlocks, $streamedBytes)));
         }
 
         return 0;
+    }
+
+    /**
+     * Bytes of $blocks that repeat what the response streamed: each thinking block's thinking,
+     * text block's text and tool_use block's input JSON, credited against the reasoning, text
+     * and tool-input bytes streamed, never more than were streamed of that kind. A provider that
+     * streams one text and sends another of the same kind in its blocks is under-counted by at
+     * most half.
+     *
+     * @param list<mixed> $blocks
+     * @param array{text: int, thinking: int, input: int} $streamedBytes
+     */
+    private static function contentBlockCredit(array $blocks, array $streamedBytes): int
+    {
+        $credit = 0;
+        foreach ($blocks as $block) {
+            $block = is_object($block) ? get_object_vars($block) : $block;
+            if (!is_array($block)) {
+                continue;
+            }
+            [$kind, $bytes] = match ($block['type'] ?? null) {
+                'thinking' => ['thinking', is_string($block['thinking'] ?? null) ? strlen($block['thinking']) : 0],
+                'text' => ['text', is_string($block['text'] ?? null) ? strlen($block['text']) : 0],
+                'tool_use' => ['input', array_key_exists('input', $block) ? self::jsonBytes($block['input']) : 0],
+                default => [null, 0],
+            };
+            if ($kind === null) {
+                continue;
+            }
+            $used = min($bytes, $streamedBytes[$kind]);
+            $streamedBytes[$kind] -= $used;
+            $credit += $used;
+        }
+
+        return $credit;
     }
 
     /**
@@ -1496,7 +1561,7 @@ abstract class AbstractAgent implements AgentInterface
             $this->tickCallback->tick();
 
             // Once cancelled, every remaining call is answered without running.
-            if ($cancelled || $this->cancellationToken?->isCancelled()) {
+            if ($cancelled || $this->cancelled()) {
                 $cancelled = true;
                 $preResolved[$position] = $this->cancelledToolResult($toolCall);
                 continue;
@@ -1548,7 +1613,7 @@ abstract class AbstractAgent implements AgentInterface
         $executedResults = [];
         $terminationException = null;
 
-        if ($useBatch && $this->cancellationToken?->isCancelled()) {
+        if ($useBatch && $this->cancelled()) {
             foreach ($approved as $position => $entry) {
                 $executedResults[$position] = $this->cancelledToolResult($entry['toolCall']);
             }
@@ -1602,7 +1667,7 @@ abstract class AbstractAgent implements AgentInterface
         } else {
             // Serial execution (single tool or non-batch executor)
             foreach ($approved as $position => $entry) {
-                if ($cancelled || $this->cancellationToken?->isCancelled()) {
+                if ($cancelled || $this->cancelled()) {
                     $cancelled = true;
                     $executedResults[$position] = $this->cancelledToolResult($entry['toolCall']);
                     continue;
@@ -1941,7 +2006,13 @@ abstract class AbstractAgent implements AgentInterface
         foreach ($this->observers as $observer) {
             $this->lastEvent = $event;
             $this->lastEventData = $data;
-            $observer->update($this);
+            try {
+                $observer->update($this);
+            } catch (\Throwable $e) {
+                $this->observerException = $e;
+
+                throw $e;
+            }
         }
     }
 
@@ -1957,4 +2028,23 @@ abstract class AbstractAgent implements AgentInterface
 
     private string $lastEvent = '';
     private mixed $lastEventData = null;
+
+    /** The exception an observer threw from notify() in this run, so run() does not mistake it for the provider's; cleared when run() ends. */
+    private ?\Throwable $observerException = null;
+
+    /** Whether the cancellation token has reported a cancel during the current run. */
+    private bool $runCancelled = false;
+
+    /**
+     * Whether the run is cancelled. Once the token reports a cancel, the run stays cancelled
+     * until the next run() starts, whatever the token reports afterwards.
+     */
+    private function cancelled(): bool
+    {
+        if (!$this->runCancelled && $this->cancellationToken?->isCancelled() === true) {
+            $this->runCancelled = true;
+        }
+
+        return $this->runCancelled;
+    }
 }

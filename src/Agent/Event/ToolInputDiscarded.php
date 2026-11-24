@@ -17,8 +17,11 @@ namespace CarmeloSantana\PHPAgents\Agent\Event;
  * - 'provider_error': the stream threw, or ended without a Finish, after the call started.
  * - 'done_finished_run': a `done` call earlier in the same response finished the run.
  * - 'cancelled': a cancel abandoned the response before it finished, so none of its calls
- *   runs, including a call whose arguments had completed and a previewed `done` call. Calls of
- *   a finished response that a cancel stops get a 'cancelled' tool result instead.
+ *   runs, including a call whose arguments had completed and a previewed `done` call. A cancel
+ *   that lands after a text or `done` response finished, before it is accepted, discards each
+ *   of that response's calls the same way. Only a finished response of ordinary tool calls gets
+ *   tool results instead: each call that did not start is answered 'Cancelled before it ran.'
+ *   with error code 'cancelled'.
  * - 'denied', 'invalid_done': the first `done` call of a response that the execution policy
  *   denied, or whose arguments failed validation; the run continues.
  * - 'duplicate_done': a `done` call that was not the first in its response.

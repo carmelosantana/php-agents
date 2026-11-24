@@ -78,11 +78,19 @@ test('the granted tools docs say a successful result and the most recent call', 
         ->and($doc)->toContain('most recent call');
 })->with(['docs/AGENTS.md', 'src/Contract/ToolGrantInterface.php']);
 
-test('UPGRADING records the missing cumulative per-run default as a known issue fixed in 0.18.1', function () {
+test('UPGRADING 0.18.1 records the run byte default and drops the 0.18 known issue', function () {
     $doc = (string) file_get_contents(dirname(__DIR__, 3) . '/docs/UPGRADING.md');
+    $section = substr($doc, (int) strpos($doc, '## Upgrading to 0.18.1'), (int) strpos($doc, '## Upgrading to 0.18' . "\n") - (int) strpos($doc, '## Upgrading to 0.18.1'));
 
-    expect($doc)->toContain('### Known issue')
-        ->toContain('No cumulative per-run byte or token default')
-        ->toContain('Set `RunLimits`')
-        ->toContain('a default lands in 0.18.1');
+    expect($doc)->toContain('## Upgrading to 0.18.1')
+        ->and($section)->toContain('`RunLimits::$maxResponseBytes` defaults to `RunLimits::DEFAULT_MAX_RESPONSE_BYTES` (32 MiB)')
+        ->and($section)->toContain('`new RunLimits(maxResponseBytes: 0)`')
+        ->and($doc)->not->toContain('No cumulative per-run byte or token default')
+        ->and($doc)->not->toContain('a default lands in 0.18.1');
+});
+
+test('the run limits table gives the maxResponseBytes default and its opt-out', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../docs/AGENTS.md');
+
+    expect($doc)->toContain('| `maxResponseBytes` | `33_554_432` | Bytes received from the provider across the run (32 MiB, `RunLimits::DEFAULT_MAX_RESPONSE_BYTES`); `0` means no limit |');
 });
