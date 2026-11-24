@@ -37,6 +37,7 @@ class OpenAICompatibleProvider extends AbstractProvider
 
     public function chat(array $messages, array $tools = [], array $options = []): Response
     {
+        $operation = $this->usageOperation($options, 'chat');
         $tools = $this->trimToolsToLimit($tools, self::OPENAI_MAX_TOOLS, 'openai-compatible', '/chat/completions');
 
         // chat() is never a streaming call — stream_options is a streaming-only
@@ -50,16 +51,36 @@ class OpenAICompatibleProvider extends AbstractProvider
             $payload['tools'] = $this->formatTools($tools);
         }
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/chat/completions", $this->requestLimits->apply([
+        $requestOptions = $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
-        ]));
+        ]);
+        $response = $result = null;
+        $data = [];
+        $start = $this->startClock();
 
-        return $this->parseResponse($this->decodeResponse($response));
+        try {
+            $response = $this->httpClient->request('POST', "{$this->baseUrl}/chat/completions", $requestOptions);
+            $data = $this->decodeResponse($response);
+            $result = $this->parseResponse($data);
+
+            return $result;
+        } finally {
+            $this->reportCompletionUsage(
+                $operation,
+                $start,
+                $response,
+                $data['id'] ?? null,
+                $result?->model,
+                $result === null ? $this->usageAfterParseFailure($data['usage'] ?? null) : $result->usage,
+                $result->finishReason ?? ProviderFinishReason::Error,
+            );
+        }
     }
 
     public function streamEvents(array $messages, array $tools = [], array $options = []): iterable
     {
+        $operation = $this->usageOperation($options, 'stream');
         $tools = $this->trimToolsToLimit($tools, self::OPENAI_MAX_TOOLS, 'openai-compatible', '/chat/completions');
 
         // Allow callers to suppress stream_options by passing null (e.g. MistralProvider).
@@ -79,12 +100,87 @@ class OpenAICompatibleProvider extends AbstractProvider
             $payload['tools'] = $this->formatTools($tools);
         }
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/chat/completions", $this->requestLimits->apply([
+        $requestOptions = $this->requestLimits->apply([
             'headers' => $this->headers(),
             'json' => $payload,
-        ]));
+        ]);
+        $response = $responseId = $usage = null;
+        $finished = false;
+        $start = $this->startClock();
 
-        yield from self::cancelOnAbandon($response, $this->readStreamEvents($response));
+        try {
+            $response = $this->httpClient->request('POST', "{$this->baseUrl}/chat/completions", $requestOptions);
+            foreach (self::cancelOnAbandon($response, $this->readStreamEvents($response, $usage, $responseId)) as $event) {
+                if ($event instanceof Finish) {
+                    $finished = true;
+                    $this->reportCompletionUsage($operation, $start, $response, $responseId, $event->model, $event->usage, $event->reason);
+                }
+
+                yield $event;
+            }
+        } finally {
+            if (!$finished) {
+                $this->reportCompletionUsage($operation, $start, $response, $responseId, null, $usage, ProviderFinishReason::Error);
+            }
+        }
+    }
+
+    private function reportCompletionUsage(
+        string $operation,
+        int $start,
+        ?ResponseInterface $response,
+        mixed $responseId,
+        ?string $model,
+        ?Usage $usage,
+        ProviderFinishReason $reason,
+    ): void {
+        $durationMs = $this->elapsedMs($start);
+        $requestedModel = $this->getModel();
+        $failed = self::finishedFailed($reason);
+        $this->reportUsage(new UsageReport(
+            operation: $operation,
+            provider: (new \ReflectionClass($this))->getShortName(),
+            requestedModel: $requestedModel,
+            model: !$failed && $model !== null && $model !== '' ? $model : $requestedModel,
+            usage: $usage,
+            requestId: $this->completionRequestId($response),
+            responseId: is_string($responseId) ? $responseId : null,
+            finishReason: $reason,
+            durationMs: $durationMs,
+            failed: $failed,
+        ));
+    }
+
+    private function completionRequestId(?ResponseInterface $response): ?string
+    {
+        if ($this instanceof OllamaProvider || $this instanceof LlamaServerProvider) {
+            return null;
+        }
+
+        // Read received headers without advancing the response or masking an inference error.
+        try {
+            $headers = $response?->getInfo('response_headers');
+        } catch (\Throwable) {
+            return null;
+        }
+
+        foreach (is_array($headers) ? array_reverse($headers) : [] as $header) {
+            if (is_string($header) && stripos($header, 'x-request-id:') === 0) {
+                return trim(substr($header, strlen('x-request-id:')));
+            }
+        }
+
+        return null;
+    }
+
+    private function usageAfterParseFailure(mixed $usage): ?Usage
+    {
+        try {
+            return is_array($usage) ? $this->parseUsage($usage) : null;
+        } catch (\Throwable) {
+            // Usage recovery is best-effort so the original parse error can propagate.
+            return null;
+        }
     }
 
     /**
@@ -92,7 +188,7 @@ class OpenAICompatibleProvider extends AbstractProvider
      *
      * @return \Generator<int, StreamEvent, mixed, void>
      */
-    private function readStreamEvents(ResponseInterface $response): \Generator
+    private function readStreamEvents(ResponseInterface $response, ?Usage &$usage, ?string &$responseId): \Generator
     {
         // Each chunk's choices[0].delta may carry, in this order of yielding:
         //   reasoning | reasoning_content | thinking → ReasoningDelta
@@ -116,7 +212,6 @@ class OpenAICompatibleProvider extends AbstractProvider
         $overCap = [];
         $refused = false;
         $model = $this->model;
-        $usage = null;
         /** @var array{reason: ProviderFinishReason, raw: string}|null $finish */
         $finish = null;
 
@@ -136,6 +231,7 @@ class OpenAICompatibleProvider extends AbstractProvider
             }
 
             $model = is_string($json['model'] ?? null) && $json['model'] !== '' ? $json['model'] : $model;
+            $responseId = is_string($json['id'] ?? null) && $json['id'] !== '' ? $json['id'] : $responseId;
             $chunkUsage = $this->streamChunkUsage($json);
             $usage = $chunkUsage ?? $usage;
 
@@ -355,6 +451,7 @@ class OpenAICompatibleProvider extends AbstractProvider
 
     public function structured(array $messages, string $schema, array $options = []): mixed
     {
+        $options[UsageReport::OPERATION_OPTION] = 'structured';
         $schemaData = json_decode($schema, true);
         if (!is_array($schemaData)) {
             return $this->chat($messages, [], $options);

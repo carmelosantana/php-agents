@@ -49,12 +49,7 @@ final class UsageFixtures
     public const PENDING = [
         CliProvider::class,
         GeminiProvider::class,
-        LlamaServerProvider::class,
-        MistralProvider::class,
-        OllamaProvider::class,
-        OpenAICompatibleProvider::class,
         OpenAIResponsesProvider::class,
-        XAIProvider::class,
     ];
 
     private const FORMATS = [
