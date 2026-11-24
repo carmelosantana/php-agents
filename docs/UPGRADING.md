@@ -1,5 +1,10 @@
 # Upgrading
 
+## Upgrading to 0.19
+
+0.19 is additive and requires no application changes. To receive usage and request metadata
+for each inference request, opt in with a [usage listener](PROVIDERS.md#usage-listener).
+
 ## Upgrading to 0.18.1
 
 ### Behaviour changes
@@ -145,7 +150,7 @@ public function streamEvents(array $messages, array $tools = [], array $options 
 
 ### Deprecated
 
-- The in-process llama.cpp FFI path is deprecated in 0.18 and will be removed or fixed in 0.19:
+- The in-process llama.cpp FFI path is deprecated in 0.18 and will be removed or fixed in 0.20:
   `LlamaCppProvider`, every class under `Runtime\LlamaCpp`, and the `setup-llama-cpp.sh`,
   `test-llama-cpp-runtime.sh` and llama.cpp benchmark scripts. Move to `LlamaServerProvider`
   ([LlamaServerProvider](PROVIDERS.md#llamaserverprovider)): run `llama-server -m model.gguf --jinja`

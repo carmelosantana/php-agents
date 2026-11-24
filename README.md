@@ -88,6 +88,34 @@ covered in [Local Runtime](docs/LOCAL-RUNTIME.md) and [Providers](docs/PROVIDERS
 
 *\* Gemini does not natively support URL image references. The provider auto-downloads URL images and converts them to base64 `inlineData`.*
 
+## Usage listener
+
+Attach a listener to a configured provider to receive usage and request metadata.
+
+```php
+use CarmeloSantana\PHPAgents\Contract\UsageListener;
+use CarmeloSantana\PHPAgents\Contract\UsageReporting;
+use CarmeloSantana\PHPAgents\Message\UserMessage;
+use CarmeloSantana\PHPAgents\Provider\UsageReport;
+
+if ($provider instanceof UsageReporting) {
+    $provider = $provider->withUsageListener(new class implements UsageListener {
+        public function onUsage(UsageReport $report): void
+        {
+            printf(
+                "%s %s: %s tokens\n",
+                $report->operation,
+                $report->model,
+                $report->usage?->totalTokens ?? 'unknown',
+            );
+        }
+    });
+    $provider->chat([new UserMessage('Hello!')]);
+}
+```
+
+See [Usage listener](docs/PROVIDERS.md#usage-listener) for report fields and streaming behaviour.
+
 ## Tools and toolkits
 
 A `Tool` is a name, a description, typed parameters and a callback returning `ToolResult`. Group

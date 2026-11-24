@@ -56,15 +56,6 @@ dataset('usage conformance providers', array_combine(
     USAGE_CONFORMANCE_PROVIDERS,
 ));
 
-function usageConformanceFixture(string $class): UsageFixture
-{
-    if (in_array($class, UsageFixtures::PENDING, true)) {
-        test()->markTestSkipped('pending usage reporting');
-    }
-
-    return UsageFixtures::for($class);
-}
-
 function usageConformanceReport(UsageFixture $fixture, string $operation, bool $failed = false): UsageReport
 {
     expect($fixture->reports)->toHaveCount(1, $operation)
@@ -101,7 +92,7 @@ function assertUsageConformanceResult(UsageReport $report, Response|Finish $resu
 }
 
 test('UsageConformance reports chat and full streams once', function (string $class) {
-    $fixture = usageConformanceFixture($class);
+    $fixture = UsageFixtures::for($class);
     $response = $fixture->chat();
     $report = usageConformanceReport($fixture, 'chat');
     assertUsageConformanceIds($fixture, $report);
@@ -115,7 +106,7 @@ test('UsageConformance reports chat and full streams once', function (string $cl
 })->with('usage conformance providers');
 
 test('UsageConformance reports abandoned and truncated streams once', function (string $class) {
-    $fixture = usageConformanceFixture($class);
+    $fixture = UsageFixtures::for($class);
     $fixture->streamAbandoned();
     $report = usageConformanceReport($fixture, 'stream', failed: true);
     assertUsageConformanceIds($fixture, $report);
@@ -130,7 +121,7 @@ test('UsageConformance reports abandoned and truncated streams once', function (
 })->with('usage conformance providers');
 
 test('UsageConformance labels every structured path once', function (string $class) {
-    $fixture = usageConformanceFixture($class);
+    $fixture = UsageFixtures::for($class);
     $paths = $fixture->structuredPaths();
     expect($paths)->not->toBeEmpty();
     foreach ($paths as $path => $structured) {
@@ -149,7 +140,7 @@ test('UsageConformance labels every structured path once', function (string $cla
 })->with('usage conformance providers');
 
 test('UsageConformance reports request failures and preserves exceptions', function (string $class) {
-    $fixture = usageConformanceFixture($class);
+    $fixture = UsageFixtures::for($class);
     foreach (['http500', 'transportError'] as $failure) {
         $fixture->reports = $fixture->inferenceRequests = [];
         $original = $fixture->{$failure}($fixture->original);
@@ -173,14 +164,14 @@ test('UsageConformance reports request failures and preserves exceptions', funct
 })->with('usage conformance providers');
 
 test('UsageConformance discovery and availability emit no reports', function (string $class) {
-    $fixture = usageConformanceFixture($class);
+    $fixture = UsageFixtures::for($class);
     $fixture->provider()->models();
     expect($fixture->provider()->isAvailable())->toBeTrue()
         ->and($fixture->reports)->toBeEmpty();
 })->with('usage conformance providers');
 
 test('UsageConformance listener exceptions preserve results and are redacted in warnings', function (string $class) {
-    $fixture = usageConformanceFixture($class);
+    $fixture = UsageFixtures::for($class);
     $provider = $fixture->withThrowingListener();
     expect($fixture->chat($provider))->toEqual($fixture->chat($fixture->original))
         ->and($fixture->transportError($provider))->toBe($fixture->transportError($fixture->original))
@@ -193,7 +184,7 @@ test('UsageConformance listener exceptions preserve results and are redacted in 
 })->with('usage conformance providers');
 
 test('UsageConformance copies keep the listener and the original stays unlistened', function (string $class) {
-    $fixture = usageConformanceFixture($class);
+    $fixture = UsageFixtures::for($class);
     $modelCopy = $fixture->provider()->withModel('fixture-copy');
     $fixture->chat($modelCopy);
     $fixture->chat($fixture->withRequestLimits());
@@ -205,7 +196,7 @@ test('UsageConformance copies keep the listener and the original stays unlistene
 })->with('usage conformance providers');
 
 test('UsageConformance reports never contain content', function (string $class) {
-    $fixture = usageConformanceFixture($class);
+    $fixture = UsageFixtures::for($class);
     $fixture->chat();
     $fixture->streamFull();
     $fixture->streamAbandoned();

@@ -46,8 +46,6 @@ final class UsageFixtures
 {
     public const MARKER = 'PHPAGENTS-SECRET-MARKER';
 
-    public const PENDING = [];
-
     private const FORMATS = [
         AnthropicProvider::class => 'anthropic',
         CliProvider::class => 'cli',
