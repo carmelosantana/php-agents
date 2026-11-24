@@ -46,9 +46,7 @@ final class UsageFixtures
 {
     public const MARKER = 'PHPAGENTS-SECRET-MARKER';
 
-    public const PENDING = [
-        CliProvider::class,
-    ];
+    public const PENDING = [];
 
     private const FORMATS = [
         AnthropicProvider::class => 'anthropic',
@@ -135,10 +133,7 @@ final class UsageFixture implements UsageListener
                 }
             };
 
-            $adapter = new ClaudeCliVendorAdapter();
-            $this->original = is_subclass_of(CliProvider::class, UsageReporting::class)
-                ? new CliProvider(self::MODEL, $adapter, $runtime, logger: $logger)
-                : new CliProvider(self::MODEL, $adapter, $runtime);
+            $this->original = new CliProvider(self::MODEL, new ClaudeCliVendorAdapter(), $runtime, logger: $logger);
 
             return;
         }
