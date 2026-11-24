@@ -85,7 +85,7 @@ deprecated `LlamaCppProvider`.
 
 ## LlamaCppProvider
 
-> **Deprecated in 0.18; removed or fixed in 0.19.** Use [`LlamaServerProvider`](#llamaserverprovider).
+> **Deprecated in 0.18. Removal or a fix is scheduled for 0.20.** Use [`LlamaServerProvider`](#llamaserverprovider).
 > `LlamaCppProvider` and every class under `Runtime\LlamaCpp` are marked `@deprecated`.
 >
 > - The FFI binding mirrors `llama.h` structs that llama.cpp changed after **b9174** (2026-05-16):
@@ -830,6 +830,41 @@ and bidi characters into spaces and cuts them to 128 characters plus `…` (see 
 | `GeminiProvider` | The candidate's `finishReason`, or `promptFeedback.blockReason` for a blocked prompt |
 | `LlamaCppProvider` | The runtime's finish reason value |
 | `CliProvider` | `''` |
+
+## Usage listener
+
+Usage listeners are available starting in 0.19.
+Implement `CarmeloSantana\PHPAgents\Contract\UsageListener::onUsage(UsageReport $report)` and pass
+the listener to `withUsageListener()` on a provider that implements `UsageReporting`. The method
+returns a provider copy with the supplied listener. Copies made with `withModel()` or
+`withRequestLimits()` keep the listener. To notify several listeners, pass a
+`CarmeloSantana\PHPAgents\Provider\CompositeUsageListener` to `withUsageListener()`. The composite
+isolates failures in each listener. If a listener throws out of `onUsage()`, the provider catches
+it and warns through its logger with only the exception class. The call's result or exception is
+preserved. See the [README example](../README.md#usage-listener).
+
+The listener receives one `CarmeloSantana\PHPAgents\Provider\UsageReport` per inference HTTP
+request or CLI run. `operation` is `chat`, `stream` (for `stream()` and `streamEvents()`) or
+`structured`, including when `structured()` delegates to `chat()`.
+
+| Field | Meaning |
+| --- | --- |
+| `provider` | Short provider class name, such as `AnthropicProvider` |
+| `requestedModel`, `model` | Configured model and vendor-reported model. `model` falls back to `requestedModel` on failure or when the vendor omits it. |
+| `usage` | Normalised token counts, or `null` when unavailable |
+| `requestId`, `responseId` | Vendor request header ID and response body ID, each `null` when unavailable. Both are `null` for CLI runs. |
+| `finishReason`, `failed` | Normalised finish reason and whether the request failed |
+| `durationMs` | Elapsed milliseconds from the start of the request through parsing, failure or stream termination |
+
+Reports contain request metadata and token counts only. A report has `failed = true` when the
+request throws, ends with `ProviderFinishReason::Error`, or the stream is destroyed before
+`Finish`. A failed report includes any usage parsed before termination. Streaming `durationMs`
+includes the consumer's own pace between chunks and ends at `Finish`, an exception or generator
+destruction.
+
+Reporting covers model generation. Embeddings, the deprecated `LlamaCppProvider`, model
+discovery, availability checks, Ollama model management, Gemini image downloads and MCP
+traffic are outside its scope.
 
 ## Caller Options
 

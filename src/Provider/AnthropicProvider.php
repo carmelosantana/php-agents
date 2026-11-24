@@ -69,24 +69,113 @@ final class AnthropicProvider extends AbstractProvider
 
     public function chat(array $messages, array $tools = [], array $options = []): Response
     {
+        $operation = $this->usageOperation($options, 'chat');
         $payload = $this->buildPayload($messages, $tools, $options);
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->requestLimits->apply([
-            'headers' => $this->headers(),
-            'json' => $payload,
-        ]));
+        return $this->requestMessage($payload, $operation, function (array $data, ResponseInterface $response): Response {
+            $parsed = $this->parseResponse($data);
 
-        $parsed = $this->parseResponse($this->decodeResponse($response));
+            return new Response(
+                content: $parsed->content,
+                finishReason: $parsed->finishReason,
+                toolCalls: $parsed->toolCalls,
+                model: $parsed->model,
+                usage: $parsed->usage,
+                reasoning: $parsed->reasoning,
+                contentBlocks: $this->rawContentBlocks($response),
+            );
+        });
+    }
 
-        return new Response(
-            content: $parsed->content,
-            finishReason: $parsed->finishReason,
-            toolCalls: $parsed->toolCalls,
-            model: $parsed->model,
-            usage: $parsed->usage,
-            reasoning: $parsed->reasoning,
-            contentBlocks: $this->rawContentBlocks($response),
-        );
+    /**
+     * @template TResult of Response|array<mixed>
+     * @param array<string, mixed> $payload
+     * @param callable(array<string, mixed>, ResponseInterface): TResult $parse
+     * @return TResult
+     */
+    private function requestMessage(array $payload, string $operation, callable $parse): Response|array
+    {
+        $requestOptions = $this->requestLimits->apply(['headers' => $this->headers(), 'json' => $payload]);
+        $response = $result = null;
+        $data = [];
+        $start = $this->startClock();
+
+        try {
+            $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $requestOptions);
+            $data = $this->decodeResponse($response);
+            $result = $parse($data, $response);
+
+            return $result;
+        } finally {
+            $reason = match (true) {
+                $result instanceof Response => $result->finishReason,
+                is_array($result) => ProviderFinishReason::Stop,
+                default => ProviderFinishReason::Error,
+            };
+            $this->reportMessageUsage(
+                $operation,
+                $start,
+                $response,
+                $data['id'] ?? null,
+                $result instanceof Response ? $result->model : ($data['model'] ?? null),
+                $result instanceof Response ? $result->usage : $this->usageForReport($data['usage'] ?? null),
+                $reason,
+            );
+        }
+    }
+
+    private function reportMessageUsage(
+        string $operation,
+        int $start,
+        ?ResponseInterface $response,
+        mixed $responseId,
+        mixed $model,
+        ?Usage $usage,
+        ProviderFinishReason $reason,
+    ): void {
+        $durationMs = $this->elapsedMs($start);
+        $failed = self::finishedFailed($reason);
+        $requestedModel = $this->getModel();
+        $this->reportUsage(new UsageReport(
+            operation: $operation,
+            provider: 'AnthropicProvider',
+            requestedModel: $requestedModel,
+            model: !$failed && is_string($model) ? $model : $requestedModel,
+            usage: $usage,
+            requestId: $this->messageRequestId($response),
+            responseId: is_string($responseId) ? $responseId : null,
+            finishReason: $reason,
+            durationMs: $durationMs,
+            failed: $failed,
+        ));
+    }
+
+    private function messageRequestId(?ResponseInterface $response): ?string
+    {
+        // Transport info can be read even if streaming stopped before the headers arrived.
+        try {
+            $headers = $response?->getInfo('response_headers');
+        } catch (\Throwable) {
+            return null;
+        }
+
+        foreach (is_array($headers) ? array_reverse($headers) : [] as $header) {
+            if (is_string($header) && stripos($header, 'request-id:') === 0) {
+                return trim(substr($header, strlen('request-id:')));
+            }
+        }
+
+        return null;
+    }
+
+    private function usageForReport(mixed $usage): ?Usage
+    {
+        try {
+            return is_array($usage) ? $this->parseUsage($usage) : null;
+        } catch (\TypeError) {
+            // An out-of-range token total leaves no normalized usage to report.
+            return null;
+        }
     }
 
     /**
@@ -119,22 +208,47 @@ final class AnthropicProvider extends AbstractProvider
 
     public function streamEvents(array $messages, array $tools = [], array $options = []): iterable
     {
+        $operation = $this->usageOperation($options, 'stream');
         $payload = [...$this->buildPayload($messages, $tools, $options), 'stream' => true];
+        $requestOptions = $this->requestLimits->apply(['headers' => $this->headers(), 'json' => $payload]);
+        $response = $responseId = $finish = null;
+        $usage = [];
+        $start = $this->startClock();
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->requestLimits->apply([
-            'headers' => $this->headers(),
-            'json' => $payload,
-        ]));
+        try {
+            $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $requestOptions);
+            foreach (self::cancelOnAbandon($response, $this->readStreamEvents($response, $usage, $responseId)) as $event) {
+                if ($event instanceof Finish) {
+                    $finish = $event;
+                    break;
+                }
 
-        yield from self::cancelOnAbandon($response, $this->readStreamEvents($response));
+                yield $event;
+            }
+        } finally {
+            $this->reportMessageUsage(
+                $operation,
+                $start,
+                $response,
+                $responseId,
+                $finish?->model,
+                $finish === null ? $this->usageForReport($usage) : $finish->usage,
+                $finish->reason ?? ProviderFinishReason::Error,
+            );
+        }
+
+        if ($finish !== null) {
+            yield $finish;
+        }
     }
 
     /**
      * The events of the response streamEvents() requested; cancelOnAbandon() closes it.
      *
+     * @param array<string, mixed> $usage
      * @return \Generator<int, StreamEvent, mixed, void>
      */
-    private function readStreamEvents(ResponseInterface $response): \Generator
+    private function readStreamEvents(ResponseInterface $response, array &$usage, ?string &$responseId): \Generator
     {
         // Anthropic's stream, by the `type` field of each data payload:
         //   message_start        → model, input and cache token usage
@@ -165,8 +279,6 @@ final class AnthropicProvider extends AbstractProvider
         $overCap = [];
         $currentBlockIndex = -1;
         $model = $this->model;
-        /** @var array<string, mixed> $usage */
-        $usage = [];
         $stopReason = null;
 
         $parser = new SseStreamParser(
@@ -253,6 +365,8 @@ final class AnthropicProvider extends AbstractProvider
                 }
             } elseif ($eventType === 'message_start') {
                 $model = $json['message']['model'] ?? $model;
+                $id = $json['message']['id'] ?? null;
+                $responseId = is_string($id) ? $id : null;
                 $usage = $this->mergeUsage($usage, $json['message']['usage'] ?? []);
             } elseif ($eventType === 'message_delta') {
                 $stopReason = $json['delta']['stop_reason'] ?? $stopReason;
@@ -474,6 +588,8 @@ final class AnthropicProvider extends AbstractProvider
 
     public function structured(array $messages, string $schema, array $options = []): mixed
     {
+        $options[UsageReport::OPERATION_OPTION] = 'structured';
+
         // Native structured outputs: the model answers with one text block of
         // JSON matching the schema. A forced tool_choice returns a 400 on
         // current models, so none is sent, not even the caller's.
@@ -509,13 +625,17 @@ final class AnthropicProvider extends AbstractProvider
             'format' => ['type' => 'json_schema', 'schema' => $prepared],
         ];
 
-        $response = $this->httpClient->request('POST', "{$this->baseUrl}/messages", $this->requestLimits->apply([
-            'headers' => $this->headers(),
-            'json' => $this->buildPayload($messages, [], $options),
-        ]));
+        $operation = $this->usageOperation($options, 'structured');
 
-        $data = $this->decodeResponse($response);
+        return $this->requestMessage($this->buildPayload($messages, [], $options), $operation, $this->parseStructuredMessage(...));
+    }
 
+    /**
+     * @param array<string, mixed> $data
+     * @return Response|array<mixed>
+     */
+    private function parseStructuredMessage(array $data): Response|array
+    {
         if ($this->mapStopReason($data['stop_reason'] ?? null) === ProviderFinishReason::Stop) {
             foreach ($data['content'] ?? [] as $block) {
                 if (($block['type'] ?? '') === 'text') {
