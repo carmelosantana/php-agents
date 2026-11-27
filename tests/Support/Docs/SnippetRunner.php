@@ -32,6 +32,7 @@ final class SnippetRunner
                 '-d', 'auto_prepend_file=' . dirname(__DIR__, 3) . '/vendor/autoload.php',
                 '-d', 'display_errors=stderr',
                 '-d', 'error_reporting=-1',
+                '-d', 'log_errors=0',
                 $file,
             ];
             $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
