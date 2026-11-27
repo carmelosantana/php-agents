@@ -235,7 +235,8 @@ abstract class AbstractProvider implements ProviderInterface, UsageReporting
     /**
      * Yields $events and cancels $response however they end: completed, thrown, or abandoned
      * (the consumer stopped iterating), whatever the client does when the response is destroyed.
-     * Only an HTTP status error leaves the response open, for the caller to read its error body;
+     * Only an HTTP status error (HttpStatusException) leaves the response open, for the caller to
+     * read a bounded part of its error body or cancel it;
      * anything else after a successful status (a parser limit, a provider error event) cancels.
      *
      * @template T

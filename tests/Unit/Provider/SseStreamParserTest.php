@@ -262,7 +262,7 @@ test('a 307 stream answer is refused as a redirect not followed', function () {
         ->and($thrown?->getMessage())->toContain('redirect not followed');
 });
 
-test('a 4xx stream answer propagates the Symfony client exception naming the status', function () {
+test('a 4xx stream answer throws a client exception naming the status', function () {
     $parser = makeParser(['{"error":"bad key"}'], responseInfo: ['http_code' => 401]);
 
     $thrown = sseParserCatch($parser);
@@ -271,7 +271,7 @@ test('a 4xx stream answer propagates the Symfony client exception naming the sta
         ->and($thrown?->getMessage())->toContain('401');
 });
 
-test('a 5xx stream answer propagates the Symfony server exception', function () {
+test('a 5xx stream answer throws a server exception', function () {
     $parser = makeParser(['oops'], responseInfo: ['http_code' => 503]);
 
     expect(sseParserCatch($parser))->toBeInstanceOf(ServerExceptionInterface::class);
@@ -399,7 +399,7 @@ test('a zero tick interval still throws on a timeout chunk, as before', function
     expect(fn() => sseParserDrain($parser))->toThrow(TimeoutException::class, 'Idle timeout reached');
 });
 
-test('a 4xx answer still throws the Symfony client exception when ticking', function () {
+test('a 4xx answer still throws a client exception when ticking', function () {
     $parser = makeTickingParser(['{"error":"bad key"}'], responseInfo: ['http_code' => 401]);
 
     $thrown = sseParserCatch($parser);

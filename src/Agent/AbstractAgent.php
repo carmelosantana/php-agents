@@ -1353,8 +1353,9 @@ abstract class AbstractAgent implements AgentInterface
     /**
      * The text Output.content (after `Provider error: `) and agent.error carry for a
      * provider failure. The exception message is redacted and bounded. For a 4xx, at most
-     * the first 64 KiB of the body are read and only a string `error.message` (Anthropic,
-     * OpenAI) or top-level `message` is appended, redacted and bounded; the raw body never is.
+     * the first 64 KiB of the body are read, the response is cancelled, and only a string
+     * `error.message` (Anthropic, OpenAI) or top-level `message` is appended, redacted and
+     * bounded; the raw body never is.
      */
     private function providerErrorMessage(\Throwable $e): string
     {
@@ -1363,8 +1364,8 @@ abstract class AbstractAgent implements AgentInterface
             return $message;
         }
 
+        $response = $e->getResponse();
         try {
-            $response = $e->getResponse();
             if ($response instanceof StreamableInterface) {
                 $body = (string) stream_get_contents($response->toStream(false), self::PROVIDER_ERROR_BODY_MAX_BYTES);
             } else {
@@ -1373,6 +1374,8 @@ abstract class AbstractAgent implements AgentInterface
             $decoded = json_decode($body, true);
         } catch (\Throwable) {
             return $message;
+        } finally {
+            $response->cancel();
         }
 
         if (!is_array($decoded)) {
