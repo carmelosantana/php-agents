@@ -132,6 +132,7 @@ parameter types and MCP are in [Tools & Toolkits](docs/TOOLS-AND-TOOLKITS.md).
 | [Agents](docs/AGENTS.md) | The loop, observers, cancellation, context window |
 | [Providers](docs/PROVIDERS.md) | Feature matrix, streaming, structured output, images |
 | [Tools & Toolkits](docs/TOOLS-AND-TOOLKITS.md) | Parameters, execution policies, MCP client and server |
+| [MCP Server](docs/mcp-server.md) | Hosting and vendoring the stateless HTTP server |
 | [Embeddings & Vector Stores](docs/MEMORY.md) | Embedding providers, similarity search |
 | [Local Runtime](docs/LOCAL-RUNTIME.md) | Native llama.cpp setup, benchmarks (deprecated) |
 | [Architecture](docs/ARCHITECTURE.md) | Design, diagrams, extension points |
