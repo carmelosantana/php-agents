@@ -9,7 +9,7 @@ final readonly class HttpAdapter
     private const CHALLENGE = 'Bearer realm="kanboard-mcp", error="invalid_token"';
 
     /**
-     * @param (\Closure(array{user: string|int|null, tool: ?string, outcome: string, ms: float, ip: ?string}): void)|null $onRequest
+     * @param (\Closure(array{user: string|int|null, tool: ?string, outcome: 'ok'|'tool_error'|'invalid'|'denied'|'unauthenticated', ms: float, ip?: string}): void)|null $onRequest
      * @param ?string $ip Client address supplied by the host for the request.
      */
     public function __construct(
@@ -58,13 +58,32 @@ final readonly class HttpAdapter
 
         return $this->respond(
             $started,
-            isset($reply['error']) ? 'invalid' : 'ok',
+            self::outcome($reply),
             200,
             ['Content-Type' => 'application/json'],
             json_encode($reply, JSON_THROW_ON_ERROR),
             $user,
             $tool,
         );
+    }
+
+    /**
+     * @param array<string, mixed> $reply
+     * @return 'ok'|'tool_error'|'invalid'|'denied'
+     */
+    private static function outcome(array $reply): string
+    {
+        if (isset($reply['error'])) {
+            return 'invalid';
+        }
+
+        $result = $reply['result'] ?? null;
+        if (!is_array($result) || ($result['isError'] ?? false) !== true) {
+            return 'ok';
+        }
+
+        // The server uses the same result for missing tools and tools outside the active profile.
+        return ($result['content'][0]['text'] ?? null) === 'unknown tool' ? 'denied' : 'tool_error';
     }
 
     /** @return array<string, mixed>|null */
@@ -102,6 +121,7 @@ final readonly class HttpAdapter
     }
 
     /**
+     * @param 'ok'|'tool_error'|'invalid'|'denied'|'unauthenticated' $outcome
      * @param array<string, string> $headers
      * @param array<string, mixed>|null $user
      * @return array{int, array<string, string>, string}
@@ -117,13 +137,16 @@ final readonly class HttpAdapter
     ): array {
         if ($this->onRequest !== null) {
             $identity = $user['username'] ?? $user['id'] ?? null;
-            ($this->onRequest)([
+            $event = [
                 'user' => is_string($identity) || is_int($identity) ? $identity : null,
                 'tool' => $tool,
                 'outcome' => $outcome,
                 'ms' => (hrtime(true) - $started) / 1_000_000.0,
-                'ip' => $this->ip,
-            ]);
+            ];
+            if ($this->ip !== null) {
+                $event['ip'] = $this->ip;
+            }
+            ($this->onRequest)($event);
         }
 
         return [$status, ['Cache-Control' => 'no-store'] + $headers, $body];
