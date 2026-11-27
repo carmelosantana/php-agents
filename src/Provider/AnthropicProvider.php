@@ -6,6 +6,7 @@ namespace CarmeloSantana\PHPAgents\Provider;
 
 use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
+use CarmeloSantana\PHPAgents\Contract\StructuredStreaming;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ModelCapability;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
@@ -13,6 +14,7 @@ use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
+use CarmeloSantana\PHPAgents\Provider\Internal\StructuredStream;
 use CarmeloSantana\PHPAgents\Provider\Internal\TokenCount;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
@@ -28,9 +30,13 @@ use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
-final class AnthropicProvider extends AbstractProvider
+final class AnthropicProvider extends AbstractProvider implements StructuredStreaming
 {
     private const MODELS_MAX_PAGES = 10;
+
+    private const string STRUCTURED_NATIVE = 'native';
+    private const string STRUCTURED_INSTRUCTED = 'instructed';
+    private const string STRUCTURED_UNCONSTRAINED = 'unconstrained';
 
     /** Constraint keywords that native structured outputs reject. */
     private const UNSUPPORTED_SCHEMA_KEYWORDS = ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength'];
@@ -590,14 +596,47 @@ final class AnthropicProvider extends AbstractProvider
     public function structured(array $messages, string $schema, array $options = []): mixed
     {
         $options[UsageReport::OPERATION_OPTION] = 'structured';
+        [$mode, $messages, $options] = $this->structuredRequest($messages, $schema, $options);
 
-        // Native structured outputs: the model answers with one text block of
-        // JSON matching the schema. A forced tool_choice returns a 400 on
-        // current models, so none is sent, not even the caller's.
+        if ($mode === self::STRUCTURED_NATIVE) {
+            $operation = $this->usageOperation($options, 'structured');
+
+            return $this->requestMessage($this->buildPayload($messages, [], $options), $operation, $this->parseStructuredMessage(...));
+        }
+
+        $response = $this->chat($messages, [], $options);
+
+        return $mode === self::STRUCTURED_INSTRUCTED ? $this->decodeInstructedJson($response) : $response;
+    }
+
+    public function structuredEvents(array $messages, string $schema, array $options = []): iterable
+    {
+        $options[UsageReport::OPERATION_OPTION] = 'structured_stream';
+        [, $messages, $options] = $this->structuredRequest($messages, $schema, $options);
+
+        return StructuredStream::fromText($this->streamEvents($messages, [], $options));
+    }
+
+    /**
+     * The request structured() and structuredEvents() send, as [mode, messages, options]:
+     *
+     * - STRUCTURED_NATIVE: native structured outputs. The model answers with one text block of
+     *   JSON matching the schema, set in output_config.format. A forced tool_choice returns a
+     *   400 on current models, so none is sent, not even the caller's.
+     * - STRUCTURED_INSTRUCTED: a schema native structured outputs cannot take. No
+     *   output_config.format, and one extra user instruction with the schema.
+     * - STRUCTURED_UNCONSTRAINED: $schema is not JSON; the request is sent as given.
+     *
+     * @param MessageInterface[] $messages
+     * @param array<string, mixed> $options
+     * @return array{0: string, 1: MessageInterface[], 2: array<string, mixed>}
+     */
+    private function structuredRequest(array $messages, string $schema, array $options): array
+    {
         // Decoded with objects kept as stdClass, so `{}` encodes back as `{}`.
         $schemaData = json_decode($schema);
         if (!$schemaData instanceof \stdClass && !is_array($schemaData)) {
-            return $this->chat($messages, [], $options);
+            return [self::STRUCTURED_UNCONSTRAINED, $messages, $options];
         }
 
         // An envelope's name and description are not sent.
@@ -618,7 +657,16 @@ final class AnthropicProvider extends AbstractProvider
             ? $this->prepareAnthropicSchema($root)
             : null;
         if ($prepared === null) {
-            return $this->structuredWithoutNativeSchema($messages, $outputSchema, $outputConfig, $options);
+            unset($options['output_config']);
+            if ($outputConfig !== []) {
+                $options['output_config'] = $outputConfig;
+            }
+
+            $messages[] = new UserMessage(
+                "Respond with only a JSON value that matches this JSON Schema, with no other text:\n" . json_encode($outputSchema),
+            );
+
+            return [self::STRUCTURED_INSTRUCTED, $messages, $options];
         }
 
         $options['output_config'] = [
@@ -626,9 +674,7 @@ final class AnthropicProvider extends AbstractProvider
             'format' => ['type' => 'json_schema', 'schema' => $prepared],
         ];
 
-        $operation = $this->usageOperation($options, 'structured');
-
-        return $this->requestMessage($this->buildPayload($messages, [], $options), $operation, $this->parseStructuredMessage(...));
+        return [self::STRUCTURED_NATIVE, $messages, $options];
     }
 
     /**
@@ -653,26 +699,13 @@ final class AnthropicProvider extends AbstractProvider
     }
 
     /**
-     * Best-effort JSON for a schema native structured outputs cannot take: no
-     * output_config.format, and one extra user instruction with the schema.
+     * Best-effort JSON from the reply to an instructed request: the first text block, decoded,
+     * when the reply stopped normally and it is a JSON object or list; else the reply.
      *
-     * @param MessageInterface[] $messages
-     * @param array<string, mixed> $outputConfig The caller's output_config without `format`
-     * @param array<string, mixed> $options
+     * @return Response|array<mixed>
      */
-    private function structuredWithoutNativeSchema(array $messages, mixed $outputSchema, array $outputConfig, array $options): mixed
+    private function decodeInstructedJson(Response $response): Response|array
     {
-        unset($options['output_config']);
-        if ($outputConfig !== []) {
-            $options['output_config'] = $outputConfig;
-        }
-
-        $messages[] = new UserMessage(
-            "Respond with only a JSON value that matches this JSON Schema, with no other text:\n" . json_encode($outputSchema),
-        );
-
-        $response = $this->chat($messages, [], $options);
-
         if ($response->finishReason === ProviderFinishReason::Stop) {
             foreach ($response->contentBlocks as $block) {
                 if (($block['type'] ?? '') === 'text') {

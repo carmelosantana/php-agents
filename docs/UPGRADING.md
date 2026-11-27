@@ -1,5 +1,23 @@
 # Upgrading
 
+## Upgrading to 0.21.0
+
+0.21 adds streamed structured output. No change is needed to upgrade.
+
+### Added
+
+| Addition | What it does |
+|----------|--------------|
+| `Contract\StructuredStreaming` | `structuredEvents($messages, $schema, $options)` streams the request `structured()` sends ([Structured streaming](PROVIDERS.md#structured-streaming), [ADR 0007](adr/0007-structured-streaming.md)) |
+| `Provider\Stream\StructuredDelta` | One fragment of the JSON document, distinct from `TextDelta` |
+| Usage operation `structured_stream` | A `UsageReport` from `structuredEvents()` names this operation |
+
+`OpenAICompatibleProvider` (with `OllamaProvider`, `XAIProvider`, `MistralProvider` and
+`LlamaServerProvider`), `OpenAIResponsesProvider`, `AnthropicProvider` and `GeminiProvider`
+implement `StructuredStreaming`. `CliProvider` does not. `ProviderInterface` is unchanged, so custom
+providers and decorators need no change; a decorator that should stream structured output
+implements `StructuredStreaming` itself.
+
 ## Upgrading to 0.20.1
 
 ### Behaviour changes
