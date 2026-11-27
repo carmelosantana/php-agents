@@ -2,7 +2,9 @@
 
 declare(strict_types=1);
 
+use CarmeloSantana\PHPAgents\Mcp\Server\Authenticator;
 use CarmeloSantana\PHPAgents\Mcp\Server\CallContext;
+use CarmeloSantana\PHPAgents\Mcp\Server\HttpAdapter;
 use CarmeloSantana\PHPAgents\Mcp\Server\Server;
 use CarmeloSantana\PHPAgents\Mcp\Server\Tool;
 use CarmeloSantana\PHPAgents\Mcp\Server\ToolError;
@@ -170,6 +172,48 @@ it('returns a tool error result while keeping exception details private', functi
         'id' => 17,
         'result' => ['content' => [['type' => 'text', 'text' => 'tool failed']], 'isError' => true],
     ]);
+});
+
+// Mutation: catch only ToolError and JsonException, allowing other handler exceptions to escape.
+it('returns and records a generic tool error when a handler throws unexpectedly', function (): void {
+    $sentinel = 'secret-sentinel-throwable';
+    $events = [];
+    $registry = new ToolRegistry();
+    $registry->add(new Tool('task', 'Task actions', ['type' => 'object'], static function () use ($sentinel): never {
+        throw new \RuntimeException($sentinel);
+    }, profiles: ['core']));
+    $authenticator = new class implements Authenticator {
+        public function authenticate(string $user, string $token): ?array
+        {
+            return ['username' => $user];
+        }
+    };
+    $adapter = new HttpAdapter(
+        new Server($registry),
+        $authenticator,
+        profile: 'core',
+        onRequest: static function (array $event) use (&$events): void {
+            $events[] = $event;
+        },
+    );
+
+    [$status, $headers, $body] = $adapter->handle(
+        'POST',
+        ['Authorization' => 'Bearer agent.php:header-secret'],
+        '{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"task"}}',
+    );
+
+    expect($status)->toBe(200)
+        ->and($headers['Cache-Control'])->toBe('no-store')
+        ->and(json_decode($body, true, flags: JSON_THROW_ON_ERROR))->toBe([
+            'jsonrpc' => '2.0',
+            'id' => 17,
+            'result' => ['content' => [['type' => 'text', 'text' => 'tool failed']], 'isError' => true],
+        ])
+        ->and($body)->not->toContain($sentinel)
+        ->and($events)->toHaveCount(1)
+        ->and($events[0]['outcome'])->toBe('tool_error')
+        ->and(json_encode($events[0], JSON_THROW_ON_ERROR))->not->toContain($sentinel);
 });
 
 // Mutation: drop structuredContent or omit the JSON text copy.

@@ -115,7 +115,7 @@ final readonly class Server
         try {
             $output = ($tool->handler)(self::normalizeArguments((array) $args), $ctx);
             $text = json_encode($output, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        } catch (ToolError|\JsonException) {
+        } catch (\Throwable) {
             return $this->result($id, $this->toolResult('tool failed', true));
         }
 

@@ -8,7 +8,7 @@ it('keeps server imports and fully qualified names inside the server or built-in
     expect(is_dir($root))->toBeTrue('The MCP server source directory is missing.');
 
     $serverPrefix = 'carmelosantana\\phpagents\\mcp\\server\\';
-    $builtIns = ['jsonexception', 'invalidargumentexception', 'runtimeexception', 'stdclass', 'closure'];
+    $builtIns = ['jsonexception', 'invalidargumentexception', 'runtimeexception', 'stdclass', 'closure', 'throwable'];
     $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
     $violations = [];
 
