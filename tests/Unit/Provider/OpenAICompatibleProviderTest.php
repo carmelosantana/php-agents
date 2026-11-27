@@ -962,3 +962,26 @@ test('options cannot replace the system message or the tools argument', function
     expect($requestPayload['messages'][0])->toBe(['role' => 'system', 'content' => 'Agent instructions.'])
         ->and(array_map(fn(array $t) => $t['function']['name'], $requestPayload['tools']))->toBe(['agent_tool']);
 })->with(['chat', 'stream']);
+
+test('usage sent as numeric strings and integral floats is reported', function () {
+    $mockClient = new MockHttpClient([
+        mockOpenAIResponse([
+            'usage' => [
+                'prompt_tokens' => '20',
+                'completion_tokens' => 10.0,
+                'total_tokens' => '30',
+                'prompt_tokens_details' => ['cached_tokens' => 4.0],
+                'completion_tokens_details' => ['reasoning_tokens' => '3'],
+            ],
+        ]),
+    ]);
+
+    $provider = new OpenAICompatibleProvider(model: 'gpt-4o', apiKey: 'key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('hi')]);
+
+    expect($response->usage?->promptTokens)->toBe(20)
+        ->and($response->usage?->completionTokens)->toBe(10)
+        ->and($response->usage?->totalTokens)->toBe(30)
+        ->and($response->usage?->cacheReadTokens)->toBe(4)
+        ->and($response->usage?->reasoningTokens)->toBe(3);
+});

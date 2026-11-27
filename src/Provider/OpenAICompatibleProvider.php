@@ -8,6 +8,7 @@ use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Provider\Internal\TokenCount;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
@@ -411,7 +412,7 @@ class OpenAICompatibleProvider extends AbstractProvider
      */
     protected function parseUsage(array $usage): ?Usage
     {
-        $count = static fn(mixed $value): ?int => is_int($value) ? $value : null;
+        $count = TokenCount::from(...);
         $prompt = $count($usage['prompt_tokens'] ?? null);
         $completion = $count($usage['completion_tokens'] ?? null);
         $total = $count($usage['total_tokens'] ?? null);

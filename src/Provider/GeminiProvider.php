@@ -10,6 +10,7 @@ use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Image\Internal\PublicImageDownloader;
+use CarmeloSantana\PHPAgents\Provider\Internal\TokenCount;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
@@ -988,7 +989,7 @@ final class GeminiProvider extends AbstractProvider
             return null;
         }
 
-        $count = static fn(mixed $value): ?int => is_int($value) ? $value : null;
+        $count = TokenCount::from(...);
         $prompt = $count($usage['promptTokenCount'] ?? null);
         $candidates = $count($usage['candidatesTokenCount'] ?? null);
         $thoughts = $count($usage['thoughtsTokenCount'] ?? null);

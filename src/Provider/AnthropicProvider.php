@@ -13,6 +13,7 @@ use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Message\AssistantMessage;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
+use CarmeloSantana\PHPAgents\Provider\Internal\TokenCount;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
@@ -484,7 +485,7 @@ final class AnthropicProvider extends AbstractProvider
      */
     private function parseUsage(array $usage): ?Usage
     {
-        $count = static fn(string $key): ?int => is_int($usage[$key] ?? null) ? $usage[$key] : null;
+        $count = static fn(string $key): ?int => TokenCount::from($usage[$key] ?? null);
         $input = $count('input_tokens');
         $output = $count('output_tokens');
         $cacheRead = $count('cache_read_input_tokens');
