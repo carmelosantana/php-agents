@@ -17,15 +17,19 @@ succeeds or `null` when it fails. Keep credentials out of that array, exception
 messages, and tool responses.
 
 Register tools once in a `ToolRegistry`, then share a `Server` across routes.
-Give each route an `HttpAdapter` with a profile selected by the host. A tool is
-listed and callable on a route only when its `profiles` includes that route's
+Construct one `HttpAdapter` per request with the route's profile. The client
+`ip` and `onRequest` are constructor arguments. Reusing an adapter can log the
+wrong IP because it keeps the address from construction. A tool is listed and
+callable on a route only when its `profiles` includes that route's
 profile. Tool handlers receive the authenticated identity and profile through
 `CallContext`. Enforce resource permissions in the host's handlers and restrict
 access to privileged routes using the host's authorization rules.
 
 The example assumes the host supplies `$verifyIdentity` as a callable and
-`$method`, `$headers`, and `$body` from the HTTP request. Pass header names
-and their string values, including `Authorization`, and the raw request body.
+`$method`, `$headers`, and `$body` from the HTTP request. Pass `$headers` as an
+`array<string, string>` with lower-cased names, including `authorization`, and
+pass the raw request body. PSR-7-style array values are not accepted. For a
+PSR-7 request, use `getHeaderLine()` to obtain each header's string value.
 
 ```php
 use CarmeloSantana\PHPAgents\Mcp\Server\Authenticator;
@@ -64,6 +68,24 @@ The adapter accepts POST with `Authorization: Bearer <user>:<token>` or HTTP
 Basic with the same username and token. It returns JSON-RPC replies as JSON
 and acknowledges notifications with an empty HTTP 202 response. Use HTTPS
 for endpoints that carry credentials.
+
+Handler exceptions other than `ToolError` produce a generic `tool failed`
+result with `isError: true`. `ToolError` also receives this generic response.
+
+## Log request outcomes
+
+Pass an optional `onRequest` closure and the client `ip` when creating the
+adapter. The closure receives an event array with exactly these fields.
+
+| Field | Value |
+| --- | --- |
+| `user` | The authenticated identity's `username` or `id` as a string or integer, or `null` if unavailable. |
+| `tool` | The requested tool name, capped at 128 bytes, or `null` when unavailable. |
+| `outcome` | `ok`, `tool_error`, `invalid`, `denied`, or `unauthenticated`. |
+| `ms` | Elapsed handling time in milliseconds as a float. |
+| `ip` | The client IP supplied by the host, or `null` if omitted. |
+
+The event never includes tool arguments or request or response bodies.
 
 ## Vendor the component
 
