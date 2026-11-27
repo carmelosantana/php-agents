@@ -742,8 +742,12 @@ when the next chunk arrives:
 
 When a consumer stops iterating (a cancel or a run limit), the provider cancels the HTTP response.
 So does a stream that fails after a successful status (an SSE line over the cap, a provider error
-event, a timeout); only an HTTP status error (`HttpExceptionInterface`, a 4xx or 5xx) leaves the
-response open, so the caller can still read its error body.
+event, a timeout). A 4xx or 5xx throws `Exception\HttpStatusException` before any of the body is
+read: its message names the status only (`Provider returned HTTP 429`), it implements symfony's
+`ClientExceptionInterface` (4xx) or `ServerExceptionInterface` (5xx), and its response stays open so
+the caller can read a bounded part of the error body. A caller that does not want the body calls
+`$e->getResponse()->cancel()`; the agent reads at most 64 KiB for its `API response:` line, then
+cancels.
 With ticks on, the parser keeps the idle deadline itself: once `idleTimeout` seconds pass with no
 data it throws symfony's idle-timeout `TimeoutException`, up to one `tickInterval` late, and an
 `idleTimeout` of `0.0` sets no idle deadline. A tick never extends `idleTimeout` or `maxDuration`.
@@ -933,7 +937,7 @@ A response over the byte cap is aborted with a `ProviderException` whose message
 
 ### No Redirects
 
-Providers follow no redirect. A base URL that answers 3xx to `chat()`, `stream()` or `structured()`, including a same-host `http://` to `https://` redirect, fails with `ProviderException` and the message `Provider request refused: redirect not followed (...)`, instead of re-sending the API key header and the conversation to the host the `Location` names. A streamed request refuses a 3xx before reading any data, and lets a 4xx or 5xx propagate unchanged so the API error body still reaches the agent. Embedding providers do not follow a 3xx either: `embedText()` and `OllamaEmbeddingProvider::embedDocuments()` report it as `ProviderException::embeddingFailed()`, and `OpenAIEmbeddingProvider::embedDocuments()` lets symfony/http-client's `RedirectionExceptionInterface` through. `isAvailable()` and `models()` treat a 3xx like any failed request: `isAvailable()` returns `false`, and `models()` returns its fallback (an empty list, or Anthropic's built-in list). Point the base URL at the final address.
+Providers follow no redirect. A base URL that answers 3xx to `chat()`, `stream()` or `structured()`, including a same-host `http://` to `https://` redirect, fails with `ProviderException` and the message `Provider request refused: redirect not followed (...)`, instead of re-sending the API key header and the conversation to the host the `Location` names. A streamed request refuses a 3xx before reading any data, and turns a 4xx or 5xx into a status-only `HttpStatusException` whose open response still lets the agent read the API error message. Embedding providers do not follow a 3xx either: `embedText()` and `OllamaEmbeddingProvider::embedDocuments()` report it as `ProviderException::embeddingFailed()`, and `OpenAIEmbeddingProvider::embedDocuments()` lets symfony/http-client's `RedirectionExceptionInterface` through. `isAvailable()` and `models()` treat a 3xx like any failed request: `isAvailable()` returns `false`, and `models()` returns its fallback (an empty list, or Anthropic's built-in list). Point the base URL at the final address.
 
 ### Gemini Image URLs
 
