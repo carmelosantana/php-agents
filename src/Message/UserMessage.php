@@ -60,7 +60,11 @@ final readonly class UserMessage implements MessageInterface
     {
         $content = [['type' => 'text', 'text' => $text]];
 
-        if ($imagePaths !== [] && $resolver === null) {
+        if ($imagePaths === []) {
+            return new self($content);
+        }
+
+        if ($resolver === null) {
             throw new ImageInputException(
                 'Image paths need an ImageResolverInterface; pass new LocalImageResolver([...allowed roots]).',
             );
