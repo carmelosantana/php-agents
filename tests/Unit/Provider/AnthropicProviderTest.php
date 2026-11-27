@@ -1569,3 +1569,20 @@ test('options may supply system and tools when the conversation has no system me
     expect($requestPayload['system'])->toBe('Injected instructions.')
         ->and(array_column($requestPayload['tools'], 'name'))->toBe(['injected_tool']);
 });
+
+test('chat reports usage sent as numeric strings and integral floats', function () {
+    $mockClient = new MockHttpClient([
+        mockAnthropicResponse([
+            'content' => [['type' => 'text', 'text' => 'ok']],
+            'usage' => ['input_tokens' => '15', 'output_tokens' => 8.0, 'cache_read_input_tokens' => '5'],
+        ]),
+    ]);
+
+    $provider = new AnthropicProvider(model: 'claude-sonnet-4-20250514', apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('hi')]);
+
+    expect($response->usage?->promptTokens)->toBe(20)
+        ->and($response->usage?->completionTokens)->toBe(8)
+        ->and($response->usage?->totalTokens)->toBe(28)
+        ->and($response->usage?->cacheReadTokens)->toBe(5);
+});

@@ -1317,3 +1317,26 @@ test('options may supply system_instruction when there is no system message', fu
 
     expect($requestPayload['system_instruction'])->toBe(['parts' => [['text' => 'Caller']]]);
 });
+
+test('usage metadata sent as numeric strings and integral floats is reported', function () {
+    $mockClient = new MockHttpClient([
+        mockGeminiResponse([
+            'usageMetadata' => [
+                'promptTokenCount' => '25',
+                'candidatesTokenCount' => 12.0,
+                'thoughtsTokenCount' => '2',
+                'totalTokenCount' => 39.0,
+                'cachedContentTokenCount' => '6',
+            ],
+        ]),
+    ]);
+
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $mockClient);
+    $response = $provider->chat([new UserMessage('hi')]);
+
+    expect($response->usage?->promptTokens)->toBe(25)
+        ->and($response->usage?->completionTokens)->toBe(14)
+        ->and($response->usage?->totalTokens)->toBe(39)
+        ->and($response->usage?->cacheReadTokens)->toBe(6)
+        ->and($response->usage?->reasoningTokens)->toBe(2);
+});

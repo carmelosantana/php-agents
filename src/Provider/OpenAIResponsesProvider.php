@@ -10,6 +10,7 @@ use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
+use CarmeloSantana\PHPAgents\Provider\Internal\TokenCount;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
 use CarmeloSantana\PHPAgents\Provider\Stream\StreamEvent;
@@ -734,7 +735,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
             return null;
         }
 
-        $count = static fn(mixed $value): ?int => is_int($value) ? $value : null;
+        $count = TokenCount::from(...);
         $prompt = $count($usage['input_tokens'] ?? null);
         $completion = $count($usage['output_tokens'] ?? null);
         $total = $count($usage['total_tokens'] ?? null);
