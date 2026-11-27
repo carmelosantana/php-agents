@@ -1,0 +1,1 @@
+{"type":"object","properties":{"pair":{"type":"array","items":[{"type":"string"}],"additionalItems":{"type":"integer"}},"additionalItems":{"type":"string"}}}

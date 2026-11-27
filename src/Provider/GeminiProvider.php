@@ -61,6 +61,7 @@ final class GeminiProvider extends AbstractProvider
         'else',
         'contains',
         'prefixItems',
+        'additionalItems',
         'propertyNames',
         'dependentSchemas',
         'dependentRequired',
