@@ -1,5 +1,13 @@
 # Upgrading
 
+## Upgrading to 0.19.1
+
+### Behaviour changes
+
+| Change | Who is affected | What to do |
+|--------|-----------------|------------|
+| `OpenAICompatibleProvider` (and the providers built on it), `AnthropicProvider`, `GeminiProvider` and `OpenAIResponsesProvider` read a usage token count sent as an integral float (`12.0`) or a string of ASCII digits (`"12"`) as that count; 0.19 read only JSON integers, so such a response reported no usage. A negative, fractional, non-finite or out-of-range number, and any other string (`"1e3"`, `" 12"`, `"-1"`), still counts as not reported | Applications that tally usage from endpoints that send counts as strings or floats | None |
+
 ## Upgrading to 0.19
 
 0.19 is additive and requires no application changes. To receive usage and request metadata
