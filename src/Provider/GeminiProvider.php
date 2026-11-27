@@ -50,7 +50,6 @@ final class GeminiProvider extends AbstractProvider
         '$defs',
         'definitions',
         'patternProperties',
-        'default',
         // Gemini's Schema has no field for these (Kanboard subtask 6482). It has `anyOf`,
         // which is kept and walked instead.
         'oneOf',

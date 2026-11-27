@@ -1135,7 +1135,8 @@ test('gemini normalises raw schemas inside combinators, defs and type arrays', f
         ->and($params['properties']['when'])->toBe(['type' => 'STRING', 'nullable' => true])
         ->and($params['properties']['pick']['anyOf'][0]['type'])->toBe('OBJECT')
         ->and($params['properties']['pick']['anyOf'][0])->not->toHaveKey('additionalProperties')
-        ->and($params['properties']['pick']['anyOf'][0]['properties']['x'])->toBe(['type' => 'STRING'])
+        // Gemini's Schema has a `default` field, so it is kept.
+        ->and($params['properties']['pick']['anyOf'][0]['properties']['x'])->toBe(['type' => 'STRING', 'default' => 'a'])
         ->and($params['properties']['pick']['anyOf'][1]['type'])->toBe('INTEGER')
         ->and($params['properties']['list']['items'])->toBe(['type' => 'OBJECT']);
 });

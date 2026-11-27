@@ -218,8 +218,8 @@ test('gemini renders a raw schema as the payload it sends', function (string $na
 
     expect(json_encode($format([$tool]), JSON_THROW_ON_ERROR))->toBe($expected);
 })->with([
-    // A nullable type array collapses to one upper-case type plus `nullable`, at depth.
-    ['type-arrays', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"since":{"type":"STRING","nullable":true},"limit":{"type":"INTEGER","minimum":1,"nullable":true}}}}]}]'],
+    // A nullable type array collapses to one upper-case type plus `nullable`, at depth; `default` is kept.
+    ['type-arrays', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"since":{"type":"STRING","default":null,"nullable":true},"limit":{"type":"INTEGER","minimum":1,"nullable":true}}}}]}]'],
     // An object nested under `items`, and the free-form `{}` that must stay an object.
     ['nested-array-objects', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"rows":{"type":"ARRAY","items":{"type":"OBJECT","properties":{"id":{"type":"STRING"},"tags":{"type":"OBJECT","properties":{}}}}}},"required":["rows"]}}]}]'],
     // `who` carries only `$ref`, which Gemini strips; the node that is left is `{}`, not `[]`.
