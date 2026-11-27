@@ -7,7 +7,7 @@ namespace CarmeloSantana\PHPAgents\Exception;
 use CarmeloSantana\PHPAgents\Security\UntrustedText;
 use Symfony\Contracts\HttpClient\Exception\RedirectionExceptionInterface;
 
-final class ProviderException extends \RuntimeException
+class ProviderException extends \RuntimeException
 {
     public static function chatFailed(string $reason, ?\Throwable $previous = null): self
     {

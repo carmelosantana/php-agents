@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace CarmeloSantana\PHPAgents\Provider;
 
+use CarmeloSantana\PHPAgents\Exception\HttpStatusException;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
 use CarmeloSantana\PHPAgents\Provider\Stream\Tick;
 use Symfony\Component\HttpClient\Exception\TimeoutException;
@@ -71,10 +72,10 @@ final class SseStreamParser
      *
      * Checks the status on the first chunk that is not a timeout, whether or not
      * the client marks it first: a 3xx throws a ProviderException
-     * refusing the redirect, and a 4xx or 5xx throws Symfony's ClientException
-     * or ServerException unchanged, so callers can still read the API error
-     * body from it. Also throws a ProviderException when any line, complete
-     * or still incomplete, grows past the line cap (before it is decoded), and
+     * refusing the redirect, and a 4xx or 5xx throws a status-only
+     * HttpStatusException before any of the body is read. Its response stays
+     * open, so a caller can read a bounded part of the API error body or cancel
+     * it. Also throws a ProviderException when any line, complete or still incomplete, grows past the line cap (before it is decoded), and
      * symfony's TimeoutException when the idle deadline passes.
      *
      * With a $tickInterval of 0.0 it waits on symfony's own `timeout` and
@@ -223,11 +224,16 @@ final class SseStreamParser
     /**
      * Throw unless the response status is 2xx.
      *
-     * A 3xx becomes ProviderException::redirectRefused(); a 4xx or 5xx
-     * propagates as the Symfony exception getHeaders() raised.
+     * A 4xx or 5xx becomes a status-only HttpStatusException without reading the body,
+     * leaving the response open for the caller; a 3xx becomes
+     * ProviderException::redirectRefused().
      */
     private function assertSuccessfulStatus(): void
     {
+        if ($this->response->getStatusCode() >= 400) {
+            throw HttpStatusException::fromResponse($this->response);
+        }
+
         try {
             $this->response->getHeaders(true);
         } catch (RedirectionExceptionInterface $e) {

@@ -2,7 +2,7 @@
 
 ## Upgrading to 0.21.0
 
-0.21 adds streamed structured output. No change is needed to upgrade.
+0.21 adds streamed structured output and status-only exceptions for streamed HTTP errors.
 
 ### Added
 
@@ -17,6 +17,12 @@
 implement `StructuredStreaming`. `CliProvider` does not. `ProviderInterface` is unchanged, so custom
 providers and decorators need no change; a decorator that should stream structured output
 implements `StructuredStreaming` itself.
+
+### Behaviour changes
+
+| Change | Who is affected | What to do |
+|--------|-----------------|------------|
+| A 4xx or 5xx answer to `stream()`, `streamEvents()` or `structuredEvents()` throws `Exception\HttpStatusException` (`ClientHttpStatusException` for 4xx, `ServerHttpStatusException` for 5xx) before any of the body is read; 0.20 threw symfony's `ClientException` or `ServerException`, which downloaded and parsed the body into its message. The new message names the status only (`Provider returned HTTP 429`). It extends `ProviderException`, implements symfony's `ClientExceptionInterface` or `ServerExceptionInterface`, and has `getStatusCode()` and `getResponse()`, whose response stays open. The agent still reads at most 64 KiB for its `API response:` line, then cancels the response | Code that catches a streamed HTTP error and reads its message or response | Catches on the symfony interfaces keep working. Read the body from `getResponse()` with a bound if you need it; a caller that does not want the body calls `getResponse()->cancel()`. `ProviderException` is no longer `final` |
 
 ## Upgrading to 0.20.1
 
