@@ -6,10 +6,12 @@ namespace CarmeloSantana\PHPAgents\Provider;
 
 use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
+use CarmeloSantana\PHPAgents\Contract\StructuredStreaming;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Image\Internal\PublicImageDownloader;
+use CarmeloSantana\PHPAgents\Provider\Internal\StructuredStream;
 use CarmeloSantana\PHPAgents\Provider\Internal\TokenCount;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
@@ -40,7 +42,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * Scope: Core chat + tools + base64 images via inlineData.
  * Future: video input, File API (fileData), grounding, code execution.
  */
-final class GeminiProvider extends AbstractProvider
+final class GeminiProvider extends AbstractProvider implements StructuredStreaming
 {
     /** JSON Schema keywords unsupported by Gemini. */
     private const UNSUPPORTED_KEYWORDS = [
@@ -323,16 +325,36 @@ final class GeminiProvider extends AbstractProvider
     public function structured(array $messages, string $schema, array $options = []): mixed
     {
         $options[UsageReport::OPERATION_OPTION] = 'structured';
+
+        return $this->chat($messages, [], $this->structuredOptions($schema, $options));
+    }
+
+    public function structuredEvents(array $messages, string $schema, array $options = []): iterable
+    {
+        $options[UsageReport::OPERATION_OPTION] = 'structured_stream';
+
+        return StructuredStream::fromText($this->streamEvents($messages, [], $this->structuredOptions($schema, $options)));
+    }
+
+    /**
+     * The options structured() and structuredEvents() send: $options with a JSON responseSchema
+     * in generationConfig, or $options unchanged when $schema is not JSON or names no schema.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function structuredOptions(string $schema, array $options): array
+    {
         $schemaData = json_decode($schema, true);
         if ($schemaData === null) {
-            return $this->chat($messages, [], $options);
+            return $options;
         }
 
         // Use generationConfig with response_mime_type for structured output
         $responseSchema = $schemaData['schema'] ?? $schemaData['parameters'] ?? $schemaData;
 
         if (!is_array($responseSchema)) {
-            return $this->chat($messages, [], $options);
+            return $options;
         }
 
         // responseSchema is the same Gemini Schema a function declaration's parameters are,
@@ -356,7 +378,7 @@ final class GeminiProvider extends AbstractProvider
             ],
         );
 
-        return $this->chat($messages, [], $options);
+        return $options;
     }
 
     /**

@@ -6,10 +6,12 @@ namespace CarmeloSantana\PHPAgents\Provider;
 
 use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\MessageInterface;
+use CarmeloSantana\PHPAgents\Contract\StructuredStreaming;
 use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Enum\Role;
 use CarmeloSantana\PHPAgents\Exception\ProviderException;
+use CarmeloSantana\PHPAgents\Provider\Internal\StructuredStream;
 use CarmeloSantana\PHPAgents\Provider\Internal\TokenCount;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\ReasoningDelta;
@@ -39,7 +41,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * - Response uses `output` array of items (not choices[0].message)
  * - Streaming uses different event types (response.output_text.delta, etc.)
  */
-final class OpenAIResponsesProvider extends AbstractProvider
+final class OpenAIResponsesProvider extends AbstractProvider implements StructuredStreaming
 {
     public function __construct(
         string $model,
@@ -373,11 +375,46 @@ final class OpenAIResponsesProvider extends AbstractProvider
 
     public function structured(array $messages, string $schema, array $options = []): mixed
     {
-        $schemaData = json_decode($schema, true);
-        if ($schemaData === null) {
+        $request = $this->structuredRequest($schema, $options);
+        if ($request === null) {
             $options[UsageReport::OPERATION_OPTION] = 'structured';
 
             return $this->chat($messages, [], $options);
+        }
+        [$toolName, $options] = $request;
+
+        return $this->requestResponse($this->buildPayload($messages, $options), 'structured', $toolName);
+    }
+
+    public function structuredEvents(array $messages, string $schema, array $options = []): iterable
+    {
+        $request = $this->structuredRequest($schema, $options);
+        if ($request === null) {
+            $options[UsageReport::OPERATION_OPTION] = 'structured_stream';
+
+            return StructuredStream::fromText($this->streamEvents($messages, [], $options));
+        }
+        [$toolName, $options] = $request;
+        $options[UsageReport::OPERATION_OPTION] = 'structured_stream';
+
+        return StructuredStream::fromFunction(
+            $this->streamEvents($messages, [], $options),
+            is_scalar($toolName) ? (string) $toolName : '',
+        );
+    }
+
+    /**
+     * The forced function structured() and structuredEvents() send, as its name and the request
+     * options that declare and force it; null when $schema is not JSON.
+     *
+     * @param array<string, mixed> $options
+     * @return array{0: mixed, 1: array<string, mixed>}|null
+     */
+    private function structuredRequest(string $schema, array $options): ?array
+    {
+        $schemaData = json_decode($schema, true);
+        if ($schemaData === null) {
+            return null;
         }
         unset($options[UsageReport::OPERATION_OPTION]);
 
@@ -389,7 +426,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
             $inputSchema['type'] = 'object';
         }
 
-        $payload = $this->buildPayload($messages, [
+        return [$toolName, [
             'tools' => [
                 [
                     'type' => 'function',
@@ -400,9 +437,7 @@ final class OpenAIResponsesProvider extends AbstractProvider
             ],
             'tool_choice' => ['type' => 'function', 'name' => $toolName],
             ...$options,
-        ]);
-
-        return $this->requestResponse($payload, 'structured', $toolName);
+        ]];
     }
 
     /**
