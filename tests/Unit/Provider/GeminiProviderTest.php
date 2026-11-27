@@ -1140,6 +1140,33 @@ test('gemini normalises raw schemas inside combinators, defs and type arrays', f
         ->and($params['properties']['list']['items'])->toBe(['type' => 'OBJECT']);
 });
 
+test('gemini strips x- extension keywords at every node the walk reaches', function () {
+    $requestPayload = null;
+    $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {
+        $requestPayload = json_decode($options['body'], true);
+        return mockGeminiResponse();
+    });
+    $provider = new GeminiProvider(apiKey: 'test-key', httpClient: $mockClient);
+    // `x-` at the root, on a property, in an `anyOf` branch and under `items`; `x-foo` is also
+    // the *name* of a property, which keeps its name and loses only its own extension keyword.
+    $schema = json_decode('{"type":"object","x-root":true,"properties":{"region":{"type":"string","x-mcp-header":"Region"},"pick":{"anyOf":[{"type":"string","x-a":1},{"type":"integer"}]},"list":{"type":"array","items":{"type":"string","x-b":{"c":1}}},"x-foo":{"type":"string","x-bar":"y"}},"required":["x-foo"]}', true);
+    $tool = new \CarmeloSantana\PHPAgents\Tool\SchemaTool('raw', 'Raw.', $schema, fn(array $a) => \CarmeloSantana\PHPAgents\Tool\ToolResult::success('x'));
+
+    $provider->chat([new \CarmeloSantana\PHPAgents\Message\UserMessage('hi')], [$tool]);
+    $params = $requestPayload['tools'][0]['functionDeclarations'][0]['parameters'];
+
+    expect($params)->toBe([
+        'type' => 'OBJECT',
+        'properties' => [
+            'region' => ['type' => 'STRING'],
+            'pick' => ['anyOf' => [['type' => 'STRING'], ['type' => 'INTEGER']]],
+            'list' => ['type' => 'ARRAY', 'items' => ['type' => 'STRING']],
+            'x-foo' => ['type' => 'STRING'],
+        ],
+        'required' => ['x-foo'],
+    ]);
+});
+
 test('gemini tool formatting survives stdClass nodes inside parameters', function () {
     $requestPayload = null;
     $mockClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requestPayload): MockResponse {

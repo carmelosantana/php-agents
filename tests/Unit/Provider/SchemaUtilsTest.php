@@ -38,6 +38,16 @@ test('stripKeywords ignores missing keywords', function () {
     expect($result)->toBe(['type' => 'integer']);
 });
 
+// --- stripKeywordsWithPrefix ---
+
+test('stripKeywordsWithPrefix removes every keyword that starts with the prefix', function () {
+    $schema = ['type' => 'string', 'x-mcp-header' => 'Region', 'x-' => 1, 'max-x-' => 2, 0 => 'list'];
+
+    $result = SchemaUtils::stripKeywordsWithPrefix($schema, 'x-');
+
+    expect($result)->toBe(['type' => 'string', 'max-x-' => 2, 0 => 'list']);
+});
+
 // --- flattenCombinator ---
 
 test('flattenCombinator picks first non-null variant', function () {

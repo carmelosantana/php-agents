@@ -757,14 +757,15 @@ final class GeminiProvider extends AbstractProvider
      * descends through the members of `properties`, a single-schema `items` and the
      * `anyOf` branches, so a raw schema's nested nodes are normalised as well as its
      * top level. stripKeywords then unsets each UNSUPPORTED_KEYWORDS keyword — `$defs`,
-     * `oneOf`, `not` and `if` among them — on each node the walk reaches, and
-     * whatever the keyword holds goes with it. A child node left with nothing
-     * becomes `{}` in normalizeChildForGemini(). A subschema under a keyword the
+     * `oneOf`, `not` and `if` among them — and stripKeywordsWithPrefix every `x-`
+     * extension keyword, on each node the walk reaches, and whatever the keyword holds
+     * goes with it. A child node left with nothing becomes `{}` in
+     * normalizeChildForGemini(). A subschema under a keyword the
      * walk neither descends into nor strips, such as `unevaluatedProperties`, is
      * passed through unchanged.
      *
      * stripKeywords acts on the node, not on its `properties` map, whose members are
-     * walked one by one: a property named `not` or `oneOf` keeps its name and is
+     * walked one by one: a property named `not`, `oneOf` or `x-foo` keeps its name and is
      * normalised, and a `required` list naming it is left as it is.
      *
      * JsonSchemaRepair restores an empty `{}` as a `\stdClass`, and casts to one a
@@ -828,7 +829,10 @@ final class GeminiProvider extends AbstractProvider
             }
         }
 
-        return SchemaUtils::stripKeywords($schema, self::UNSUPPORTED_KEYWORDS);
+        return SchemaUtils::stripKeywordsWithPrefix(
+            SchemaUtils::stripKeywords($schema, self::UNSUPPORTED_KEYWORDS),
+            'x-',
+        );
     }
 
     /**

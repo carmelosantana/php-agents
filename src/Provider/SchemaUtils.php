@@ -30,6 +30,25 @@ final class SchemaUtils
     }
 
     /**
+     * Strip every keyword that starts with the given prefix from a schema node.
+     *
+     * Integer keys are never stripped.
+     *
+     * @param array<array-key, mixed> $schema
+     * @return array<array-key, mixed>
+     */
+    public static function stripKeywordsWithPrefix(array $schema, string $prefix): array
+    {
+        foreach (array_keys($schema) as $key) {
+            if (is_string($key) && str_starts_with($key, $prefix)) {
+                unset($schema[$key]);
+            }
+        }
+
+        return $schema;
+    }
+
+    /**
      * Flatten a union combinator (anyOf/oneOf/allOf) into a single type.
      *
      * Picks the first non-null variant and merges its fields into the
