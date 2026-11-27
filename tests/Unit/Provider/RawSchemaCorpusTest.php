@@ -398,8 +398,6 @@ test('llama.cpp puts required only on objects and never emits a list for propert
 test('the corpus runs every provider that formats a tool schema', function () {
     $exercised = ['AnthropicProvider', 'GeminiProvider', 'LlamaServerProvider', 'MistralProvider', 'OllamaProvider', 'OpenAICompatibleProvider', 'OpenAIResponsesProvider', 'XAIProvider'];
     $sendNoToolSchema = [
-        // Formats tools through LlamaCppToolSchemaNormalizer, which the corpus runs directly.
-        'LlamaCppProvider',
         // Hands ToolInterface objects to a CLI vendor adapter; the one adapter there is,
         // ClaudeCliVendorAdapter, runs the binary with its tools off and formats no schema.
         'CliProvider',
