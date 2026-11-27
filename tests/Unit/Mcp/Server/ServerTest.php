@@ -158,11 +158,11 @@ it('rejects malformed tool call parameters', function (mixed $params): void {
     'null arguments' => [['name' => 'anything', 'arguments' => null]],
 ]);
 
-// Mutation: report ToolError as a JSON-RPC error or include the exception message.
-it('returns a tool error result while keeping exception details private', function (): void {
+// Mutation: report ToolError as a JSON-RPC error, or replace its message with a generic one.
+it('returns a ToolError message as a tool error result', function (): void {
     $registry = new ToolRegistry();
     $registry->add(new Tool('task', 'Task actions', ['type' => 'object'], function (): never {
-        throw new ToolError('Access denied for secret-sentinel');
+        throw new ToolError('Access denied');
     }, profiles: ['core']));
 
     $reply = mcpDispatch(new Server($registry), 'tools/call', ['name' => 'task']);
@@ -170,8 +170,41 @@ it('returns a tool error result while keeping exception details private', functi
     expect($reply)->toBe([
         'jsonrpc' => '2.0',
         'id' => 17,
-        'result' => ['content' => [['type' => 'text', 'text' => 'tool failed']], 'isError' => true],
+        'result' => ['content' => [['type' => 'text', 'text' => 'Access denied']], 'isError' => true],
     ]);
+});
+
+// Mutation: drop the code or data, or add structuredContent when no code was given.
+it('returns a ToolError code and data as structured content', function (): void {
+    $registry = new ToolRegistry();
+    $registry->add(new Tool('context', 'Context', ['type' => 'object'], function (): never {
+        throw new ToolError('Over budget', -32001, ['needed' => 900, 'budget' => 500]);
+    }, profiles: ['core']));
+
+    $reply = mcpDispatch(new Server($registry), 'tools/call', ['name' => 'context']);
+
+    expect($reply['result'])->toBe([
+        'content' => [['type' => 'text', 'text' => 'Over budget']],
+        'isError' => true,
+        'structuredContent' => [
+            'code' => -32001,
+            'message' => 'Over budget',
+            'data' => ['needed' => 900, 'budget' => 500],
+        ],
+    ]);
+});
+
+// Mutation: let a ToolError's previous exception message reach the client.
+it('keeps a ToolError previous exception private', function (): void {
+    $registry = new ToolRegistry();
+    $registry->add(new Tool('task', 'Task actions', ['type' => 'object'], function (): never {
+        throw new ToolError('Procedure failed', previous: new \RuntimeException('secret-sentinel'));
+    }, profiles: ['core']));
+
+    $reply = mcpDispatch(new Server($registry), 'tools/call', ['name' => 'task']);
+
+    expect(json_encode($reply, JSON_THROW_ON_ERROR))->not->toContain('secret-sentinel')
+        ->and($reply['result']['content'][0]['text'])->toBe('Procedure failed');
 });
 
 // Mutation: catch only ToolError and JsonException, allowing other handler exceptions to escape.

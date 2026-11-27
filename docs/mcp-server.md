@@ -69,8 +69,14 @@ Basic with the same username and token. It returns JSON-RPC replies as JSON
 and acknowledges notifications with an empty HTTP 202 response. Use HTTPS
 for endpoints that carry credentials.
 
-Handler exceptions other than `ToolError` produce a generic `tool failed`
-result with `isError: true`. `ToolError` also receives this generic response.
+A handler reports an expected failure by throwing `ToolError`. Its message is
+sent as the text of an `isError: true` result, so only put text there that the
+caller may see. `new ToolError($message, $code, $data)` also adds
+`structuredContent: {code, message, data}`, which lets a host pass through
+error codes such as a plugin's `-32001`. A previous exception is never sent.
+
+Any other exception produces a generic `tool failed` result with
+`isError: true`.
 
 ## Log request outcomes
 
