@@ -4,25 +4,24 @@ Providers abstract the differences between LLM APIs. php-agents ships with provi
 
 ## Provider Feature Matrix
 
-| Feature | OpenAI Compatible | OpenAI Responses | Ollama | Anthropic | Gemini | xAI | Mistral | LlamaCpp (deprecated) |
-|---------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| `chat()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `stream()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `streamEvents()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `structured()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Tool calling | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Streaming + tool calls | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Image input (base64) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Image input (URL) | ✅ | ✅ | ✅ | ✅ | ✅* | ✅ | ✅ | ✅ |
-| `models()` list | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `isAvailable()` health check | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `withModel()` immutable swap | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Feature | OpenAI Compatible | OpenAI Responses | Ollama | Anthropic | Gemini | xAI | Mistral |
+|---------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| `chat()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `stream()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `streamEvents()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `structured()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Tool calling | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Streaming + tool calls | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Image input (base64) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Image input (URL) | ✅ | ✅ | ✅ | ✅ | ✅* | ✅ | ✅ |
+| `models()` list | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `isAvailable()` health check | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `withModel()` immutable swap | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 \* Gemini does not natively support URL image references. The provider auto-downloads URL images and converts them to base64 `inlineData` for seamless compatibility.
 
 `LlamaServerProvider` has the OpenAI Compatible column's features; image input needs a server
-started with a multimodal projector (`--mmproj`). The LlamaCpp column is the deprecated in-process
-FFI provider: see [LlamaCppProvider](#llamacppprovider) for what it does not deliver.
+started with a multimodal projector (`--mmproj`).
 
 **CliProvider** (the `claude` CLI vendor) runs as a raw chat completion and has a narrower profile:
 `chat()`, `stream()`, `streamEvents()`, `structured()` (best-effort JSON), `models()`, `isAvailable()`, and
@@ -80,79 +79,35 @@ server either way:
 }
 ```
 
-Without a `baseUrl`, `llama-cpp/…` still needs an injected `LocalModelRuntimeInterface` and makes the
-deprecated `LlamaCppProvider`.
+Without a `baseUrl`, `llama-cpp/…` throws an `InvalidArgumentException` that names
+`LlamaServerProvider`. The in-process llama.cpp FFI provider was removed in 0.20 (see
+[Upgrading to 0.20.0](UPGRADING.md#upgrading-to-0200)); a `LocalModelRuntimeInterface` passed to the
+factory is ignored.
 
-## LlamaCppProvider
+`LlamaCpp\LlamaCppToolCallParser` turns a tool call a model wrote as JSON text into `ToolCall`s:
+`(new LlamaCppToolCallParser())->parse($content, 'json')`.
 
-> **Deprecated in 0.18; removed or fixed in 0.20.** Use [`LlamaServerProvider`](#llamaserverprovider).
-> `LlamaCppProvider` and every class under `Runtime\LlamaCpp` are marked `@deprecated`.
->
-> - The FFI binding mirrors `llama.h` structs that llama.cpp changed after **b9174** (2026-05-16):
->   on a newer build it segfaults on the first model load. It works on b9174 and earlier.
-> - With tools it buffers the whole generation and yields it at the end. `Agent` always passes
->   its `done` tool, so under `Agent` nothing streams, and a cancel, `maxRunSeconds` and
->   `maxResponseBytes` take effect only after generation ends. The buffer has no cap. This is not
->   fixed in 0.18.
-> - The real runtime never reports a tool-use finish, so a tool call the model writes comes back
->   as text.
->
-> `LlamaCpp\LlamaCppToolCallParser` is not deprecated.
+## Image Inputs
 
-`LlamaCppProvider` is the direct local provider for llama.cpp-backed runtimes. It keeps the same message, tool, streaming, multimodal, and structured-output surface as the rest of php-agents while dispatching through a local runtime instead of HTTP.
-
-The provider is typically paired with `docs/LOCAL-RUNTIME.md`, which documents the native FFI runtime, setup steps, and the guarded integration matrix.
-
-```php
-use CarmeloSantana\PHPAgents\Provider\LlamaCppProvider;
-use CarmeloSantana\PHPAgents\Runtime\LlamaCpp\FfiLlamaCppNativeApi;
-use CarmeloSantana\PHPAgents\Runtime\LlamaCpp\LlamaCppNativeRuntime;
-
-$runtime = new LlamaCppNativeRuntime(
-    new FfiLlamaCppNativeApi(getenv('LLAMA_CPP_LIB_PATH')),
-    [],
-    ['threads' => 2, 'numCtx' => 4096],
-);
-
-$provider = new LlamaCppProvider(
-    model: getenv('LLAMA_CPP_MODEL_PATH'),
-    runtime: $runtime,
-);
-```
-
-### Native Runtime Notes
-
-- Direct text generation and streaming are handled inside the native llama.cpp runtime.
-- Strict structured output uses a JSON grammar plus schema validation at the runtime layer.
-- Image input is supported when the model has a matching projector GGUF and `libmtmd` is available.
-- The provider still owns history formatting, tool prompt injection, and tool-call parsing so the high-level provider contract remains consistent with remote backends.
-
-### Image Inputs
-
-`LlamaCppMultimodalNormalizer` reads `image_url` blocks as follows:
-
-- A `data:` URI (base64 only) is decoded and checked by an `ImagePolicy` (20 MiB and PNG, JPEG, GIF or WebP by default). An over-size URI is refused before it is decoded, and the MIME type sniffed from the bytes replaces the declared one.
-- A local path, `file://` URL or `http(s)://` URL is refused unless the host passes an `ImageResolverInterface`: `LocalImageResolver` reads only files under the roots it is given, and `RemoteImageResolver` downloads only from public addresses with time, size and redirect limits.
-- Every image a resolver returns is checked again against the normalizer's own `ImagePolicy`, even when the resolver has a policy of its own, and the MIME type sniffed from the bytes is the one sent.
-- The older `$remoteImageFetcher` callable still works for `http(s)://` when no resolver is set; it is trusted host code, and its bytes are policy checked.
-- Vision support and the image count are checked before any image is read.
-
-A normalizer takes one `ImageResolverInterface`. To accept both local paths and remote URLs, compose your own resolver that sends each reference to a `LocalImageResolver` or a `RemoteImageResolver`.
+`UserMessage::withImages()` builds `data:` URI image parts from file paths. Paths are refused unless
+you pass an `ImageResolverInterface`, which decides what may be read. `LocalImageResolver` reads only
+regular image files under the roots you give it (symlinks and `..` are judged by where they lead),
+and `RemoteImageResolver` downloads only from public addresses with time, size and redirect limits.
+`UserMessage::withImages()` takes one `ImageResolverInterface`; to accept both local paths and
+remote URLs, compose your own resolver that sends each reference to a `LocalImageResolver` or a
+`RemoteImageResolver`.
 
 ```php
 use CarmeloSantana\PHPAgents\Image\LocalImageResolver;
-use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppMultimodalNormalizer;
-use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppProjectorResolver;
+use CarmeloSantana\PHPAgents\Message\UserMessage;
 
-$provider = new LlamaCppProvider(
-    model: getenv('LLAMA_CPP_MODEL_PATH'),
-    runtime: $runtime,
-    multimodalNormalizer: new LlamaCppMultimodalNormalizer(
-        new LlamaCppProjectorResolver(),
-        imageResolver: new LocalImageResolver(['/srv/app/uploads']),
-    ),
-);
+$images = new LocalImageResolver([__DIR__ . '/images']);
+
+// A path outside the roots, or a file that is not an image, throws.
+$message = UserMessage::withImages('Describe this image.', [__DIR__ . '/images/sample.png'], $images);
 ```
+
+`UserMessage::withImages()` with paths and no resolver throws an `ImageInputException`.
 
 ## OpenAICompatibleProvider
 
@@ -659,7 +614,7 @@ Two seams keep the design open and the library dependency-free:
   catalog. One adapter per binary; `ClaudeCliVendorAdapter` is the first.
 - **`CliRuntimeInterface`** — host-supplied process executor. php-agents never calls `proc_open` (it
   depends only on `symfony/http-client` + `psr/log`); the host injects a runtime that spawns the
-  binary. This mirrors how `LocalModelRuntimeInterface` is injected for `LlamaCppProvider`, and lets
+  binary, and lets
   the host make execution event-loop/Fiber friendly (e.g. Coqui's ReactPHP runtime keeps the REPL
   spinner alive during a CLI call).
 
@@ -749,7 +704,7 @@ foreach ($provider->streamEvents($messages, $tools) as $event) {
   `ToolInputStart` and the `ToolInputDelta` events before the done item an empty `id` (and the
   start an empty `name`), and `ToolInputEnd` the real ones. Key a call by `index`; the agent fills
   the empty values from the end.
-- Providers that receive a call whole (Gemini, Ollama, the llama.cpp tool parser, CLI) emit
+- Providers that receive a call whole (Gemini, Ollama, CLI) emit
   `ToolInputStart`, one `ToolInputDelta` with the full JSON-encoded arguments, then `ToolInputEnd`.
 - Empty or whitespace-only arguments and an empty object decode to empty arguments (`{}`). Arguments
   that do not decode to a JSON object get no `ToolInputEnd`; the call is dropped, and when the response
@@ -780,7 +735,6 @@ when the next chunk arrives:
 | `OpenAICompatibleProvider` (OpenAI, OpenRouter, MiniMax and other compatible servers), `OllamaProvider`, `XAIProvider`, `MistralProvider`, `LlamaServerProvider` | ✅ | During silence |
 | `OpenAIResponsesProvider` | ✅ | During silence |
 | `GeminiProvider` | ✅ | During silence |
-| `LlamaCppProvider` (deprecated) | — | Per chunk without tools; with tools (always under `Agent`) only after generation ends |
 | `CliProvider` | — | Per chunk only |
 | Any provider on an injected HTTP client that ignores the timeout argument of symfony's `stream()` | — | Per chunk only |
 
@@ -812,7 +766,6 @@ data it throws symfony's idle-timeout `TimeoutException`, up to one `tickInterva
 | `LlamaServerProvider` without a usage chunk | `timings`: `prompt_n + cache_n`, `predicted_n`; total is their sum | `cache_n` / `null` | `null` |
 | `OpenAIResponsesProvider` | `input_tokens`, `output_tokens`, `total_tokens` | `input_tokens_details.cached_tokens` / `null` | `output_tokens_details.reasoning_tokens` |
 | `GeminiProvider` | `promptTokenCount`, `candidatesTokenCount + thoughtsTokenCount`, `totalTokenCount` | `cachedContentTokenCount` / `null` | `thoughtsTokenCount` |
-| `LlamaCppProvider` | Prompt and generated token counts from the runtime | `null` | `null` |
 | `CliProvider` | The CLI's input plus cache tokens, and output tokens | `null` | `null` |
 
 ### Raw finish reasons
@@ -828,7 +781,6 @@ and bidi characters into spaces and cuts them to 128 characters plus `…` (see 
 | `OpenAICompatibleProvider` family | `finish_reason` |
 | `OpenAIResponsesProvider` | `'completed'`, the `incomplete_details.reason` of an incomplete response (`'incomplete'` without one), or `'failed'` |
 | `GeminiProvider` | The candidate's `finishReason`, or `promptFeedback.blockReason` for a blocked prompt |
-| `LlamaCppProvider` | The runtime's finish reason value |
 | `CliProvider` | `''` |
 
 ## Usage listener
@@ -862,7 +814,7 @@ request throws, ends with `ProviderFinishReason::Error`, or the stream is destro
 includes the consumer's own pace between chunks and ends at `Finish`, an exception or generator
 destruction.
 
-Reporting covers model generation. Embeddings, the deprecated `LlamaCppProvider`, model
+Reporting covers model generation. Embeddings, model
 discovery, availability checks, Ollama model management, Gemini image downloads and MCP
 traffic are outside its scope.
 
@@ -883,10 +835,9 @@ Every HTTP request a provider or embedding provider sends through its HTTP clien
 
 The limits hold for an injected client that honours symfony/http-client's `max_redirects`, `max_duration`, `on_progress` and `resolve` options. A client that ignores them does not get them; Coqui's ReactPHP adapter is the known case. The Gemini image download uses its own client (see [Gemini Image URLs](#gemini-image-urls)), so its checks always hold.
 
-Two requests are outside `RequestLimits`:
+One provider sends no request through `RequestLimits`:
 
 - `CliProvider` runs a local command and sends no HTTP request; of its `requestLimits:` constructor argument only `maxResponseBytes` (on the process's stdout) and the tool-argument caps apply. `streamEvents()` stops reading the process stream once its output passes `maxResponseBytes`, and `chat()` refuses a larger result, each with a `ProviderException` whose message contains `exceeded`. A runtime's `run()` (the non-streaming path) buffers the whole output before `chat()` can check it, so a host that needs a hard bound there enforces it in its `CliRuntimeInterface` as well. `ProviderFactory` builds a `CliProvider` with the default `RequestLimits` (32 MiB output, 4 MiB / depth 64 tool arguments) and no config key changes them; call `withRequestLimits()` on the provider it returns to raise or lower them.
-- `LlamaCppProvider` runs the model in-process. `LlamaCppMultimodalNormalizer` refuses a remote `image_url` unless the host configures an `ImageResolverInterface` (such as `RemoteImageResolver`, which applies its own limits) or the legacy `$remoteImageFetcher`; see [Image Inputs](#image-inputs).
 
 `gethostbynamel()` and `dns_get_record()`, which the Gemini image check and `RemoteImageResolver` call, block and are not covered by any of these limits.
 
@@ -912,7 +863,7 @@ $provider = $provider->withRequestLimits(new RequestLimits(maxDuration: 45.0));
 $provider->requestLimits()->maxDuration; // 45.0
 ```
 
-A tool call whose arguments are over `maxToolArgumentBytes` or `maxToolArgumentDepth` is dropped, in `streamEvents()`, `stream()` and `chat()`, exactly like a call whose arguments are not a JSON object: a response that would have finished `ToolUse` finishes `Error`, and the agent discards the call with reason `invalid_arguments`. Streamed arguments are decoded once, after the cap check. While a call streams, its fragments are counted as they arrive: once they pass `maxToolArgumentBytes` the provider (OpenAI-compatible and its subclasses, Anthropic, Responses) stops keeping and yielding that call's argument deltas, reads the rest of the response, and drops the call at its end. Gemini and `CliProvider`, which deliver a call whole, check it before yielding its single delta, so a dropped call gets a `ToolInputStart` and no delta. The bundled HTTP providers apply both caps, and so does `CliProvider`, from the `RequestLimits` passed as its optional fourth constructor argument (`requestLimits:`) or set with its `withRequestLimits()`; a `Stop` that carried a dropped call finishes `Error` there, in `chat()` as in `streamEvents()`. `LlamaCppProvider` parses tool calls its own way and does not.
+A tool call whose arguments are over `maxToolArgumentBytes` or `maxToolArgumentDepth` is dropped, in `streamEvents()`, `stream()` and `chat()`, exactly like a call whose arguments are not a JSON object: a response that would have finished `ToolUse` finishes `Error`, and the agent discards the call with reason `invalid_arguments`. Streamed arguments are decoded once, after the cap check. While a call streams, its fragments are counted as they arrive: once they pass `maxToolArgumentBytes` the provider (OpenAI-compatible and its subclasses, Anthropic, Responses) stops keeping and yielding that call's argument deltas, reads the rest of the response, and drops the call at its end. Gemini and `CliProvider`, which deliver a call whole, check it before yielding its single delta, so a dropped call gets a `ToolInputStart` and no delta. The bundled HTTP providers apply both caps, and so does `CliProvider`, from the `RequestLimits` passed as its optional fourth constructor argument (`requestLimits:`) or set with its `withRequestLimits()`; a `Stop` that carried a dropped call finishes `Error` there, in `chat()` as in `streamEvents()`.
 
 One streamed response may open at most `RequestLimits::MAX_TOOL_CALLS_PER_RESPONSE` (1024) tool calls; this is fixed, not a constructor limit. Past it, the providers that keep per-call state while streaming (OpenAI-compatible and its subclasses, Responses, and Anthropic, where every content block counts) stop reading, cancel the response and yield `Finish(Error)` with raw reason `tool_call_overflow`, so the agent ends the run `Error` and runs none of the calls. `StreamProjector` (and so `stream()`) also keeps at most that many calls and then ends with an `Error` response.
 

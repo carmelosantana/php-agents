@@ -17,8 +17,7 @@ decision for the maintainer, not a refactor.
 | Static analysis (PHPStan) | `composer analyse` |
 | Both, as CI runs them | `./scripts/ci-test.sh` |
 
-Both must pass before every commit. Native llama.cpp tests skip unless their env vars are set
-(see `docs/LOCAL-RUNTIME.md`).
+Both must pass before every commit.
 
 ## Rules
 

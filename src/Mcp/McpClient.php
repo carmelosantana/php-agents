@@ -75,7 +75,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  */
 final class McpClient implements McpClientInterface
 {
-    public const CLIENT_VERSION = '0.19.1';
+    public const CLIENT_VERSION = '0.20.0';
 
     private const MAX_PAGES = 100;
 

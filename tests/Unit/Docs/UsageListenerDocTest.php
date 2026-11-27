@@ -28,10 +28,8 @@ test('UsageListenerDoc the README example prints usage for one request', functio
         ->and($result['requests'])->toBe(1);
 });
 
-test('UsageListenerDoc the upgrade guide covers 0.19 and schedules the FFI change for 0.20', function () {
+test('UsageListenerDoc the upgrade guide covers 0.19', function () {
     $upgrading = (string) file_get_contents(dirname(__DIR__, 3) . '/docs/UPGRADING.md');
 
-    expect($upgrading)->toContain("## Upgrading to 0.19\n")
-        ->toContain('removed or fixed in 0.20')
-        ->not->toContain('removed or fixed in 0.19');
+    expect($upgrading)->toContain("## Upgrading to 0.19\n");
 });

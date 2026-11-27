@@ -2,11 +2,9 @@
 
 declare(strict_types=1);
 
-use CarmeloSantana\PHPAgents\Contract\ToolInterface;
 use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
-use CarmeloSantana\PHPAgents\Provider\LlamaCpp\LlamaCppToolSchemaNormalizer;
 use CarmeloSantana\PHPAgents\Provider\MistralProvider;
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
 use CarmeloSantana\PHPAgents\Provider\OpenAICompatibleProvider;
@@ -55,10 +53,6 @@ function rawSchemaFormatters(): array
         'anthropic' => $via(new AnthropicProvider(httpClient: $http)),
         'ollama' => $via(new OllamaProvider(httpClient: $http)),
         'gemini' => $via(new GeminiProvider(httpClient: $http)),
-        'llama-cpp' => static fn(array $tools): mixed => array_map(
-            static fn($d): array => ['parameters' => $d->parameters],
-            (new LlamaCppToolSchemaNormalizer())->normalize($tools),
-        ),
     ];
 }
 
@@ -133,8 +127,7 @@ function listsWhereObjectsBelong(mixed $node, string $path = '$'): array
  * Where each formatter puts the one tool it was given: [path to its schema, path to its name].
  *
  * The corpus's other assertion is a negative, which an empty payload satisfies. These paths are
- * the positive half — a formatter that dropped the tool, or dropped its schema, fails here. The
- * llama-cpp entry has no name path because that formatter projects only `parameters`.
+ * the positive half — a formatter that dropped the tool, or dropped its schema, fails here.
  *
  * @return array<string, array{string, ?string}>
  */
@@ -149,7 +142,6 @@ function rawSchemaToolPins(): array
         'anthropic' => ['input_schema', 'name'],
         'ollama' => ['function.parameters', 'function.name'],
         'gemini' => ['functionDeclarations.0.parameters', 'functionDeclarations.0.name'],
-        'llama-cpp' => ['parameters', null],
     ];
 }
 
@@ -340,57 +332,6 @@ test('gemini structured() sends every raw schema without a list where an object 
         ->and(geminiSchemaDefects($responseSchema))->toBe([], 'gemini structured() emitted what its Schema rejects for ' . basename($file));
 })->with(rawSchemaFixtures());
 
-/**
- * A tool whose toFunctionSchema() puts something other than a schema array in `parameters`.
- *
- * SchemaTool and Tool both always produce an array there, so the normalizer's fallback is not
- * reachable through them — but ToolInterface is public and its implementations are not all in
- * this repo, which is what the fallback is for.
- */
-final class NonArrayParametersTool implements ToolInterface
-{
-    public function name(): string
-    {
-        return 'raw_tool';
-    }
-
-    public function description(): string
-    {
-        return 'Raw.';
-    }
-
-    public function parameters(): array
-    {
-        return [];
-    }
-
-    public function execute(array $input): ToolResult
-    {
-        return ToolResult::success('x');
-    }
-
-    /** @return array<string, mixed> */
-    public function toFunctionSchema(): array
-    {
-        return ['type' => 'function', 'function' => ['name' => 'raw_tool', 'description' => 'Raw.', 'parameters' => 'not a schema']];
-    }
-}
-
-test('llama.cpp falls back to a closed, empty object when parameters are not a schema array', function () {
-    $parameters = (new LlamaCppToolSchemaNormalizer())->normalize([new NonArrayParametersTool()])[0]->parameters;
-
-    expect(json_encode($parameters, JSON_THROW_ON_ERROR))
-        ->toBe('{"type":"object","properties":{},"additionalProperties":false,"required":[]}');
-});
-
-test('llama.cpp puts required only on objects and never emits a list for properties', function () {
-    $tool = new SchemaTool('raw_tool', 'Raw.', ['type' => 'object', 'properties' => ['q' => ['type' => 'string']]], fn(array $a): ToolResult => ToolResult::success('x'));
-    $params = (new LlamaCppToolSchemaNormalizer())->normalize([$tool])[0]->parameters;
-
-    expect($params['required'])->toBe([])
-        ->and($params['properties']['q'])->not->toHaveKey('required');
-});
-
 // The corpus is only a safety net for the providers it runs. This reads the provider classes
 // off disk rather than from the corpus's own list, so a provider added anywhere under
 // src/Provider — subdirectories included — fails here until someone decides which side of the
@@ -398,8 +339,6 @@ test('llama.cpp puts required only on objects and never emits a list for propert
 test('the corpus runs every provider that formats a tool schema', function () {
     $exercised = ['AnthropicProvider', 'GeminiProvider', 'LlamaServerProvider', 'MistralProvider', 'OllamaProvider', 'OpenAICompatibleProvider', 'OpenAIResponsesProvider', 'XAIProvider'];
     $sendNoToolSchema = [
-        // Formats tools through LlamaCppToolSchemaNormalizer, which the corpus runs directly.
-        'LlamaCppProvider',
         // Hands ToolInterface objects to a CLI vendor adapter; the one adapter there is,
         // ClaudeCliVendorAdapter, runs the binary with its tools off and formats no schema.
         'CliProvider',
@@ -433,7 +372,7 @@ test('the corpus runs every provider that formats a tool schema', function () {
     sort($accounted);
 
     expect($found)->toBe($accounted)
-        ->and(array_keys(rawSchemaFormatters()))->toHaveCount(count($exercised) + 1);
+        ->and(array_keys(rawSchemaFormatters()))->toHaveCount(count($exercised));
 });
 
 // The predicate is the corpus's oracle, so it gets its own probes: a synthetic `[]` planted at

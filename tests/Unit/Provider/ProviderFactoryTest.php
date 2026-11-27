@@ -6,7 +6,6 @@ use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\ConfigInterface;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
-use CarmeloSantana\PHPAgents\Provider\LlamaCppProvider;
 use CarmeloSantana\PHPAgents\Provider\LlamaServerProvider;
 use CarmeloSantana\PHPAgents\Provider\MistralProvider;
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
@@ -98,16 +97,6 @@ test('fromModelString routes ollama to OllamaProvider', function () {
     expect($provider->getModel())->toBe('llama3.2');
 });
 
-test('fromModelString routes llama-cpp to LlamaCppProvider when a runtime is injected', function () {
-    $runtime = new FakeLocalModelRuntime();
-    $runtime->registerModel(new RuntimeModelMetadata(id: 'local-llama', name: 'Local Llama'));
-
-    $provider = ProviderFactory::fromModelString('llama-cpp/local-llama', null, null, $runtime);
-
-    expect($provider)->toBeInstanceOf(LlamaCppProvider::class)
-        ->and($provider->getModel())->toBe('local-llama');
-});
-
 test('fromModelString routes llama-cpp with a configured baseUrl to LlamaServerProvider', function (string $prefix) {
     $requests = [];
     $client = new MockHttpClient(function (string $method, string $url, array $options) use (&$requests): MockResponse {
@@ -149,126 +138,19 @@ test('a model llama-server discovers round-trips through fromModelString to the 
         ->and($requests[1])->toBe('http://127.0.0.1:18089/v1/models');
 })->with(['factory llama-cpp' => 'llama-cpp', 'factory llamacpp' => 'llamacpp', 'constructed directly' => null]);
 
-test('fromModelString without a baseUrl or a local runtime names both ways to configure llama-cpp', function () {
-    ProviderFactory::fromModelString('llama-cpp/qwen2.5');
-})->throws(\InvalidArgumentException::class, 'baseUrl');
+test('llama-cpp without a baseUrl throws an exception that names LlamaServerProvider', function (bool $withRuntime) {
+    // 0.20 removed the in-process FFI provider; an injected local runtime no longer makes a provider.
+    $runtime = $withRuntime ? new FakeLocalModelRuntime() : null;
 
-test('factory instance uses bound local runtime for llama-cpp models', function () {
-    $runtime = new FakeLocalModelRuntime();
-    $runtime->registerModel(new RuntimeModelMetadata(id: 'local-llama', name: 'Local Llama'));
+    expect(fn() => ProviderFactory::fromModelString('llama-cpp/qwen2.5', null, null, $runtime))
+        ->toThrow(\InvalidArgumentException::class, 'llama-cpp provider requires a baseUrl for llama-server (e.g. http://localhost:8080/v1); it makes a LlamaServerProvider. The in-process llama.cpp FFI provider was removed in 0.20.');
+})->with(['no runtime' => false, 'runtime injected' => true]);
 
-    $factory = new ProviderFactory(localModelRuntime: $runtime);
-    $provider = $factory->create('llama-cpp/local-llama');
+test('a factory instance with a bound local runtime still needs a baseUrl for llama-cpp', function () {
+    $factory = new ProviderFactory(localModelRuntime: new FakeLocalModelRuntime());
 
-    expect($provider)->toBeInstanceOf(LlamaCppProvider::class)
-        ->and($provider->getModel())->toBe('local-llama');
-});
-
-test('llama-cpp factory branch applies numCtx from model definition when present', function () {
-    $runtime = new FakeLocalModelRuntime();
-    $runtime->registerModel(new RuntimeModelMetadata(id: 'local-llama', name: 'Local Llama', defaultTemplate: 'baseline'));
-
-    $config = makeProviderFactoryConfig([], [
-        'local-llama' => new ModelDefinition(
-            id: 'local-llama',
-            name: 'Local Llama',
-            provider: 'llama-cpp',
-            numCtx: 16384,
-        ),
-    ]);
-
-    $provider = ProviderFactory::fromModelString('llama-cpp/local-llama', $config, null, $runtime);
-
-    expect($provider)->toBeInstanceOf(LlamaCppProvider::class);
-});
-
-test('llama-cpp factory forwards template and parser overrides from config into provider execution', function () {
-    $runtime = new FakeLocalModelRuntime();
-    $runtime->registerModel(
-        new RuntimeModelMetadata(id: 'factory-local', name: 'Factory Local', defaultTemplate: 'raw'),
-        ['responses' => ['*' => [new RuntimeCompletionChunk(content: 'ok')]]],
-    );
-
-    $config = makeProviderFactoryConfig([
-        'llama-cpp' => [
-            'defaultTemplate' => 'chatml',
-            'defaultToolParser' => 'json',
-        ],
-    ], [
-        'factory-local' => new ModelDefinition(
-            id: 'factory-local',
-            name: 'Factory Local',
-            provider: 'llama-cpp',
-            extras: [
-                'template' => 'baseline',
-                'toolParser' => 'native',
-            ],
-        ),
-    ]);
-
-    $provider = ProviderFactory::fromModelString('llama-cpp/factory-local', $config, null, $runtime);
-    $provider->chat([new UserMessage('Factory prompt')]);
-
-    expect($runtime->lastRequest()?->prompt)->toBe(implode("\n\n", [
-        'USER: Factory prompt',
-        'ASSISTANT:',
-    ]))
-        ->and($runtime->lastRequest()?->options['template'])->toBe('baseline')
-        ->and($runtime->lastRequest()?->options)->not->toHaveKey('toolParser');
-});
-
-test('llama-cpp factory forwards multimodal and structured output config overrides', function () {
-    $runtime = new FakeLocalModelRuntime();
-    $runtime->registerModel(
-        new RuntimeModelMetadata(
-            id: 'factory-vision-structured',
-            name: 'Factory Vision Structured',
-            defaultTemplate: 'baseline',
-            supportsVision: true,
-        ),
-        [
-            'supportsStructuredOutput' => true,
-            'responses' => ['*' => [new RuntimeCompletionChunk(content: '{}')]],
-        ],
-    );
-
-    $config = makeProviderFactoryConfig([
-        'llama-cpp' => [
-            'defaultTemplate' => 'baseline',
-        ],
-    ], [
-        'factory-vision-structured' => new ModelDefinition(
-            id: 'factory-vision-structured',
-            name: 'Factory Vision Structured',
-            provider: 'llama-cpp',
-            extras: [
-                'projectorPath' => '/models/factory.mmproj',
-                'maxImages' => 2,
-                'imageTokenCost' => 256,
-                'structuredOutputModes' => ['json_schema'],
-                'supportsStructuredOutput' => true,
-            ],
-        ),
-    ]);
-
-    $provider = ProviderFactory::fromModelString('llama-cpp/factory-vision-structured', $config, null, $runtime);
-    $provider->structured(
-        [new UserMessage('Return empty object')],
-        json_encode(['name' => 'empty', 'schema' => ['type' => 'object']], JSON_THROW_ON_ERROR),
-    );
-
-    expect($runtime->lastRequest()?->structuredOutput?->strict)->toBeTrue();
-
-    $provider->chat([
-        new UserMessage([
-            ['type' => 'text', 'text' => 'See'],
-            ['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,' . base64_encode(ImageFixtures::png())]],
-        ]),
-    ]);
-
-    expect($runtime->lastRequest()?->options['projectorPath'])->toBe('/models/factory.mmproj')
-        ->and($runtime->lastRequest()?->options['imageTokenEstimate'])->toBe(256);
-});
+    $factory->create('llama-cpp/local-llama');
+})->throws(\InvalidArgumentException::class, 'LlamaServerProvider');
 
 test('fromModelString routes anthropic to AnthropicProvider', function () {
     $provider = ProviderFactory::fromModelString('anthropic/claude-sonnet-4-5');

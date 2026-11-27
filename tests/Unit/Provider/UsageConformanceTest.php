@@ -7,7 +7,6 @@ use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 use CarmeloSantana\PHPAgents\Provider\CliProvider;
 use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
-use CarmeloSantana\PHPAgents\Provider\LlamaCppProvider;
 use CarmeloSantana\PHPAgents\Provider\LlamaServerProvider;
 use CarmeloSantana\PHPAgents\Provider\MistralProvider;
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;
@@ -36,7 +35,7 @@ test('UsageConformance every provider has a fixture', function () {
     $discovered = [];
     foreach (glob(__DIR__ . '/../../../src/Provider/*.php') as $file) {
         $class = 'CarmeloSantana\\PHPAgents\\Provider\\' . basename($file, '.php');
-        if ($class === LlamaCppProvider::class || !is_subclass_of($class, ProviderInterface::class)) {
+        if (!is_subclass_of($class, ProviderInterface::class)) {
             continue;
         }
 

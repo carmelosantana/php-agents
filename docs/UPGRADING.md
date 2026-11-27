@@ -1,5 +1,46 @@
 # Upgrading
 
+## Upgrading to 0.20.0
+
+0.20 removes the in-process llama.cpp FFI path that 0.18 deprecated (see
+[ADR 0006](adr/0006-remove-llama-cpp-ffi.md)). Run the model under llama.cpp's `llama-server` and use
+`LlamaServerProvider` ([LlamaServerProvider](PROVIDERS.md#llamaserverprovider)). Applications that
+never used `LlamaCppProvider` or a `llama-cpp` model need no change.
+
+### Breaking changes
+
+| Change | Who is affected | What to do |
+|--------|-----------------|------------|
+| `LlamaCppProvider` is removed | Code that constructs it | Start `llama-server -m model.gguf --jinja` and construct `LlamaServerProvider` (below) |
+| Every class under `Runtime\LlamaCpp` is removed: `LlamaCppNativeRuntime`, `LlamaCppNativeHandle`, `LlamaCppNativeApiInterface`, `FfiLlamaCppNativeApi`, `LlamaCppJsonGrammar`, `LlamaCppStructuredOutputValidator` | Code that builds the native runtime or uses its grammar or validator | Use `LlamaServerProvider`: its `structured()` sends a JSON-schema `response_format`, which llama-server turns into a grammar |
+| The `Provider\LlamaCpp` helpers that only `LlamaCppProvider` used are removed: `LlamaCppHistoryFormatter`, `LlamaCppMultimodalContext`, `LlamaCppMultimodalNormalizer`, `LlamaCppProjectorResolver`, `LlamaCppPromptContext`, `LlamaCppStructuredOutputContext`, `LlamaCppStructuredOutputNormalizer`, `LlamaCppTemplateRegistry`, `LlamaCppTemplateResolver`, `LlamaCppToolPromptInjector`, `LlamaCppToolSchemaNormalizer` | Code that used them directly | llama-server applies the model's chat template (`--jinja`) and reads images through its projector (`--mmproj`); build image parts with `UserMessage::withImages()` and an `ImageResolverInterface` ([Image Inputs](PROVIDERS.md#image-inputs)) |
+| `ProviderFactory` makes a `llama-cpp` (`llamacpp`, `llama-server`) model only from a config with a `baseUrl`; without a `baseUrl` it throws an `InvalidArgumentException` that names `LlamaServerProvider`, even when a `LocalModelRuntimeInterface` is injected | Factory users who relied on an injected runtime | Set `baseUrl` on the `llama-cpp` provider config (below). The factory's `$localModelRuntime` parameter stays and is ignored |
+| `scripts/setup-llama-cpp.sh`, `scripts/test-llama-cpp-runtime.sh`, `scripts/benchmark-llama-cpp-runtime.php`, `scripts/benchmark-llama-cpp-cache.php` and `scripts/compare-llama-cpp-vs-ollama.php` are removed, with their `composer` scripts (`setup:llama-cpp`, `test:llama-cpp-runtime`, `benchmark:llama-cpp-runtime`, `benchmark:llama-cpp-cache`, `compare:llama-cpp-vs-ollama`) | Anyone who ran them | Install llama.cpp from its releases or package manager and run `llama-server` |
+| `docs/LOCAL-RUNTIME.md` is removed | Readers of the native runtime guide | See [LlamaServerProvider](PROVIDERS.md#llamaserverprovider) |
+
+`LlamaCpp\LlamaCppToolCallParser` stays, with the same namespace and `parse()` API.
+`LocalModelRuntimeInterface`, `LocalModelHandleInterface` and the `Runtime\Runtime*` value objects
+also stay.
+
+Through the factory:
+
+```json
+{
+    "providers": {
+        "llama-cpp": { "baseUrl": "http://localhost:8080/v1" }
+    }
+}
+```
+
+Or directly:
+
+```php
+use CarmeloSantana\PHPAgents\Provider\LlamaServerProvider;
+
+// llama-server -m model.gguf --jinja -c 8192 --port 8080
+$provider = new LlamaServerProvider(model: 'local', baseUrl: 'http://localhost:8080/v1');
+```
+
 ## Upgrading to 0.19.1
 
 ### Behaviour changes
@@ -159,19 +200,8 @@ public function streamEvents(array $messages, array $tools = [], array $options 
 
 ### Deprecated
 
-- The in-process llama.cpp FFI path is deprecated in 0.18 and will be removed or fixed in 0.20:
-  `LlamaCppProvider`, every class under `Runtime\LlamaCpp`, and the `setup-llama-cpp.sh`,
-  `test-llama-cpp-runtime.sh` and llama.cpp benchmark scripts. Move to `LlamaServerProvider`
-  ([LlamaServerProvider](PROVIDERS.md#llamaserverprovider)): run `llama-server -m model.gguf --jinja`
-  and set a `baseUrl` on the `llama-cpp` provider config, or construct the provider directly.
-  - The binding is incompatible with llama.cpp after b9174 (2026-05-16): structs it passes by value
-    changed, and a newer build segfaults on the first model load.
-  - It does not stream under `Agent`: with tools, which `Agent` always passes, it
-    buffers the whole generation, and a cancel, `maxRunSeconds` and `maxResponseBytes` act only
-    after generation ends. The buffer has no cap. 0.18 does not fix this.
-  - `setup-llama-cpp.sh` now builds llama.cpp at tag b9174 (and warns that `--install-method brew`
-    installs a newer, incompatible build).
-  - `LlamaCpp\LlamaCppToolCallParser` is not deprecated.
+- The in-process llama.cpp FFI path was deprecated in 0.18 and is removed in 0.20: see
+  [Upgrading to 0.20.0](#upgrading-to-0200).
 
 ### New and not breaking
 
