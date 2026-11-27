@@ -2,16 +2,10 @@
 
 declare(strict_types=1);
 
-use CarmeloSantana\PHPAgents\Agent\Agent;
 use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
-use CarmeloSantana\PHPAgents\Message\UserMessage;
 use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
 use CarmeloSantana\PHPAgents\Provider\Stream\TextDelta;
-use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta;
-use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd;
-use CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart;
-use CarmeloSantana\PHPAgents\Provider\Usage;
-use Tests\Support\Agent\ScriptedEventsProvider;
+use Tests\Support\Docs\SnippetRunner;
 
 // The streaming docs show observer code and a custom provider. These run the code blocks
 // themselves, and check that the event lists name every event the agent fires.
@@ -31,24 +25,30 @@ function docCodeBlock(string $path, string $heading): string
 
 test('the streaming example in AGENTS.md prints tool input and step usage', function () use ($root) {
     $code = docCodeBlock($root . '/docs/AGENTS.md', '### Streaming tool input and usage');
-    $agent = new Agent(new ScriptedEventsProvider([
-        [
-            new ToolInputStart(0, 'c1', 'lookup'),
-            new ToolInputDelta(0, 'c1', '{"q":'),
-            new ToolInputDelta(0, 'c1', '"php"}'),
-            new ToolInputEnd(0, 'c1', 'lookup', ['q' => 'php']),
-            new Finish(ProviderFinishReason::ToolUse, 'tool_use', new Usage(10, 5, 15)),
-        ],
-        [new TextDelta('Done.'), new Finish(ProviderFinishReason::Stop, 'end_turn', new Usage(20, 2, 22))],
-    ]));
 
     expect($code)->toContain("'agent.tool_input_delta',")
         ->and($code)->toContain("'agent.step_finish',");
 
-    ob_start();
-    eval($code);
-    $agent->run(new UserMessage('Look up php.'));
-    $printed = (string) ob_get_clean();
+    $printed = SnippetRunner::run(<<<'PHP'
+        <?php
+        $agent = new \CarmeloSantana\PHPAgents\Agent\Agent(new \Tests\Support\Agent\ScriptedEventsProvider([
+            [
+                new \CarmeloSantana\PHPAgents\Provider\Stream\ToolInputStart(0, 'c1', 'lookup'),
+                new \CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta(0, 'c1', '{"q":'),
+                new \CarmeloSantana\PHPAgents\Provider\Stream\ToolInputDelta(0, 'c1', '"php"}'),
+                new \CarmeloSantana\PHPAgents\Provider\Stream\ToolInputEnd(0, 'c1', 'lookup', ['q' => 'php']),
+                new \CarmeloSantana\PHPAgents\Provider\Stream\Finish(\CarmeloSantana\PHPAgents\Enum\ProviderFinishReason::ToolUse, 'tool_use', new \CarmeloSantana\PHPAgents\Provider\Usage(10, 5, 15)),
+            ],
+            [
+                new \CarmeloSantana\PHPAgents\Provider\Stream\TextDelta('Done.'),
+                new \CarmeloSantana\PHPAgents\Provider\Stream\Finish(\CarmeloSantana\PHPAgents\Enum\ProviderFinishReason::Stop, 'end_turn', new \CarmeloSantana\PHPAgents\Provider\Usage(20, 2, 22)),
+            ],
+        ]));
+
+        PHP . $code . <<<'PHP'
+
+        $agent->run(new \CarmeloSantana\PHPAgents\Message\UserMessage('Look up php.'));
+        PHP)->output();
 
     expect($printed)->toBe("{\"q\":\"php\"}\n[step 1: tool_use, 15 tokens]\n\n[step 2: stop, 22 tokens]\n");
 });
@@ -81,22 +81,25 @@ test('the discard reasons table lists every reason the agent uses', function () 
 
 test('the custom provider example streams typed events', function () use ($root) {
     $code = docCodeBlock($root . '/docs/PROVIDERS.md', '## Creating a Custom Provider');
-    $code = preg_replace('/^<\?php\s*/', '', $code);
 
-    if (!class_exists('Acme\MyProvider\MyProvider', false)) {
-        eval($code);
-    }
-    $provider = new \Acme\MyProvider\MyProvider();
-    $events = iterator_to_array($provider->streamEvents([]), false);
-    $chunks = iterator_to_array($provider->stream([]), false);
+    $output = SnippetRunner::run($code . <<<'PHP'
+
+        $provider = new \Acme\MyProvider\MyProvider();
+        echo serialize([
+            'events' => iterator_to_array($provider->streamEvents([]), false),
+            'chunks' => array_map(fn($c) => $c->content, iterator_to_array($provider->stream([]), false)),
+            'chat' => $provider->chat([])->content,
+        ]);
+        PHP)->output();
+    ['events' => $events, 'chunks' => $chunks, 'chat' => $chat] = unserialize($output);
 
     expect($code)->toContain('use StreamsEventsFromResponses;')
         ->and($events[0])->toEqual(new TextDelta('Hello'))
         ->and($events[1])->toEqual(new TextDelta(' world'))
         ->and(end($events))->toBeInstanceOf(Finish::class)
         ->and(end($events)->reason)->toBe(ProviderFinishReason::Stop)
-        ->and($provider->chat([])->content)->toBe('Hello from my provider')
-        ->and(array_map(fn($c) => $c->content, $chunks))->toBe(['Hello', ' world']);
+        ->and($chat)->toBe('Hello from my provider')
+        ->and($chunks)->toBe(['Hello', ' world']);
 });
 
 test('PROVIDERS.md documents streaming events per provider', function () use ($root) {
