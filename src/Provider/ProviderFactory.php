@@ -94,6 +94,10 @@ final class ProviderFactory
         ];
     }
 
+    /**
+     * @param LocalModelRuntimeInterface|null $localModelRuntime Accepted and ignored: no provider uses
+     *     a local model runtime since 0.20. A `llama-cpp` model needs a `baseUrl` for llama-server.
+     */
     public function __construct(
         private readonly ?ConfigInterface $config = null,
         private readonly ?HttpClientInterface $httpClient = null,
@@ -117,6 +121,8 @@ final class ProviderFactory
      *
      * @param string $modelString e.g., "ollama/llama3.2:latest"
      * @param ConfigInterface|null $config OpenClaw config for baseUrl/apiKey lookups
+     * @param LocalModelRuntimeInterface|null $localModelRuntime Accepted and ignored since 0.20; a
+     *     `llama-cpp` model needs a `baseUrl` for llama-server
      */
 
     public static function fromModelString(
@@ -147,7 +153,7 @@ final class ProviderFactory
                     httpClient: $httpClient,
                     discoveredProviderName: $providerName,
                 )
-                : self::makeLlamaCppProvider($model, $providerConfig, $config, $localModelRuntime),
+                : throw new \InvalidArgumentException('llama-cpp provider requires a baseUrl for llama-server (e.g. http://localhost:8080/v1); it makes a LlamaServerProvider. The in-process llama.cpp FFI provider was removed in 0.20.'),
             'cli' => self::makeCliProvider($model, $providerName, $providerConfig, $cliRuntime),
             'anthropic' => new AnthropicProvider(
                 model: $model,
@@ -268,78 +274,6 @@ final class ProviderFactory
         }
 
         return new OllamaProvider(...$args);
-    }
-
-    /**
-     * The deprecated in-process FFI path, reached only when the llama-cpp config has no baseUrl.
-     *
-     * @param array<string, mixed> $providerConfig
-     */
-    private static function makeLlamaCppProvider(
-        string $model,
-        array $providerConfig,
-        ?ConfigInterface $config,
-        ?LocalModelRuntimeInterface $localModelRuntime,
-    ): LlamaCppProvider {
-        if ($localModelRuntime === null) {
-            throw new \InvalidArgumentException('llama-cpp provider requires a baseUrl for llama-server (e.g. http://localhost:8080/v1) or an injected local model runtime.');
-        }
-
-        $modelDefinition = $config?->getModelDefinition($model);
-        $runtimeOptions = $providerConfig;
-
-        if (is_string($providerConfig['defaultTemplate'] ?? null) && !isset($runtimeOptions['builtInTemplate'])) {
-            $runtimeOptions['builtInTemplate'] = $providerConfig['defaultTemplate'];
-        }
-
-        if (is_string($providerConfig['defaultToolParser'] ?? null) && !isset($runtimeOptions['defaultToolParser'])) {
-            $runtimeOptions['defaultToolParser'] = $providerConfig['defaultToolParser'];
-        }
-
-        if ($modelDefinition?->numCtx !== null && !isset($runtimeOptions['numCtx'])) {
-            $runtimeOptions['numCtx'] = $modelDefinition->numCtx;
-        }
-
-        $modelTemplate = $modelDefinition?->extras['template'] ?? null;
-        if (is_string($modelTemplate) && $modelTemplate !== '' && !isset($runtimeOptions['modelTemplate'])) {
-            $runtimeOptions['modelTemplate'] = $modelTemplate;
-        }
-
-        $modelToolParser = $modelDefinition?->extras['toolParser'] ?? null;
-        if (is_string($modelToolParser) && $modelToolParser !== '' && !isset($runtimeOptions['modelToolParser'])) {
-            $runtimeOptions['modelToolParser'] = $modelToolParser;
-        }
-
-        $modelProjectorPath = $modelDefinition?->extras['projectorPath'] ?? null;
-        if (is_string($modelProjectorPath) && $modelProjectorPath !== '' && !isset($runtimeOptions['modelProjectorPath'])) {
-            $runtimeOptions['modelProjectorPath'] = $modelProjectorPath;
-        }
-
-        $maxImages = $modelDefinition?->extras['maxImages'] ?? null;
-        if (is_int($maxImages) && !isset($runtimeOptions['maxImages'])) {
-            $runtimeOptions['maxImages'] = $maxImages;
-        }
-
-        $imageTokenCost = $modelDefinition?->extras['imageTokenCost'] ?? null;
-        if (is_int($imageTokenCost) && !isset($runtimeOptions['imageTokenCost'])) {
-            $runtimeOptions['imageTokenCost'] = $imageTokenCost;
-        }
-
-        $structuredOutputModes = $modelDefinition?->extras['structuredOutputModes'] ?? null;
-        if (is_array($structuredOutputModes) && !isset($runtimeOptions['structuredOutputModes'])) {
-            $runtimeOptions['structuredOutputModes'] = $structuredOutputModes;
-        }
-
-        $supportsStructuredOutput = $modelDefinition?->extras['supportsStructuredOutput'] ?? null;
-        if (is_bool($supportsStructuredOutput) && !isset($runtimeOptions['supportsStructuredOutput'])) {
-            $runtimeOptions['supportsStructuredOutput'] = $supportsStructuredOutput;
-        }
-
-        return new LlamaCppProvider(
-            model: $model,
-            runtime: $localModelRuntime,
-            runtimeOptions: $runtimeOptions,
-        );
     }
 
     /**
