@@ -14,11 +14,10 @@ function llamaCppFfiUpgradeSection(): string
     return substr($upgrading, $start, $end === false ? null : $end - $start);
 }
 
-test('LlamaCppFfiRemovalDoc the 0.20.0 section is the newest in the upgrade guide', function () {
+test('LlamaCppFfiRemovalDoc the upgrade guide has a 0.20.0 section', function () {
     $upgrading = (string) file_get_contents(dirname(__DIR__, 3) . '/docs/UPGRADING.md');
-    preg_match('/^## Upgrading to .+$/m', $upgrading, $m);
 
-    expect($m[0] ?? null)->toBe('## Upgrading to 0.20.0');
+    expect($upgrading)->toMatch('/^## Upgrading to 0\\.20\\.0$/m');
 });
 
 test('LlamaCppFfiRemovalDoc the 0.20.0 section has a breaking-change row for each removal', function (string $removed) {

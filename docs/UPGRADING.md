@@ -1,5 +1,13 @@
 # Upgrading
 
+## Upgrading to 0.20.1
+
+### Behaviour changes
+
+| Change | Who is affected | What to do |
+|--------|-----------------|------------|
+| `Mcp\Server` sends a `ToolError`'s message, and its optional code and data, to the client as an `isError` result with `structuredContent` `{code, message, data}`; 0.20.0 sent every `ToolError` as a bare `tool failed`. Any other exception a handler throws is still sent as `tool failed` | Hosts whose tool handlers throw `ToolError` | Keep secrets out of `ToolError` messages and data: they now reach the client ([Hosting the MCP server](mcp-server.md)) |
+
 ## Upgrading to 0.20.0
 
 0.20 removes the in-process llama.cpp FFI path that 0.18 deprecated (see
