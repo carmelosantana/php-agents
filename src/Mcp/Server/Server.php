@@ -8,8 +8,6 @@ final readonly class Server
 {
     public const string UNKNOWN_TOOL = 'unknown tool';
 
-    private const VERSIONS = ['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26'];
-
     public function __construct(
         private ToolRegistry $registry,
         private string $name = 'kanboard-mcp-php',
@@ -60,7 +58,12 @@ final readonly class Server
         }
 
         return match ($method) {
-            'initialize' => $this->result($id, $this->initialize((array) $params)),
+            'initialize' => $this->result($id, [
+                'protocolVersion' => Protocol::negotiate(((array) $params)['protocolVersion'] ?? null),
+            ] + $this->metadata()),
+            'server/discover' => $this->result($id, [
+                'supportedVersions' => Protocol::VERSIONS,
+            ] + $this->metadata()),
             'ping' => $this->result($id, new \stdClass()),
             'tools/list' => $this->result($id, [
                 'tools' => array_map(
@@ -73,16 +76,10 @@ final readonly class Server
         };
     }
 
-    /**
-     * @param array<array-key, mixed> $params
-     * @return array<string, mixed>
-     */
-    private function initialize(array $params): array
+    /** @return array<string, mixed> */
+    private function metadata(): array
     {
-        $asked = $params['protocolVersion'] ?? null;
-
         return [
-            'protocolVersion' => in_array($asked, self::VERSIONS, true) ? $asked : self::VERSIONS[0],
             'capabilities' => ['tools' => ['listChanged' => false]],
             'serverInfo' => ['name' => $this->name, 'version' => $this->version],
         ];

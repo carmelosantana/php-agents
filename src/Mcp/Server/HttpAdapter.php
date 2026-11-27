@@ -51,8 +51,28 @@ final readonly class HttpAdapter
             return $this->respond($started, 'invalid', 413, $plainText, 'Request body too large.', $user);
         }
 
+        $version = $headers['mcp-protocol-version'] ?? null;
+        if ($version !== null && !in_array($version, Protocol::VERSIONS, true)) {
+            return $this->respond($started, 'invalid', 400, $plainText, 'Unsupported protocol version.', $user);
+        }
+
+        $headerMethod = $headers['mcp-method'] ?? null;
+        $headerName = $headers['mcp-name'] ?? null;
+        $message = $headerMethod !== null || $headerName !== null || $this->onRequest !== null
+            ? json_decode($body)
+            : null;
+        $requestMethod = $message->method ?? null;
+        $requestName = $requestMethod === 'tools/call' ? ($message->params->name ?? null) : null;
+
+        if ($headerMethod !== null && $headerMethod !== $requestMethod) {
+            return $this->respond($started, 'invalid', 400, $plainText, 'Mcp-Method must match the request method.', $user);
+        }
+        if ($headerName !== null && $requestMethod === 'tools/call' && $headerName !== $requestName) {
+            return $this->respond($started, 'invalid', 400, $plainText, 'Mcp-Name must match the requested tool.', $user);
+        }
+
         $reply = $this->server->dispatchJson($body, new CallContext($user, $this->profile));
-        $tool = $this->onRequest === null ? null : self::requestedTool($body);
+        $tool = $this->onRequest === null ? null : self::eventToolName($requestName);
         if ($reply === null) {
             return $this->respond($started, 'ok', 202, [], '', $user, $tool);
         }
@@ -109,14 +129,8 @@ final readonly class HttpAdapter
         return $this->authenticator->authenticate($user, $token);
     }
 
-    private static function requestedTool(string $body): ?string
+    private static function eventToolName(mixed $name): ?string
     {
-        $message = json_decode($body, true);
-        if (!is_array($message) || ($message['method'] ?? null) !== 'tools/call') {
-            return null;
-        }
-
-        $name = $message['params']['name'] ?? null;
         if (!is_string($name) || $name === '') {
             return null;
         }
