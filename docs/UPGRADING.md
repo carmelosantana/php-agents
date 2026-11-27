@@ -7,6 +7,11 @@
 `LlamaServerProvider` ([LlamaServerProvider](PROVIDERS.md#llamaserverprovider)). Applications that
 never used `LlamaCppProvider` or a `llama-cpp` model need no change.
 
+### Added
+
+`Mcp\Server` exposes host-defined tools over stateless HTTP, with no Composer dependencies and no
+imports from the rest of php-agents. See [Hosting the MCP server](mcp-server.md).
+
 ### Breaking changes
 
 | Change | Who is affected | What to do |
