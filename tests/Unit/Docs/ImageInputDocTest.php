@@ -2,14 +2,13 @@
 
 declare(strict_types=1);
 
-// Pentest L2 is closed: llama.cpp image paths and URLs go through an ImageResolverInterface.
+// Pentest L2 is closed: image paths and URLs go through an ImageResolverInterface.
 
 test('the providers doc no longer lists L2 as open and names ImageResolverInterface', function () {
     $doc = (string) file_get_contents(__DIR__ . '/../../../docs/PROVIDERS.md');
 
     expect($doc)->not->toContain('known open finding (L2)')
-        ->and($doc)->toContain('ImageResolverInterface')
-        ->and($doc)->toContain("Every image a resolver returns is checked again against the normalizer's own `ImagePolicy`");
+        ->and($doc)->toContain('ImageResolverInterface');
 });
 
 test('the request limits ADR no longer calls L2 open', function () {
@@ -19,21 +18,15 @@ test('the request limits ADR no longer calls L2 open', function () {
         ->and($doc)->toContain('ImageResolverInterface');
 });
 
-test('the local runtime doc shows LocalImageResolver for image input', function () {
-    $doc = (string) file_get_contents(__DIR__ . '/../../../docs/LOCAL-RUNTIME.md');
+test('the providers doc shows LocalImageResolver with UserMessage::withImages', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/../../../docs/PROVIDERS.md');
+    $section = substr($doc, (int) strpos($doc, '## Image Inputs'));
 
-    expect($doc)->toContain('LocalImageResolver')
-        ->and($doc)->toContain('UserMessage::withImages(');
+    expect($section)->toContain('use CarmeloSantana\PHPAgents\Image\LocalImageResolver;')
+        ->and($section)->toContain('UserMessage::withImages(');
 });
 
-test('the local runtime image example imports LlamaCppProvider', function () {
-    $doc = (string) file_get_contents(__DIR__ . '/../../../docs/LOCAL-RUNTIME.md');
-    $section = substr($doc, (int) strpos($doc, '## Image Input from PHP'));
-
-    expect($section)->toContain('use CarmeloSantana\PHPAgents\Provider\LlamaCppProvider;');
-});
-
-test('the docs say RemoteImageResolver also blocks on DNS and a normalizer takes one resolver', function (string $path) {
+test('the docs say RemoteImageResolver also blocks on DNS and takes one resolver', function (string $path) {
     $doc = (string) file_get_contents(__DIR__ . '/../../../' . $path);
 
     expect($doc)->toContain('which the Gemini image check and `RemoteImageResolver` call, block')

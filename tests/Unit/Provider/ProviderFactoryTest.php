@@ -6,7 +6,6 @@ use CarmeloSantana\PHPAgents\Config\ModelDefinition;
 use CarmeloSantana\PHPAgents\Contract\ConfigInterface;
 use CarmeloSantana\PHPAgents\Provider\AnthropicProvider;
 use CarmeloSantana\PHPAgents\Provider\GeminiProvider;
-use CarmeloSantana\PHPAgents\Provider\LlamaCppProvider;
 use CarmeloSantana\PHPAgents\Provider\LlamaServerProvider;
 use CarmeloSantana\PHPAgents\Provider\MistralProvider;
 use CarmeloSantana\PHPAgents\Provider\OllamaProvider;

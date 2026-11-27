@@ -13,9 +13,8 @@ use CarmeloSantana\PHPAgents\Provider\Cli\CliProcessResult;
  *
  * php-agents never spawns a process itself — it depends only on symfony/http-client
  * and psr/log. The host application (e.g. Coqui) injects a concrete runtime that
- * knows how to run a binary in its environment. This mirrors how
- * LocalModelRuntimeInterface is injected for the llama.cpp provider, letting the
- * host decide whether execution is blocking or event-loop/Fiber friendly.
+ * knows how to run a binary in its environment, letting the host decide whether
+ * execution is blocking or event-loop/Fiber friendly.
  */
 interface CliRuntimeInterface
 {
