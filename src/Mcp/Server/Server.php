@@ -115,6 +115,13 @@ final readonly class Server
         try {
             $output = ($tool->handler)(self::normalizeArguments((array) $args), $ctx);
             $text = json_encode($output, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        } catch (ToolError $e) {
+            $result = $this->toolResult($e->getMessage(), true);
+            if ($e->errorCode !== null) {
+                $result['structuredContent'] = ['code' => $e->errorCode, 'message' => $e->getMessage(), 'data' => $e->data];
+            }
+
+            return $this->result($id, $result);
         } catch (\Throwable) {
             return $this->result($id, $this->toolResult('tool failed', true));
         }
