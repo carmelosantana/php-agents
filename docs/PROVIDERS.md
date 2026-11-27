@@ -10,6 +10,7 @@ Providers abstract the differences between LLM APIs. php-agents ships with provi
 | `stream()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `streamEvents()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `structured()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `structuredEvents()` ([Structured streaming](#structured-streaming)) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Tool calling | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Streaming + tool calls | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Image input (base64) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -26,7 +27,8 @@ started with a multimodal projector (`--mmproj`).
 **CliProvider** (the `claude` CLI vendor) runs as a raw chat completion and has a narrower profile:
 `chat()`, `stream()`, `streamEvents()`, `structured()` (best-effort JSON), `models()`, `isAvailable()`, and
 `withModel()` are supported. Native tool calling and image input are **not** in v1 — the host app's
-own toolkits run the tools and prior tool history is folded into the prompt. See
+own toolkits run the tools and prior tool history is folded into the prompt. It does not implement
+`StructuredStreaming`. See
 [CliProvider (CLI Vendors)](#cliprovider-cli-vendors) below.
 
 ## LlamaServerProvider
@@ -797,7 +799,8 @@ preserved. See the [README example](../README.md#usage-listener).
 
 The listener receives one `CarmeloSantana\PHPAgents\Provider\UsageReport` per inference HTTP
 request or CLI run. `operation` is `chat`, `stream` (for `stream()` and `streamEvents()`) or
-`structured`, including when `structured()` delegates to `chat()`.
+`structured`, including when `structured()` delegates to `chat()`, or `structured_stream` for
+`structuredEvents()`.
 
 | Field | Meaning |
 | --- | --- |
@@ -818,9 +821,68 @@ Reporting covers model generation. Embeddings, model
 discovery, availability checks, Ollama model management, Gemini image downloads and MCP
 traffic are outside its scope.
 
+## Structured streaming
+
+Structured streaming is available starting in 0.21.
+A provider that implements `CarmeloSantana\PHPAgents\Contract\StructuredStreaming` streams the
+request its `structured()` sends. `structuredEvents($messages, $schema, $options)` takes the same
+arguments as `structured()`, a bare schema or a `{name, schema}` envelope, and yields:
+
+| Event | Fields | When |
+|-------|--------|------|
+| `StructuredDelta` | `delta` | Each fragment of the JSON document; concatenated, they are the document |
+| `ReasoningDelta` | `delta` | Each reasoning fragment, where the provider sends reasoning |
+| `Tick` | none | As in `streamEvents()` |
+| `Finish` | `reason`, `rawReason`, `usage`, `model`, `contentBlocks` | Exactly once, last. `Stop` means the document is complete |
+
+Nothing validates the document against the schema: decode it and validate it before you use it.
+The OpenAI-compatible providers, `OpenAIResponsesProvider`, `AnthropicProvider` and
+`GeminiProvider` implement the interface; `CliProvider` does not, so feature-detect it and fall back
+to `structured()`.
+
+```php
+use CarmeloSantana\PHPAgents\Contract\StructuredStreaming;
+use CarmeloSantana\PHPAgents\Enum\ProviderFinishReason;
+use CarmeloSantana\PHPAgents\Message\UserMessage;
+use CarmeloSantana\PHPAgents\Provider\Stream\Finish;
+use CarmeloSantana\PHPAgents\Provider\Stream\StructuredDelta;
+use CarmeloSantana\PHPAgents\Provider\StructuredOutput;
+
+$schema = '{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}';
+$messages = [new UserMessage('Name this task.')];
+$document = null;
+
+if ($provider instanceof StructuredStreaming) {
+    $json = '';
+    foreach ($provider->structuredEvents($messages, $schema) as $event) {
+        if ($event instanceof StructuredDelta) {
+            $json .= $event->delta;
+            echo $event->delta; // show the document as it arrives
+        } elseif ($event instanceof Finish && $event->reason === ProviderFinishReason::Stop) {
+            $document = json_decode($json, true);
+        }
+    }
+} else {
+    $document = StructuredOutput::extract($provider, $messages, $schema);
+}
+```
+
+Each provider sends what its `structured()` sends:
+
+| Provider | Request | The document is |
+|----------|---------|-----------------|
+| `OpenAICompatibleProvider` and its subclasses | `response_format` `json_schema`, strict when the schema can be normalised | The reply text |
+| `OpenAIResponsesProvider` | A forced function whose parameters are the schema | The function's arguments; the function is never executed, and its tool-use finish becomes `Stop` |
+| `AnthropicProvider` | `output_config.format`, or an instruction with the schema when native structured outputs cannot take it | The reply text |
+| `GeminiProvider` | `generationConfig.responseSchema` | The reply text |
+
+Usage reports name the operation `structured_stream`. Stopping the loop early cancels the HTTP
+request. The `$options` reach the request body only, as for `structured()`: no option sets the URL
+or replaces the provider's HTTP client.
+
 ## Caller Options
 
-The `$options` array of `chat()`, `stream()`, `streamEvents()` and `structured()` is merged into the request body, so it can set any field the provider's API takes. It cannot replace the fields the provider builds itself. The conversation and the transport flag are always the provider's. The system prompt is the provider's when the conversation has a `SystemMessage`, and the tool list is the provider's when the `$tools` argument is not empty; without them, `$options` may still supply those fields.
+The `$options` array of `chat()`, `stream()`, `streamEvents()`, `structured()` and `structuredEvents()` is merged into the request body, so it can set any field the provider's API takes. It cannot replace the fields the provider builds itself. The conversation and the transport flag are always the provider's. The system prompt is the provider's when the conversation has a `SystemMessage`, and the tool list is the provider's when the `$tools` argument is not empty; without them, `$options` may still supply those fields.
 
 | Provider | Always the provider's | Provider's with a `SystemMessage` | Provider's with a non-empty `$tools` |
 |----------|-----------------------|-----------------------------------|--------------------------------------|
