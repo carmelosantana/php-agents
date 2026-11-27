@@ -115,10 +115,16 @@ test('a negative limit is refused', function (array $arguments) {
 
 test('the tick interval defaults to a quarter second, 0.0 turns ticks off, and apply() leaves it out', function () {
     $off = new RequestLimits(tickInterval: 0.0);
+    $offOptions = $off->apply([]);
+    $defaultOptions = (new RequestLimits())->apply([]);
 
+    // apply() builds a fresh on_progress closure per call, so compare it by shape, the rest by value.
     expect((new RequestLimits())->tickInterval)->toBe(0.25)
         ->and($off->tickInterval)->toBe(0.0)
-        ->and($off->apply([]))->toEqual((new RequestLimits())->apply([]));
+        ->and($offOptions['on_progress'])->toBeCallable()
+        ->and($defaultOptions['on_progress'])->toBeCallable()
+        ->and(array_diff_key($offOptions, ['on_progress' => true]))
+        ->toBe(array_diff_key($defaultOptions, ['on_progress' => true]));
 });
 
 test('zero limits are accepted', function () {
