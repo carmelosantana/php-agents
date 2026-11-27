@@ -6,6 +6,8 @@ namespace CarmeloSantana\PHPAgents\Mcp\Server;
 
 final readonly class Server
 {
+    public const string UNKNOWN_TOOL = 'unknown tool';
+
     private const VERSIONS = ['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26'];
 
     public function __construct(
@@ -105,7 +107,7 @@ final readonly class Server
 
         $tool = $this->registry->forProfile($ctx->profile)->find($name);
         if ($tool === null) {
-            return $this->result($id, $this->toolResult('unknown tool', true));
+            return $this->result($id, $this->toolResult(self::UNKNOWN_TOOL, true));
         }
 
         $error = SchemaValidator::validate($tool->inputSchema, $args);

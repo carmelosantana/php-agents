@@ -7,9 +7,10 @@ namespace CarmeloSantana\PHPAgents\Mcp\Server;
 final readonly class HttpAdapter
 {
     private const CHALLENGE = 'Bearer realm="kanboard-mcp", error="invalid_token"';
+    private const int MAX_EVENT_TOOL_BYTES = 128;
 
     /**
-     * @param (\Closure(array{user: string|int|null, tool: ?string, outcome: 'ok'|'tool_error'|'invalid'|'denied'|'unauthenticated', ms: float, ip?: string}): void)|null $onRequest
+     * @param (\Closure(array{user: string|int|null, tool: ?string, outcome: 'ok'|'tool_error'|'invalid'|'denied'|'unauthenticated', ms: float, ip: ?string}): void)|null $onRequest
      * @param ?string $ip Client address supplied by the host for the request.
      */
     public function __construct(
@@ -83,7 +84,7 @@ final readonly class HttpAdapter
         }
 
         // The server uses the same result for missing tools and tools outside the active profile.
-        return ($result['content'][0]['text'] ?? null) === 'unknown tool' ? 'denied' : 'tool_error';
+        return ($result['content'][0]['text'] ?? null) === Server::UNKNOWN_TOOL ? 'denied' : 'tool_error';
     }
 
     /** @return array<string, mixed>|null */
@@ -116,8 +117,21 @@ final readonly class HttpAdapter
         }
 
         $name = $message['params']['name'] ?? null;
+        if (!is_string($name) || $name === '') {
+            return null;
+        }
 
-        return is_string($name) && $name !== '' ? $name : null;
+        $end = self::MAX_EVENT_TOOL_BYTES;
+        if (strlen($name) <= $end) {
+            return $name;
+        }
+
+        // Back up over UTF-8 continuation bytes to a character boundary.
+        while ((ord($name[$end]) & 0xC0) === 0x80) {
+            --$end;
+        }
+
+        return substr($name, 0, $end);
     }
 
     /**
@@ -142,10 +156,8 @@ final readonly class HttpAdapter
                 'tool' => $tool,
                 'outcome' => $outcome,
                 'ms' => (hrtime(true) - $started) / 1_000_000.0,
+                'ip' => $this->ip,
             ];
-            if ($this->ip !== null) {
-                $event['ip'] = $this->ip;
-            }
             ($this->onRequest)($event);
         }
 

@@ -41,13 +41,17 @@ it('emits one argument-free event for a tool call', function (): void {
     );
 
     expect($status)->toBe(200)
-        ->and($events)->toHaveCount(1)
-        ->and(array_keys($events[0]))->toBe(['user', 'tool', 'outcome', 'ms'])
+        ->and($events)->toHaveCount(1);
+
+    $encoded = json_encode($events[0], JSON_THROW_ON_ERROR);
+    expect($encoded)->not->toContain('secret-sentinel-123')
+        ->and($encoded)->not->toContain('header-secret')
+        ->and(array_keys($events[0]))->toBe(['user', 'tool', 'outcome', 'ms', 'ip'])
+        ->and($events[0]['ip'])->toBeNull()
         ->and($events[0]['user'])->toBe('agent.php')
         ->and($events[0]['tool'])->toBe('task')
         ->and($events[0]['outcome'])->toBe('ok')
-        ->and($events[0]['ms'])->toBeFloat()->toBeGreaterThanOrEqual(0.0)
-        ->and(json_encode($events[0], JSON_THROW_ON_ERROR))->not->toContain('secret-sentinel-123', 'header-secret');
+        ->and($events[0]['ms'])->toBeFloat()->toBeGreaterThanOrEqual(0.0);
 });
 
 // Mutation: skip the request event on a 401.
@@ -106,4 +110,32 @@ it('reports tool call failures by outcome', function (array $params, string $out
     'invalid arguments' => [['name' => 'task', 'arguments' => [1]], 'invalid'],
     // Mutation: classify a profile refusal as a handler error.
     'tool outside profile' => [['name' => 'restricted'], 'denied'],
+]);
+
+it('caps the event tool name at 128 bytes while preserving UTF-8', function (string $name, string $expected): void {
+    $events = [];
+    $adapter = new HttpAdapter(
+        new Server(new ToolRegistry()),
+        requestEventAuthenticator(),
+        onRequest: function (array $event) use (&$events): void {
+            $events[] = $event;
+        },
+    );
+
+    [$status, , $body] = $adapter->handle(
+        'POST',
+        ['Authorization' => 'Bearer agent.php:header-secret'],
+        json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/call', 'params' => ['name' => $name]], JSON_THROW_ON_ERROR),
+    );
+
+    expect($status)->toBe(200)
+        ->and(json_decode($body, true, flags: JSON_THROW_ON_ERROR)['result']['content'][0]['text'])->toBe('unknown tool')
+        ->and($events)->toHaveCount(1)
+        ->and($events[0]['outcome'])->toBe('denied')
+        ->and($events[0]['tool'])->toBe($expected);
+})->with([
+    // Mutation: emit the entire client-supplied tool name.
+    'long ASCII name' => [str_repeat('a', 2_000), str_repeat('a', 128)],
+    // Mutation: truncate inside a multibyte character.
+    'split UTF-8 character' => [str_repeat('a', 127).'é', str_repeat('a', 127)],
 ]);
