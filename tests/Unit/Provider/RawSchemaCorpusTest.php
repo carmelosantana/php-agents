@@ -196,6 +196,7 @@ test('openai responses goes non-strict exactly for the schemas it cannot close',
     }
 
     expect($strict)->toBe([
+        'additional-items' => true,
         'additional-properties-schema' => false,
         'closed-empty' => true,
         'empty-object' => false,
@@ -217,8 +218,8 @@ test('gemini renders a raw schema as the payload it sends', function (string $na
 
     expect(json_encode($format([$tool]), JSON_THROW_ON_ERROR))->toBe($expected);
 })->with([
-    // A nullable type array collapses to one upper-case type plus `nullable`, at depth.
-    ['type-arrays', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"since":{"type":"STRING","nullable":true},"limit":{"type":"INTEGER","minimum":1,"nullable":true}}}}]}]'],
+    // A nullable type array collapses to one upper-case type plus `nullable`, at depth; `default` is kept.
+    ['type-arrays', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"since":{"type":"STRING","default":null,"nullable":true},"limit":{"type":"INTEGER","minimum":1,"nullable":true}}}}]}]'],
     // An object nested under `items`, and the free-form `{}` that must stay an object.
     ['nested-array-objects', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"rows":{"type":"ARRAY","items":{"type":"OBJECT","properties":{"id":{"type":"STRING"},"tags":{"type":"OBJECT","properties":{}}}}}},"required":["rows"]}}]}]'],
     // `who` carries only `$ref`, which Gemini strips; the node that is left is `{}`, not `[]`.
@@ -229,6 +230,10 @@ test('gemini renders a raw schema as the payload it sends', function (string $na
     ['numeric-keys', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"0":{"type":"STRING"},"1":{"type":"STRING"}}}}]}]'],
     // Gemini's `items` is one Schema, so a draft-04 tuple becomes `{}`, the schema that accepts anything.
     ['tuple-items', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"pair":{"type":"ARRAY","items":{}}}}}]}]'],
+    // Gemini's Schema has no `additionalItems`, so it goes; a property *named* `additionalItems` keeps its name.
+    // `x-mcp-header` is an extension keyword Gemini's Schema has no field for.
+    ['x-mcp-header', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"region":{"type":"STRING"},"q":{"type":"STRING"}},"required":["q"]}}]}]'],
+    ['additional-items', '[{"functionDeclarations":[{"name":"raw_tool","description":"Raw.","parameters":{"type":"OBJECT","properties":{"pair":{"type":"ARRAY","items":{}},"additionalItems":{"type":"STRING"}}}}]}]'],
 ]);
 
 /**
@@ -241,20 +246,31 @@ test('gemini renders a raw schema as the payload it sends', function (string $na
  * that is not upper-case. It tests the value, not where the key sits, so a property *named*
  * `type` or `items` whose schema is an object is not reported.
  *
+ * It also reports every key `additionalItems`, a keyword the Schema has no field for, and
+ * every key that starts with `x-`, an extension keyword the Schema has no field for. That
+ * test is on the key, so the members of a `properties` map, which are property names, are
+ * not tested; their schemas are.
+ *
  * @return list<string>
  */
-function geminiSchemaDefects(mixed $node, string $path = '$'): array
+function geminiSchemaDefects(mixed $node, string $path = '$', bool $isPropertyMap = false): array
 {
     $bad = [];
     if ($node instanceof stdClass) {
         foreach (get_object_vars($node) as $key => $value) {
             $here = "{$path}.{$key}";
+            if ($isPropertyMap) {
+                $bad = [...$bad, ...geminiSchemaDefects($value, $here)];
+                continue;
+            }
             if ($key === 'items' && is_array($value)) {
                 $bad[] = $here;
             } elseif ($key === 'type' && is_string($value) && $value !== strtoupper($value)) {
                 $bad[] = $here;
+            } elseif ($key === 'additionalItems' || str_starts_with((string) $key, 'x-')) {
+                $bad[] = $here;
             }
-            $bad = [...$bad, ...geminiSchemaDefects($value, $here)];
+            $bad = [...$bad, ...geminiSchemaDefects($value, $here, $key === 'properties')];
         }
     } elseif (is_array($node)) {
         foreach ($node as $i => $value) {
@@ -274,6 +290,10 @@ test('the gemini predicate reports what Gemini\'s Schema rejects', function (str
     'lower-case type' => ['{"type":"OBJECT","properties":{"a":{"type":"string"}}}', ['$.properties.a.type']],
     'a clean gemini payload' => ['[{"functionDeclarations":[{"name":"t","parameters":{"type":"OBJECT","properties":{"a":{"type":"ARRAY","items":{"type":"STRING"}},"b":{}}}}]}]', []],
     'properties named type and items' => ['{"type":"OBJECT","properties":{"type":{"type":"STRING"},"items":{"type":"ARRAY","items":{"type":"INTEGER"}}}}', []],
+    'additionalItems' => ['{"type":"OBJECT","properties":{"a":{"type":"ARRAY","items":{},"additionalItems":{"type":"STRING"}}}}', ['$.properties.a.additionalItems']],
+    'a property named additionalItems' => ['{"type":"OBJECT","properties":{"additionalItems":{"type":"STRING"}}}', []],
+    'x- extension keyword' => ['{"type":"OBJECT","x-root":1,"properties":{"a":{"type":"STRING","x-mcp-header":"A"}}}', ['$.x-root', '$.properties.a.x-mcp-header']],
+    'a property named x-foo' => ['{"type":"OBJECT","properties":{"x-foo":{"type":"STRING"}}}', []],
 ]);
 
 // A `\stdClass` is a handle, and JsonSchemaRepair hands back as-is a `\stdClass` it was given,
